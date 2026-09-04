@@ -10,8 +10,9 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-_ARTIFACT_URL_FMT = "https://androidbuildinternal.googleapis.com/android/internal/build/v3/builds/{build_id}/{build_target}/attempts/latest/artifacts/{filename}/url?redirect=true"
+_ARTIFACT_URL_FMT = "https://ci.android.com/builds/submitted/{build_id}/{build_target}/latest/raw/{filename}"
 
 
 class Downloader(object):
@@ -42,6 +43,8 @@ class Downloader(object):
     def _cleanup(self):
         print("cleaning up directory")
         for item in os.listdir():
+            if item.startswith(f".{self.build_id}-downloaded"):
+                continue
             if os.path.isfile(item) or os.path.islink(item):
                 os.remove(item)
             elif os.path.isdir(item):
@@ -127,7 +130,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-f", "--force",
-        help="do not prompt when the directory exists",
+        help="do not prompt when the directory exists; skip download if marker found",
         action=argparse.BooleanOptionalAction,
     )
     args = parser.parse_args()
@@ -147,7 +150,13 @@ if __name__ == "__main__":
         print("{} is not a directory".format(directory))
         sys.exit(1)
 
+    marker_file_path = os.path.join(directory, f".{args.build_id}-downloaded")
+
     if os.path.isdir(directory):
+        if args.force and os.path.exists(marker_file_path):
+            print(f"Marker found: {marker_file_path}. Skipping download")
+            sys.exit(0)
+
         if not args.force:
             user_input = input(
                 f"The existing files in {directory} will be removed, continue? [y/N] "
@@ -163,3 +172,6 @@ if __name__ == "__main__":
     downloader.preprocess()
     downloader.download()
     downloader.postprocess()
+
+    Path(f".{args.build_id}-downloaded").touch()
+    print(f"Successfully finished. Created marker: .{args.build_id}-downloaded")

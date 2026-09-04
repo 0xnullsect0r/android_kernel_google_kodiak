@@ -36,6 +36,7 @@
     <linkfile src="devices/google/common/tools/run_kunit_tests_on_device.sh" dest="run_kunit_tests_on_device.sh" />
     <linkfile src="devices/google/common/update_symbol_list.sh" dest="update_symbol_list.sh" />
     <linkfile src="devices/google/spacecraft/build_spacecraft.sh" dest="build_spacecraft.sh" />
+    <linkfile src="devices/google/common/external/nanopb-c" dest="external/nanopb-c" />
   </project>
 
   <!-- Kleaf -->
@@ -68,7 +69,6 @@
   <project path="external/bazelbuild-rules_shell" name="platform/external/bazelbuild-rules_shell" />
   <project path="external/bionic" name="platform/bionic" revision="refs/heads/main-kernel" />
   <project path="external/lz4" name="platform/external/lz4" />
-  <project path="external/nanopb-c" name="platform/external/nanopb-c" />
   <project path="external/pigz" name="platform/external/pigz" />
   <project path="external/python/absl-py" name="platform/external/python/absl-py" />
   <project path="external/toybox" name="platform/external/toybox" />
