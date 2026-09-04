@@ -1,0 +1,11 @@
+# List of modules loaded during first stage init from vendor_kernel_boot
+# Sort order defined by
+# LC_ALL=C sort
+panel-gs-bmea.ko
+panel-gs-dcsda.ko
+panel-gs-dcsdb.ko
+panel-gs-flea.ko
+panel-gs-pkcgda.ko
+radio-bridge.ko
+snd-soc-aw882xx.ko
+snd-soc-tas25xx.ko

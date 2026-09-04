@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-2.0
+
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+
+checkpatch(
+    name = "checkpatch",
+    checkpatch_pl = "//common:scripts/checkpatch.pl",
+)
+
+ddk_headers(
+    name = "headers",
+    hdrs = glob([
+        "**/*.h",
+    ]),
+    includes = [
+        ".",
+    ],
+)
+
+ddk_module(
+    name = "btpower",
+    srcs = [
+        "btpower.c",
+    ],
+    out = "btpower.ko",
+    copts = [
+        "-Wall",
+        "-Werror",
+    ],
+    kernel_build = "//private/devices/google/common:kernel",
+    visibility = ["//private/devices/google:__subpackages__"],
+    deps = [
+        ":headers",
+        "//common:all_headers_aarch64",
+        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
+    ],
+)
+
+ddk_module(
+    name = "wcn7760_btpower",
+    srcs = [
+        "wcn7760/wcn7760_btpower.c",
+    ],
+    out = "wcn7760_btpower.ko",
+    copts = [
+        "-Wall",
+        "-Werror",
+    ],
+    kernel_build = "//private/devices/google/common:kernel",
+    visibility = ["//private/devices/google:__subpackages__"],
+    deps = [
+        ":headers",
+        "//common:all_headers_aarch64",
+        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/wcnpwrctl:wcn_pwrctl",
+    ],
+)
+
+kernel_module_group(
+    name = "bluetooth.qcom",
+    srcs = [
+        ":btpower",
+    ],
+    visibility = [
+        "//private/devices/google:__subpackages__",
+    ],
+)

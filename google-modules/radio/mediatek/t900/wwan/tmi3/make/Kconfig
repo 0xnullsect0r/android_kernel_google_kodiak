@@ -1,0 +1,151 @@
+config MTK_WWAN_PWRCTL_SUPPORT
+	bool "Enable MTK GPIO control from MTK PCIe driver"
+	default n
+	help
+	  Enable the MTK PCIe host driver to call power control function
+	  from the wwan_pwrctl driver. This is required to sync the reset
+	  logic from PCIe and inform the wwan_pwrctl driver about the
+	  power reset.
+
+config MTK_HOST_DRV_WWAN_SUPPORT
+	bool "Enable MTK WWAN support"
+	default n
+	help
+	  Use the wwan functions instead of the generic cdev functions for
+	  the supported /dev nodes.
+
+config MTK_DATA_CPU_LOADING_OPTIMIZE
+	bool "Enable AP optimizations for DPMAIF"
+	default n
+	help
+	  Enable caching and CPU affinity for the data path (DPMAIF).
+
+config MTK_DEVLINK
+	bool "Enable devlink interface for MTK modem"
+	default n
+	help
+	  Enable the devlink interface for the MTK modem. This maybe used
+	  to expose things to the userspace that are not directly related
+	  to a device class like char/wwan node, but rather the whole modem
+	  itself.
+
+config MTK_DEVLINK_COREDUMP_SUPPORT
+	bool "Enable postdump support for MTK modem"
+	select MTK_DEVLINK
+	default n
+	help
+	  Enable the postdump support for MTK modem.
+
+config MTK_DEVLINK_LOGDUMP_SUPPORT
+	bool "Enable logdump from MTK modem"
+	select MTK_DEVLINK
+	default n
+	help
+	  Enable the logdump support from MTK modem.
+
+config MTK_MEMLOG_EVENT_SUPPORT
+	bool "Support memlog event in Thin MD host driver"
+	default n
+	help
+	  Used to control the memlog event feature of the Thin MD host driver.
+	  When this option is enabled, host driver will print
+	  high-frequency logs in hex format.
+	  The logs printed in hex format need to be parsed into
+	  plain text using a post-processing tool.
+	  Say Y here if need to enable memlog event in host driver.
+	  If unsure, say N.
+
+config GOOGLE_ASPM_CONTROL
+	bool "Enable upstream style ASPM control"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  Replace vendor's direct register accesses with Linux standard API:
+	  pci_enable_link_state. This ensures the driver following PCI spec
+	  correctly and allows consistent system-wide policy to be overlaid on top
+	  of any driver-specific requests.
+
+config GOOGLE_WWAN_PKT_PRIO
+	bool "Google WWAN packet prioritization"
+	depends on ARCH_GOOGLE
+	default n
+	help
+	  Enable support for Google-specific WWAN packet prioritization
+	  based on skb->mark bits 29 and 30. This is used by the
+	  MediaTek WWAN driver.
+
+config GOOGLE_LINK_DOWN_MMIO_PROTECT
+	bool "Enable link down MMIO protection"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  This enables link checks in resume and REBOOTINT flow to avoid
+	  bus hang when link up failed.
+
+config GOOGLE_ATR_WRITE_RETRY
+	bool "Enable retry for ATR programming"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  This enables retry mechanism for ATR programming to mitigate the
+	  BAR2/3 access issue which may result in resume timeout or SRAMROM
+	  violation.
+
+config GOOGLE_B503643353_DEBUG
+	bool "b/503643353 debug patch"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  This adds verbose logging for usr_cnt of cldma1q4.
+
+config GOOGLE_B465916709_WORKAROUND
+	bool "b/465916709 workaround"
+	depends on GOOGLE_ASPM_CONTROL
+	default y
+	help
+	  This reconfigures PCIe link state (e.g., L1ss) in mtk_pci_reinit
+	  to avoid config lost after a modem cold reset.
+
+config GOOGLE_B490485015_WORKAROUND
+	bool "b/490485015 workaround"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  Enables the workaround for b/490485015. This disables NETIF_F_GRO_FRAGLIST
+	  to prevent the creation of invalid "Nested Fraglist" SKBs, which can cause
+	  a kernel panic during WiFi tethering. This workaround will be reverted
+	  after the vendor provides a formal patch.
+
+config GOOGLE_B493109074_DEBUG
+	bool "b/493109074 debug patch"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  Enable debug patch for b/493109074.
+	  This patch dumps more fields other than the sequence number. This
+	  could help us to understand the corrupted pattern further.
+
+config GOOGLE_B495424578_DEBUG
+	bool "b/495424578 debug patch"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  This dumps BAR2/3 ATR after setup.
+
+config GOOGLE_B507778536_DEBUG
+	bool "b/507778536 debug patch"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  This enables link error reporting when both MHCCIF stat and mask
+	  are 0xffffffff.
+
+config GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION
+	bool "b/493109074 TLP reorder mitigation"
+	depends on ARCH_GOOGLE
+	default y
+	help
+	  Enables the mitigation for b/493109074. This enables the
+	  pre-check for RX TLP reordering in the CLDMA driver.
+	  Implements a retry mechanism to gracefully delay for a while
+	  if the CCCI header sequence check fail.
