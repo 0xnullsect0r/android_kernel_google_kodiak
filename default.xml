@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+     Kleaf workspace for the kodiak (Pixel 11 Pro XL) kernel.
+
+         repo init -u ssh://git@github.com/topsuplove1122/android_kernel_google_kodiak -b lineage-24.0
+         repo sync
+         ./build_spacecraft.sh
+
+     Everything Google wrote for Pixel hardware lives in this repository and
+     is checked out at private/. The kernel itself, the toolchains and the
+     bazel rules come from AOSP.
+-->
+<manifest>
+
+  <remote  name="kodiak"
+           fetch="ssh://git@github.com/topsuplove1122"
+           revision="refs/heads/lineage-24.0" />
+
+  <remote  name="aosp"
+           fetch="https://android.googlesource.com"
+           revision="refs/heads/main-kernel-2025" />
+
+  <default remote="aosp"
+           sync-c="true"
+           sync-j="4" />
+
+  <!-- Pixel sources. Also the manifest repository. -->
+  <project path="private" name="android_kernel_google_kodiak" remote="kodiak">
+    <linkfile src="devices/google/common/workspace/root.AGENTS.md" dest="AGENTS.md" />
+    <linkfile src="devices/google/common/workspace/root.MODULE.bazel" dest="MODULE.bazel" />
+    <linkfile src="devices/google/common/workspace/common.BUILD.bazel" dest="common/BUILD.bazel" />
+    <linkfile src="devices/google/common/tools/bazel.sh" dest="tools/bazel" />
+    <linkfile src="devices/google/common/tools/build_dist.sh" dest="tools/build_dist.sh" />
+    <linkfile src="devices/google/common/tools/build_compile_commands.sh" dest="tools/build_compile_commands.sh" />
+    <linkfile src="devices/google/common/tools/download_prebuilts.py" dest="download_prebuilts.py" />
+    <linkfile src="devices/google/common/tools/run_kunit_tests_on_device.sh" dest="run_kunit_tests_on_device.sh" />
+    <linkfile src="devices/google/common/update_symbol_list.sh" dest="update_symbol_list.sh" />
+    <linkfile src="devices/google/spacecraft/build_spacecraft.sh" dest="build_spacecraft.sh" />
+  </project>
+
+  <!-- Kleaf -->
+  <project path="build/kernel" name="kernel/build" />
+
+  <!--
+       Android Common Kernel. Google built CD1A.260714.001.A9 against
+       6.12.77, which is an untagged point on android16-6.12-2026-06.
+  -->
+  <project path="common/ack" name="kernel/common" revision="refs/heads/android16-6.12-2026-06">
+    <linkfile src="." dest="aosp" />
+    <linkfile src=".clang-format" dest=".clang-format" />
+    <linkfile src="build.config.constants" dest="common/build.config.constants" />
+    <linkfile src="modules.bzl" dest="common/modules.bzl" />
+  </project>
+
+  <!-- GKI, selectable with the kernel_package flag. 6.12.69, as shipped. -->
+  <project path="common/gki" name="kernel/common" revision="refs/tags/android16-6.12-2026-03_r66" />
+
+  <!-- Kleaf module dependencies, see root.MODULE.bazel -->
+  <project path="external/bazel-contrib-bazel_features" name="platform/external/bazel-contrib-bazel_features" />
+  <project path="external/bazel-skylib" name="platform/external/bazel-skylib" />
+  <project path="external/bazelbuild-bazel-central-registry" name="platform/external/bazelbuild-bazel-central-registry" />
+  <project path="external/bazelbuild-platforms" name="platform/external/bazelbuild-platforms" />
+  <project path="external/bazelbuild-rules_cc" name="platform/external/bazelbuild-rules_cc" />
+  <project path="external/bazelbuild-rules_license" name="platform/external/bazelbuild-rules_license" />
+  <project path="external/bazelbuild-rules_pkg" name="platform/external/bazelbuild-rules_pkg" />
+  <project path="external/bazelbuild-rules_python" name="platform/external/bazelbuild-rules_python" />
+  <project path="external/bazelbuild-rules_rust" name="platform/external/bazelbuild-rules_rust" />
+  <project path="external/bazelbuild-rules_shell" name="platform/external/bazelbuild-rules_shell" />
+  <project path="external/bionic" name="platform/bionic" revision="refs/heads/main-kernel" />
+  <project path="external/lz4" name="platform/external/lz4" />
+  <project path="external/nanopb-c" name="platform/external/nanopb-c" />
+  <project path="external/pigz" name="platform/external/pigz" />
+  <project path="external/python/absl-py" name="platform/external/python/absl-py" />
+  <project path="external/toybox" name="platform/external/toybox" />
+  <project path="external/zlib" name="platform/external/zlib" />
+  <project path="external/zopfli" name="platform/external/zopfli" />
+
+  <!-- Toolchains -->
+  <project path="prebuilts/build-tools" name="platform/prebuilts/build-tools" clone-depth="1" />
+  <project path="prebuilts/clang-tools" name="platform/prebuilts/clang-tools" clone-depth="1" />
+  <project path="prebuilts/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" clone-depth="1" />
+  <project path="prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" name="platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" clone-depth="1" />
+  <project path="prebuilts/kernel-build-tools" name="kernel/prebuilts/build-tools" clone-depth="1" />
+  <project path="prebuilts/ndk-r26" name="toolchain/prebuilts/ndk/r26" clone-depth="1" />
+  <project path="prebuilts/rust" name="platform/prebuilts/rust" clone-depth="1" />
+
+  <project path="tools/mkbootimg" name="platform/system/tools/mkbootimg" />
+
+</manifest>

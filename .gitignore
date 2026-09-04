@@ -1,0 +1,6 @@
+# Kleaf leaves these in the workspace, and repo checks the rest of the
+# workspace out around this repository rather than inside it.
+/bazel-*
+/out/
+__pycache__/
+*.pyc
