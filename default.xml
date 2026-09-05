@@ -54,6 +54,12 @@
   </project>
 
   <!-- GKI, selectable with the kernel_package flag. 6.12.69, as shipped. -->
+  <!--
+       Only the package definition and the fips140 prebuilt are wanted from
+       here; the kernel itself is built from common/ack. Do not switch the
+       build to this package: its source would have to match the prebuilt
+       vmlinux commit exactly, and that commit is not on any branch.
+  -->
   <project path="common/gki" name="kernel/common" revision="refs/tags/android16-6.12-2026-03_r66" />
 
   <!-- Kleaf module dependencies, see root.MODULE.bazel -->
