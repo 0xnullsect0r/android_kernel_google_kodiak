@@ -149,6 +149,9 @@ static int vs_dc_res_disable(struct device *dev)
 {
 	struct vs_dc *dc = dev_get_drvdata(dev);
 
+	if (!dc)
+		return 0;
+
 	mutex_lock(&dc->dc_lock);
 	dev_dbg(dev, "%s\n", __func__);
 
@@ -974,6 +977,137 @@ static int dc_init_sscd(struct vs_dc *dc, struct device *dev)
 	return ret;
 }
 
+/**
+ * _dc_power_domain_provider_synced() - Check if the power provider for a domain is synced.
+ * @np: Device node pointer to the power domain.
+ *
+ * This function determines if the power controller managing the given power
+ * domain has completed its sync state (i.e. all consumers have probed).
+ * Since individual power domain nodes in the Device Tree do not map directly to
+ * a &struct device, this function walks up the Device Tree parent chain from
+ * @np to find the ancestor power controller device node, and checks its
+ * state_synced flag.
+ *
+ * Return: true if the power provider is synced, false otherwise.
+ */
+static bool _dc_power_domain_provider_synced(struct device_node *np)
+{
+	struct platform_device *power_controller_pdev = NULL;
+	struct device_node *curr = of_node_get(np);
+	bool synced = false;
+
+	while (curr) {
+		struct device_node *parent;
+
+		power_controller_pdev = of_find_device_by_node(curr);
+		if (power_controller_pdev) {
+			if (dev_has_sync_state(&power_controller_pdev->dev)) {
+				of_node_put(curr);
+				break;
+			}
+			put_device(&power_controller_pdev->dev);
+			power_controller_pdev = NULL;
+		}
+		parent = of_get_parent(curr);
+		of_node_put(curr);
+		curr = parent;
+	}
+
+	if (power_controller_pdev) {
+		synced = power_controller_pdev->dev.state_synced;
+		put_device(&power_controller_pdev->dev);
+	}
+
+	return synced;
+}
+
+static bool dc_power_controller_synced(struct device *dev)
+{
+	struct device_node *np;
+	int i = 0;
+	bool all_synced = true;
+	bool found_any = false;
+
+	if (!dev || !dev->of_node)
+		return false;
+
+	while ((np = of_parse_phandle(dev->of_node, "power-domains", i++))) {
+		found_any = true;
+
+		if (!_dc_power_domain_provider_synced(np)) {
+			of_node_put(np);
+			all_synced = false;
+			break;
+		}
+		of_node_put(np);
+	}
+
+	return found_any && all_synced;
+}
+
+static void vs_dc_release_handoff_votes(struct vs_dc *dc)
+{
+	int i;
+
+	if (dc->be_handoff_vote)
+		dc_component_release_handoff_vote(dc->be_dev, &dc->be_handoff_vote);
+	for (i = 0; i < DC_FE_NUM; i++) {
+		if (dc->fe_handoff_vote[i])
+			dc_component_release_handoff_vote(dc->fe_dev[i], &dc->fe_handoff_vote[i]);
+	}
+}
+
+/**
+ * vs_dc_handoff_work_func() - Delayed work function to poll power controller sync state.
+ * @work: Pointer to the handoff work_struct.
+ *
+ * This function is scheduled during boot handoff to periodically poll if the
+ * DPU's power controllers have completed their sync_state, because the Linux
+ * kernel lacks a generic notification framework for consumer drivers to be
+ * alerted when a provider device completes sync_state.
+ *
+ * Once all associated power controllers are synced, it releases
+ * the boot handoff power votes; otherwise, it reschedules itself.
+ */
+static void vs_dc_handoff_work_func(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct vs_dc *dc = container_of(dwork, struct vs_dc, handoff_work);
+
+	if (dc_power_controller_synced(dc->hw.dev)) {
+		dev_dbg(dc->hw.dev, "Handoff power sync complete, releasing votes\n");
+		vs_dc_release_handoff_votes(dc);
+	} else {
+		queue_delayed_work(system_power_efficient_wq, &dc->handoff_work, HZ);
+	}
+}
+
+int dc_component_grab_handoff_vote(struct device *dev, bool *handoff_vote_flag)
+{
+	int ret;
+
+	if (dc_device_has_power_during_handoff(dev)) {
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret < 0) {
+			dev_err(dev, "failed to get pm vote for handoff: %d\n", ret);
+			return ret;
+		}
+		*handoff_vote_flag = true;
+		dev_dbg(dev, "Handoff detected, keeping power vote\n");
+	}
+
+	return 0;
+}
+
+void dc_component_release_handoff_vote(struct device *dev, bool *handoff_vote_flag)
+{
+	if (*handoff_vote_flag) {
+		dev_dbg(dev, "Releasing handoff power vote\n");
+		pm_runtime_put(dev);
+		*handoff_vote_flag = false;
+	}
+}
+
 static int dc_bind(struct device *dev, struct device *master, void *data)
 {
 	struct drm_device *drm_dev = data;
@@ -1045,11 +1179,17 @@ static int dc_bind(struct device *dev, struct device *master, void *data)
 			vs_dc_sscd_state_payload_destroy;
 	}
 
+	if (dc->be_handoff_vote || dc->fe_handoff_vote[0] || dc->fe_handoff_vote[1]) {
+		dev_info(dev, "Queueing handoff sync work\n");
+		queue_delayed_work(system_power_efficient_wq, &dc->handoff_work, HZ);
+	}
+
 	return 0;
 
 err_clean_dc:
 	dc_deinit(dev);
 err_init_dc:
+	vs_dc_release_handoff_votes(dc);
 	if (dc_be_power_put(dev, true) < 0)
 		dev_err(dev, "%s: failed to power OFF during error cleanup\n", __func__);
 	return ret;
@@ -1059,6 +1199,7 @@ static void dc_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct drm_device *drm_dev = data;
 	struct vs_dc *dc = dev_get_drvdata(dev);
+	int ret;
 
 	dc_component_disable_irqs(dev, &dc->dc_irq_info);
 
@@ -1069,7 +1210,18 @@ static void dc_unbind(struct device *dev, struct device *master, void *data)
 
 	device_remove_file(dev, &dev_attr_early_wakeup);
 
-	dc_deinit(dev);
+	cancel_delayed_work_sync(&dc->handoff_work);
+	vs_dc_release_handoff_votes(dc);
+
+	ret = dc_be_power_get(dev, true);
+	if (ret >= 0) {
+		dc_deinit(dev);
+		ret = dc_be_power_put(dev, false);
+		if (ret < 0)
+			dev_err(dev, "dc_unbind BE failed to power OFF\n");
+	} else {
+		dev_err(dev, "dc_unbind BE failed to power ON for deinit; skipping deinit\n");
+	}
 
 	vs_drm_iommu_detach_device(drm_dev, dev);
 }
@@ -1242,6 +1394,27 @@ static int dc_get_trusty_device(struct device *dev, struct vs_dc *dc)
 	return 0;
 }
 
+bool dc_device_has_power_during_handoff(struct device *dev)
+{
+	struct device_node *np;
+	int i = 0;
+	bool needs_handoff = false;
+
+	if (!dev || !dev->of_node)
+		return false;
+
+	while ((np = of_parse_phandle(dev->of_node, "power-domains", i++))) {
+		if (of_property_read_bool(np, "google,boot-stay-on")) {
+			needs_handoff = true;
+			of_node_put(np);
+			break;
+		}
+		of_node_put(np);
+	}
+
+	return needs_handoff;
+}
+
 static int dc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1260,6 +1433,8 @@ static int dc_probe(struct platform_device *pdev)
 	spin_lock_init(&dc->int_lock);
 	mutex_init(&dc->dc_lock);
 	mutex_init(&dc->dc_qos_lock);
+
+	INIT_DELAYED_WORK(&dc->handoff_work, vs_dc_handoff_work_func);
 
 	ret = attach_power_domain(dev, dc);
 	if (ret < 0)
@@ -1313,7 +1488,11 @@ static int dc_probe(struct platform_device *pdev)
 #endif /* CONFIG_GS_PERF_DOMAIN */
 
 	if (dc->core_devfreq) {
-		link = device_link_add(dev, dc->core_devfreq->dev.parent,
+		struct device *supplier = dc->core_devfreq->dev.parent;
+
+		if (IS_ENABLED(CONFIG_GS_PERF_DOMAIN) && supplier)
+			supplier = supplier->parent;
+		link = device_link_add(dev, supplier,
 				       DL_FLAG_AUTOREMOVE_CONSUMER | DL_FLAG_PM_RUNTIME);
 		if (!link) {
 			dev_err(dev, "failed to add devlink to the devfreq dev\n");

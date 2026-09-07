@@ -150,6 +150,10 @@ PVRSRV_ERROR PDVFSSetUpThreshold(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_UINT32 ui32U
 
 PVRSRV_ERROR PDVFSSetDownDifferential(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_UINT32 ui32DownDifferentialInPct);
 
+#if defined(SUPPORT_PDVFS_OPS)
+PVRSRV_ERROR PDVFSSetGovernor(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_UINT32 ui32Governor);
+#endif
+
 void RGXPDVFSCheckUtilisationChange(PVRSRV_RGXDEV_INFO *psDevInfo);
 
 #endif /* RGXPDVFS_H */

@@ -138,6 +138,22 @@ void gs_panel_node_attach(struct gs_drm_connector *gs_connector)
 		dev_dbg(ctx->dev, "succeed to link %s sysfs\n", sysfs_name);
 }
 
+void gs_panel_node_detach(struct gs_drm_connector *gs_connector)
+{
+	struct gs_panel *ctx = gs_connector_to_panel(gs_connector);
+	struct drm_connector *connector = &gs_connector->base;
+	const char *sysfs_name;
+
+	if (WARN(!ctx, "%s: failed to get gs_panel\n", __func__))
+		return;
+
+	sysfs_name = gs_panel_get_sysfs_name(ctx);
+
+	sysfs_remove_link(&ctx->bridge.dev->dev->kobj, sysfs_name);
+	sysfs_remove_link(&connector->kdev->kobj, "panel");
+	sysfs_remove_link(&gs_connector->kdev->kobj, "panel");
+}
+
 static int gs_panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_attach_flags flags)
 {
 	struct gs_panel *ctx = bridge_to_gs_panel(bridge);
@@ -168,17 +184,6 @@ static int gs_panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_att
 
 static void gs_panel_bridge_detach(struct drm_bridge *bridge)
 {
-	struct gs_panel *ctx = bridge_to_gs_panel(bridge);
-	struct drm_connector *connector = &ctx->gs_connector->base;
-	const char *sysfs_name = gs_panel_get_sysfs_name(ctx);
-
-	sysfs_remove_link(&bridge->dev->dev->kobj, sysfs_name);
-
-	/* TODO(tknelms): debugfs removal */
-	sysfs_remove_link(&connector->kdev->kobj, "panel");
-	/* TODO(tknelms): evaluate what needs to be done to clean up connector */
-	drm_connector_unregister(connector);
-	drm_connector_cleanup(&ctx->gs_connector->base);
 }
 
 static void gs_panel_bridge_enable_internal(struct gs_panel *ctx)

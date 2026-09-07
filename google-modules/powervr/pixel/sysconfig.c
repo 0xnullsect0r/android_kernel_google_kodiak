@@ -31,6 +31,7 @@
 #include "sscd.h"
 #include "uid_time_in_state.h"
 #include "gpu_uevent.h"
+#include "scheduling.h"
 #include <trace/hooks/systrace.h>
 
 #if defined(SUPPORT_TRUSTED_DEVICE)
@@ -579,6 +580,7 @@ static const struct subsystem_init_table_entry subsys_init[] = {
 	{gpu_sscd_init, gpu_sscd_deinit, "Failed to initialize SSCD"},
 	{init_pixel_uid_tis, deinit_pixel_uid_tis, "Failed to initialize per-UID time-in-state"},
 	{gpu_uevent_init, gpu_uevent_term, "Failed to initialize GPU uevent"},
+	{init_scheduling, deinit_scheduling, "Failed to initialize GPU scheduling adjustments"},
 };
 
 static void subsystem_deinit(struct pixel_gpu_device *pixel_dev, int i)

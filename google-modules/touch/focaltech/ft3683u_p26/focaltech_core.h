@@ -381,7 +381,6 @@ struct fts_ts_data {
                         * touch IC, acquired during hard interrupt, in
                         * CLOCK_MONOTONIC */
     ktime_t coords_timestamp;
-    bool is_deepsleep;
     struct proc_dir_entry *proc_touch_entry;
     struct regulator *avdd;
     struct regulator *dvdd;
@@ -407,6 +406,8 @@ struct fts_ts_data {
 #if IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
     struct goog_touch_interface *gti;
 #endif // IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
+    struct completion int_test_completion;
+    bool int_test_running;
 };
 
 enum FTS_BUS_TYPE {

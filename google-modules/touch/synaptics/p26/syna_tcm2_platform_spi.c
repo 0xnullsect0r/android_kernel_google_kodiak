@@ -423,7 +423,7 @@ static int google_parse_setting_id_from_connector(struct device_node *np,
 	}
 
 	panel_id = gs_drm_connector_get_panel_id(gs_drm_connector);
-	if (panel_id == INVALID_PANEL_ID) {
+	if (panel_id == PANEL_ID_INVALID_VALUE) {
 		LOGE("Failed to get panel id");
 		return -EOPNOTSUPP;
 	}

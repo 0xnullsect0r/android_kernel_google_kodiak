@@ -113,6 +113,7 @@ struct aoc_module_parameters {
 	bool *aoc_panic_on_ssr_failure;
 	int *aoc_ssr_hysteresis_threshold_ms;
 	int *aoc_coredump_reset_delay_ms;
+	bool *aoc_en_kernel_ambss_voting;
 };
 
 #define AOC_DEVICE(_d) container_of((_d), struct aoc_service_dev, dev)
@@ -208,6 +209,9 @@ aoc_service *service_at_index(struct aoc_prvdata *prvdata,
 struct aoc_service_dev *service_dev_at_index(struct aoc_prvdata *prvdata,
 							unsigned int index);
 
+struct aoc_service_dev *service_dev_by_name(struct aoc_prvdata *prvdata,
+						const char *name);
+
 bool validate_service(struct aoc_prvdata *prv, int i);
 
 bool aoc_is_valid_dram_address(struct aoc_prvdata *prv, void *addr);
@@ -237,6 +241,7 @@ int aoc_read_soc_compatible(struct device *dev, u32 *product_id, u32 *major, u32
 void schedule_service_work(int channel);
 
 struct aoc_prvdata *get_aoc_prvdata(void);
+void aoc_cancel_service_work_sync(struct aoc_service_dev *dev);
 
 void aoc_print_core_boot_breadcrumbs(struct aoc_prvdata *prvdata);
 

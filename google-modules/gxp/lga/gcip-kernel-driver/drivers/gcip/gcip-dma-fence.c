@@ -22,6 +22,9 @@
 
 #include <gcip/gcip-dma-fence.h>
 
+/* Disable the macro magic in the header file. */
+#undef gcip_dma_fence_manager_create
+
 #define to_gfence(fence) container_of(fence, struct gcip_dma_fence, fence)
 
 int gcip_signal_dma_fence_with_status(struct dma_fence *fence, int error, bool ignore_signaled)
@@ -79,7 +82,7 @@ gcip_dma_fence_manager_create(struct device *dev, const char *driver_name, const
 
 	INIT_LIST_HEAD(&mgr->fence_list);
 	spin_lock_init(&mgr->fence_list_lock);
-	strscpy(mgr->driver_name, driver_name, GCIP_DMA_FENCE_NAME_LENGTH);
+	mgr->driver_name = driver_name;
 	strscpy(mgr->name, name, GCIP_DMA_FENCE_NAME_LENGTH);
 	mgr->dev = dev;
 

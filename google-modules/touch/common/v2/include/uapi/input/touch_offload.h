@@ -293,7 +293,6 @@ struct TouchOffloadData1d {
  * header - header shared by all channels in a frame
  * contents - bitfield indicating the corresponding data field is valid
  * screen_state - 0 = off, 1 = on
- * display_refresh_rate - display refresh rate in hz
  * touch_report_rate - touch report rate in hz
  * noise_state - 0 = no noise, 1 = noise present
  * water_mode - 0 = normal mode, 1 = water mode
@@ -306,7 +305,7 @@ struct TouchOffloadDriverStatus {
 
 	struct DriverBitfieldContents {
 		__u32 screen_state : 1;
-		__u32 display_refresh_rate : 1;
+		__u32 reserved_bit : 1;
 		__u32 touch_report_rate : 1;
 		__u32 noise_state : 1;
 		__u32 water_mode : 1;
@@ -317,8 +316,7 @@ struct TouchOffloadDriverStatus {
 	__u8 reserved1[8];
 
 	__u8 screen_state;
-	__u8 display_refresh_rate;
-	__u8 touch_report_rate;
+	__u16 touch_report_rate;
 	__u8 noise_state;
 	__u8 water_mode;
 	__u8 charger_state;

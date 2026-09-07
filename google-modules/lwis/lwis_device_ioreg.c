@@ -32,11 +32,14 @@ static int lwis_ioreg_device_enable(struct lwis_device *lwis_dev);
 static int lwis_ioreg_device_disable(struct lwis_device *lwis_dev);
 static int lwis_ioreg_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 static int lwis_ioreg_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
+static int lwis_ioreg_register_io_with_size_locked(struct lwis_device *lwis_dev,
+						   struct lwis_io_entry *entry, int access_size);
 static int lwis_ioreg_register_io_barrier(struct lwis_device *lwis_dev, bool read, bool write);
 
 static struct lwis_device_subclass_operations ioreg_vops = {
 	.register_io = lwis_ioreg_register_io,
 	.register_io_locked = lwis_ioreg_register_io_locked,
+	.register_io_with_size_locked = lwis_ioreg_register_io_with_size_locked,
 	.batch_register_io = NULL,
 	.register_io_barrier = lwis_ioreg_register_io_barrier,
 	.device_enable = lwis_ioreg_device_enable,
@@ -68,6 +71,14 @@ static int lwis_ioreg_register_io_locked(struct lwis_device *lwis_dev, struct lw
 {
 	lwis_save_register_io_info(lwis_dev, entry);
 	return lwis_ioreg_io_entry_rw_locked((struct lwis_ioreg_device *)lwis_dev, entry);
+}
+
+static int lwis_ioreg_register_io_with_size_locked(struct lwis_device *lwis_dev,
+						   struct lwis_io_entry *entry, int access_size)
+{
+	lwis_save_register_io_info_with_size(lwis_dev, entry, access_size);
+	return lwis_ioreg_io_entry_rw_locked_with_size((struct lwis_ioreg_device *)lwis_dev, entry,
+						       access_size);
 }
 
 static int lwis_ioreg_register_io_barrier(struct lwis_device *lwis_dev, bool use_read_barrier,
@@ -255,3 +266,7 @@ void lwis_ioreg_device_valid_range_list_print(struct lwis_ioreg_device *ioreg_de
 			 ioreg_dev->reg_valid_range_list.ranges[i].size);
 	}
 }
+
+#if IS_ENABLED(CONFIG_GOOGLE_IIS)
+MODULE_SOFTDEP("pre: iis");
+#endif

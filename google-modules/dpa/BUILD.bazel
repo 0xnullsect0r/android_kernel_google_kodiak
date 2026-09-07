@@ -3,6 +3,11 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 load("//private/devices/google/common/kleaf:copy_files.bzl", "copy_files")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "dpa.kconfig",
     srcs = [
@@ -181,14 +186,8 @@ _DPA_COMMON_DEPS = [
     "//common:all_headers_aarch64",
     "//private/google-modules/noa/noah_lib:noah_lib_headers",
     "//private/google-modules/soc/gs:headers",
-    "//private/google-modules/trusty",
+    "//private/google-modules/trusty:trusty-ipc",
     "//private/google-modules/trusty:trusty_headers",
-]
-
-_DPA_VISIBILITY = [
-    "//private/devices/google:__subpackages__",
-    "//private/google-modules/noa:__subpackages__",
-    "//private/google-modules/soc/rdo:__subpackages__",
 ]
 
 _DPA_INCLUDES = [
@@ -212,7 +211,6 @@ ddk_module(
     includes = _DPA_INCLUDES,
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = ["GOOGLE_DPA_BOOT_AT_PROBE=false"],
-    visibility = _DPA_VISIBILITY,
     deps = _DPA_COMMON_DEPS + [
         "//private/google-modules/noa/nanopb:nanopb_headers",
         "//private/google-modules/soc/rdo/drivers/soc/google/mailbox:goog-mba-gdmc-iface",
@@ -227,10 +225,6 @@ ddk_module(
     ],
     out = "google-dpa-test.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/dpa:ddk_headers",
@@ -254,7 +248,6 @@ ddk_module(
         "GOOGLE_DPA_BOOT_AT_PROBE=false",
         "USE_PIXEL_CPM",
     ],
-    visibility = _DPA_VISIBILITY,
     deps = _DPA_COMMON_DEPS + [
         ":nanopb_ddk_headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",

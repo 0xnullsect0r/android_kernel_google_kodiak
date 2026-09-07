@@ -13,28 +13,28 @@
 struct google_pinctrl;
 
 /* 1 MiB file size limit */
-#define PINCTRL_STRING_ATTRIBUTE_MAX_FILE_SIZE (BIT(20))
+#define STR_ATTR_MAX_FILE_SIZE (BIT(20))
 
-#define  DEFINE_PINCTRL_DEBUGFS_STRING_ATTRIBUTE(__fops, __read_callback, __write_callback)	\
+#define DEFINE_STRING_ATTRIBUTE(__fops, __read_callback, __write_callback)	\
 static int __fops ## _open(struct inode *inode, struct file *file)	\
 {	\
-	return pinctrl_string_attr_open(inode, file, __read_callback, __write_callback);	\
+	return str_attr_open(inode, file, __read_callback, __write_callback);	\
 }	\
 static const struct file_operations __fops ## _fops = {	\
 	.owner = THIS_MODULE,	\
 	.open = __fops ## _open,	\
-	.release = pinctrl_string_attr_release,	\
-	.read = pinctrl_debugfs_string_attr_read,	\
-	.write = pinctrl_debugfs_string_attr_write,	\
+	.release = str_attr_release,	\
+	.read = str_attr_read,	\
+	.write = str_attr_write,	\
 }
 
-struct pinctrl_debugfs_attr_file {
+struct str_attr_file {
 	char *buf;
 	unsigned int count;
 	unsigned int size;
 };
 
-struct pinctrl_char_buf {
+struct str_attr_buf {
 	char *buf;
 	unsigned int size;
 };
@@ -55,6 +55,22 @@ struct fops_stats {
 	atomic_t get_count;
 	atomic_t set_count;
 	atomic_t config_count;
+};
+
+/**
+ * struct pin_rpm_stats - DebugFs struct containing Runtime Power Management stats for each pin
+ * @rpm_get_cnt: Total runtime power management get calls
+ * @rpm_put_cnt: Total runtime power management put calls
+ * @gets_per_sec: Runtime power management get calls in the last second
+ * @gets_sec_cnt: Runtime power management get calls in the current second
+ * @sec_start: Nanosecond timestamp of currently tracked second's start
+ */
+struct pin_rpm_stats {
+	u64 rpm_get_cnt;
+	u64 rpm_put_cnt;
+	u64 gets_per_sec;
+	u64 gets_sec_cnt;
+	ktime_t sec_start;
 };
 
 int dump_regs_logs(struct google_pinctrl *gctl);
@@ -79,21 +95,15 @@ enum PINCTRL_DEBUGFS_FOPS_CNT {
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 
-int pinctrl_string_attr_open(struct inode *inode, struct file *file,
-			int (*read_callback)(void *, struct pinctrl_debugfs_attr_file *),
-			int (*write_callback)(void *, const struct pinctrl_char_buf *));
-int pinctrl_string_attr_release(struct inode *inode, struct file *file);
-ssize_t pinctrl_string_attr_read(struct file *file, char __user *buf,
-			 size_t len, loff_t *ppos);
-ssize_t pinctrl_string_attr_write(struct file *file, const char __user *buf,
-				size_t len, loff_t *ppos);
-ssize_t pinctrl_debugfs_string_attr_read(struct file *file, char __user *buf,
-			size_t len, loff_t *ppos);
-ssize_t pinctrl_debugfs_string_attr_write(struct file *file, const char __user *buf,
-			size_t len, loff_t *ppos);
+int str_attr_open(struct inode *inode, struct file *file,
+		  int (*read_callback)(void *, struct str_attr_file *),
+		  int (*write_callback)(void *, const struct str_attr_buf *));
+int str_attr_release(struct inode *inode, struct file *file);
+ssize_t str_attr_read(struct file *file, char __user *buf, size_t len, loff_t *ppos);
+ssize_t str_attr_write(struct file *file, const char __user *buf, size_t len, loff_t *ppos);
 
-void pinctrl_debugfs_attr_file_puts(struct pinctrl_debugfs_attr_file *file, const char *s);
-void pinctrl_debugfs_attr_file_printf(struct pinctrl_debugfs_attr_file *file, const char *fmt, ...);
+void str_attr_puts(struct str_attr_file *file, const char *s);
+void str_attr_printf(struct str_attr_file *file, const char *fmt, ...);
 
 int google_pinctrl_init_debugfs(struct google_pinctrl *gctl, struct platform_device *pdev,
 				unsigned int num_groups);
@@ -102,7 +112,7 @@ void google_pinctrl_remove_recursive_debugfs(struct google_pinctrl *gctl);
 void google_pinctrl_debugfs_suspend_dump_regs(struct google_pinctrl *gctl);
 void google_pinctrl_debugfs_resume_dump_regs(struct google_pinctrl *gctl);
 int google_pinctrl_debugfs_inc_cnt(struct google_pinctrl *gctl,
-				   enum PINCTRL_DEBUGFS_GCTL_CNT cnt_sel);
+				   enum PINCTRL_DEBUGFS_GCTL_CNT cnt_sel, int pin);
 int google_pinctrl_debugfs_inc_fops_cnt(struct google_pinctrl *gctl,
 					enum PINCTRL_DEBUGFS_FOPS_CNT cnt_sel, unsigned int g_sel);
 
@@ -116,26 +126,13 @@ int google_pinctrl_debugfs_inc_fops_cnt(struct google_pinctrl *gctl,
  * want to duplicate the design decision mistakes of procfs and devfs again.
  */
 
-static inline ssize_t pinctrl_string_attr_read(struct file *file, char __user *buf,
-			 size_t len, loff_t *ppos)
+static inline ssize_t str_attr_read(struct file *file, char __user *buf, size_t len, loff_t *ppos)
 {
 	return -ENODEV;
 }
 
-static inline ssize_t pinctrl_string_attr_write(struct file *file, const char __user *buf,
-				size_t len, loff_t *ppos)
-{
-	return -ENODEV;
-}
-
-static inline ssize_t pinctrl_debugfs_string_attr_read(struct file *file, char __user *buf,
-			size_t len, loff_t *ppos)
-{
-	return -ENODEV;
-}
-
-static inline ssize_t pinctrl_debugfs_string_attr_write(struct file *file, const char __user *buf,
-			size_t len, loff_t *ppos)
+static inline ssize_t str_attr_write(struct file *file, const char __user *buf, size_t len,
+				     loff_t *ppos)
 {
 	return -ENODEV;
 }
@@ -161,7 +158,7 @@ static inline void google_pinctrl_debugfs_resume_dump_regs(struct google_pinctrl
 }
 
 static inline int google_pinctrl_debugfs_inc_cnt(struct google_pinctrl *gctl,
-						 enum PINCTRL_DEBUGFS_GCTL_CNT cnt_sel)
+						 enum PINCTRL_DEBUGFS_GCTL_CNT cnt_sel, int pin)
 {
 	return -ENODEV;
 }

@@ -78,6 +78,7 @@
 #define DW_IC_SDA_HOLD				0x7c
 #define DW_IC_TX_ABRT_SOURCE			0x80
 #define DW_IC_ENABLE_STATUS			0x9c
+#define DW_IC_FS_SPKLEN				0xa0
 #define DW_IC_CLR_RESTART_DET			0xa8
 #define DW_IC_COMP_PARAM_1			0xf4
 #define DW_IC_COMP_VERSION			0xf8
@@ -119,6 +120,7 @@
 
 #define DW_IC_SDA_HOLD_RX_SHIFT			16
 #define DW_IC_SDA_HOLD_RX_MASK			GENMASK(23, 16)
+#define DW_IC_SDA_HOLD_TX_MASK			GENMASK(15, 0)
 
 #define DW_IC_ERR_TX_ABRT			0x1
 
@@ -194,6 +196,13 @@ enum i2c_dw_xfer_op_mode {
 	HYBRID_BUSY_WAIT_MODE,
 };
 
+#define DW_I2C_IRQ_EVENTS_BUF_SIZE		8
+
+struct dw_i2c_irq_event {
+	u32	stat;
+	u32	abort_source;
+};
+
 /**
  * struct dw_i2c_dev - private i2c-designware data
  * @dev: driver model device node
@@ -220,6 +229,9 @@ enum i2c_dw_xfer_op_mode {
  * @status: i2c master status, one of STATUS_*
  * @abort_source: copy of the TX_ABRT_SOURCE register
  * @irq: interrupt number for the i2c master
+ * @irq_counter: count of interrupts during transfer
+ * @irq_events: circular buffer of recorded IRQ events
+ * @irq_events_idx: index/count of recorded IRQ events
  * @flags: platform specific flags like type of IO accessors or model
  * @adapter: i2c subsystem adapter node
  * @functionality: I2C_FUNC_* ORed bits to reflect what controller does support
@@ -285,6 +297,8 @@ struct dw_i2c_dev {
 	unsigned int		abort_source;
 	int			irq;
 	int			irq_counter;
+	struct dw_i2c_irq_event	irq_events[DW_I2C_IRQ_EVENTS_BUF_SIZE];
+	u32			irq_events_idx;
 	bool			timeout;
 	u32			flags;
 	struct i2c_adapter	adapter;
@@ -332,9 +346,11 @@ struct dw_i2c_dev {
 #define MODEL_AMD_NAVI_GPU			BIT(10)
 #define MODEL_WANGXUN_SP			BIT(11)
 #define MODEL_GOOGLE				BIT(12)
-#define MODEL_MASK				GENMASK(12, 8)
+#define MODEL_GOOGLE_MBU			BIT(13)
+#define MODEL_MASK				GENMASK(13, 8)
 
 #define MODEL(x)				((x) & MODEL_MASK)
+#define IS_GOOGLE_SOC(flags)			(!!((flags) & (MODEL_GOOGLE | MODEL_GOOGLE_MBU)))
 
 /*
  * Enable UCSI interrupt by writing 0xd at register

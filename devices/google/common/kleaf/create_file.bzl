@@ -10,13 +10,15 @@ def _create_file_impl(ctx):
     hermetic_tools = hermetic_toolchain.get(ctx)
     srcs = list(ctx.files.srcs)
     out = ctx.outputs.out
+    if not out:
+        out = ctx.actions.declare_file(ctx.attr.name)
 
     sep = ""
     if ctx.attr.type == "text":
         sep = "\n"
 
     if ctx.attr.contents:
-        contents_file = ctx.actions.declare_file(ctx.attr.name + "/contents")
+        contents_file = ctx.actions.declare_file(ctx.attr.name + ".contents")
         ctx.actions.write(
             output = contents_file,
             content = sep.join(ctx.attr.contents),
@@ -61,8 +63,10 @@ create_file = rule(
     doc = "Create a file by concatenating source files and appending contents",
     attrs = {
         "out": attr.output(
-            doc = "Path of the output file, relative to this package.",
-            mandatory = True,
+            doc = (
+                "Path of the output file, relative to this package.\n" +
+                "If omitted, defaults to the target name."
+            ),
         ),
         "srcs": attr.label_list(
             doc = "List of source files which will be concatenated to the output file.",

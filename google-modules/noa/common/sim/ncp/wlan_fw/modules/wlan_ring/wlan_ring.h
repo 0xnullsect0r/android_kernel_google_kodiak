@@ -148,7 +148,9 @@ static inline void WlanRingUpdateHwWrite(const WlanRing *const ring)
 				PhyAddr, ring->regs.write), sizeof(uint16_t));
 		}
 
-		SysIfIoWritew(ring->write * ring->stride,
+		//SysIfIoWritew(ring->write * ring->stride,
+		//	      WLAN_REINTERPRET_CAST(void *, ring->regs.write));
+		SysIfIoWritel(ring->write * ring->stride,
 			      WLAN_REINTERPRET_CAST(void *, ring->regs.write));
 		if (IsCoherentCheck(WLAN_STATIC_CAST(PhyAddr, ring->regs.write))) {
 			SysIfFlushDCache(WLAN_STATIC_CAST(
@@ -167,7 +169,9 @@ static inline void WlanRingUpdateHwRead(const WlanRing *const ring)
 			SysIfInvalidDCache(WLAN_STATIC_CAST(
 				PhyAddr, ring->regs.read), sizeof(uint16_t));
 		}
-		SysIfIoWritew(ring->read * ring->stride,
+		//SysIfIoWritew(ring->read * ring->stride,
+		//	      WLAN_REINTERPRET_CAST(void *, ring->regs.read));
+		SysIfIoWritel(ring->read * ring->stride,
 			      WLAN_REINTERPRET_CAST(void *, ring->regs.read));
 		if (IsCoherentCheck(WLAN_STATIC_CAST(PhyAddr, ring->regs.read))) {
 			SysIfFlushDCache(WLAN_STATIC_CAST(

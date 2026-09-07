@@ -22,6 +22,8 @@
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/alarmtimer.h>
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 #include "p9221_charger.h"
 #include "p9221-dt-bindings.h"
 #include "google_dc_pps.h"
@@ -109,7 +111,6 @@ static bool p9xxx_find_votable(struct p9221_charger_data *charger);
 static void p9221_init_align(struct p9221_charger_data *charger);
 static bool p9xxx_rtx_gpio_is_state(struct p9221_charger_data *charger, enum p9xxx_rtx_gpio_state state);
 static int check_hpp_fod_level(struct p9221_charger_data *charger, int dc_voltage);
-static void p9221_check_icl_stable(struct p9221_charger_data *charger);
 
 static char *align_status_str[] = {
 	"...", "M2C", "OK", "-1"
@@ -1567,7 +1568,6 @@ static void google_wlc_usecase_transition_cb(void *d, enum gsu_usecases from_uc,
 
 	ret = charger->chip_prop_mode_transition(charger);
 	set_renego_state(charger, P9XXX_AVAILABLE);
-	p9221_check_icl_stable(charger);
 	if (ret != 1) {
 		dev_err(charger->dev, "failed to enter HPP mode\n");
 		ret = p9221_reset_wlc_dc(charger);
@@ -2285,21 +2285,20 @@ static int p9221_stats_update_state(struct p9221_charger_data *charger, u8 sys_m
 static void p9221_update_head_stats(struct p9221_charger_data *charger)
 {
 	u32 vout_mv, iout_ma;
-	u32 wlc_freq = 0;
+	u32 wlc_freq;
 	int ret;
 
 	ret = charger->chip_get_op_freq(charger, &wlc_freq);
-	if (ret != 0)
-		wlc_freq = -1;
+	if (ret == 0)
+		charger->chg_data.of_freq = wlc_freq;
+	else
+		charger->chg_data.of_freq = -1;
 
-	charger->chg_data.of_freq = wlc_freq;
-
+	ret = 0;
 	if (charger->wlc_dc_enabled) {
 		ret = charger->chip_get_rx_ilim(charger, &iout_ma);
-		if (ret)
-			iout_ma = 0;
 	} else if (!charger->dc_icl_votable) {
-		iout_ma = 0;
+		ret = -EIO;
 	} else {
 		int iout_ua;
 
@@ -2307,22 +2306,27 @@ static void p9221_update_head_stats(struct p9221_charger_data *charger)
 		iout_ua =
 			gvotable_get_current_int_vote(charger->dc_icl_votable);
 		if (iout_ua < 0)
-			iout_ma = 0;
+			ret = -EAGAIN;
 		else
 			iout_ma = iout_ua / 1000;
 	}
-	charger->chg_data.cur_conf = iout_ma;
+	if (ret == 0)
+		charger->chg_data.cur_conf = iout_ma;
+	else
+		charger->chg_data.cur_conf = -1;
 
+	ret = 0;
 	if (charger->wlc_dc_enabled) {
 		vout_mv = charger->pdata->max_vout_mv;
 	} else if (p9221_ready_to_read(charger) < 0) {
-		vout_mv = 0;
+		ret = -EIO;
 	} else {
 		ret = charger->chip_get_vout_max(charger, &vout_mv);
-		if (ret)
-			vout_mv = 0;
 	}
-	charger->chg_data.volt_conf = vout_mv;
+	if (ret == 0)
+		charger->chg_data.volt_conf = vout_mv;
+	else
+		charger->chg_data.volt_conf = -1;
 }
 
 static void p9221_update_soc_stats(struct p9221_charger_data *charger,
@@ -2330,12 +2334,14 @@ static void p9221_update_soc_stats(struct p9221_charger_data *charger,
 {
 	const ktime_t now = get_boot_sec();
 	struct p9221_soc_data *soc_data;
-	u32 vrect_mv, iout_ma, cur_pout;
-	int ret, temp, interval_time = 0;
-	u32 wlc_freq = 0;
+	int vrect_mv, iout_ma, wlc_freq, temp;
+	u32 val, cur_pout;
+	int ret, interval_time = 0;
 
-	ret = charger->chip_get_op_freq(charger, &wlc_freq);
-	if (ret != 0)
+	ret = charger->chip_get_op_freq(charger, &val);
+	if (ret == 0)
+		wlc_freq = val;
+	else
 		wlc_freq = -1;
 
 	ret = charger->chip_get_die_temp(charger, &temp);
@@ -2344,24 +2350,33 @@ static void p9221_update_soc_stats(struct p9221_charger_data *charger,
 	else
 		temp = -1;
 
-	ret = charger->chip_get_vrect(charger, &vrect_mv);
-	if (ret != 0)
-		vrect_mv = 0;
+	ret = charger->chip_get_vrect(charger, &val);
+	if (ret == 0)
+		vrect_mv = val;
+	else
+		vrect_mv = -1;
 
-	ret = charger->chip_get_iout(charger, &iout_ma);
-	if (ret != 0)
-		iout_ma = 0;
+	ret = charger->chip_get_iout(charger, &val);
+	if (ret == 0)
+		iout_ma = val;
+	else
+		iout_ma = -1;
 
 	soc_data = &charger->chg_data.soc_data[cur_soc];
 
-	soc_data->vrect = vrect_mv;
-	soc_data->iout = iout_ma;
+	if (vrect_mv >= 0)
+		soc_data->vrect = vrect_mv;
+	if (iout_ma >= 0)
+		soc_data->iout = iout_ma;
 	soc_data->sys_mode = sys_mode;
 	soc_data->die_temp = temp;
 	soc_data->of_freq = wlc_freq;
 	soc_data->alignment = charger->alignment;
 
-	cur_pout = vrect_mv * iout_ma;
+	if (vrect_mv > 0 && iout_ma > 0)
+		cur_pout = vrect_mv * iout_ma;
+	else
+		cur_pout = 0;
 	if ((soc_data->pout_min == 0) || (soc_data->pout_min > cur_pout))
 		soc_data->pout_min = cur_pout;
 	if ((soc_data->pout_max == 0) || (soc_data->pout_max < cur_pout))
@@ -2735,7 +2750,13 @@ static int p9221_set_hpp_dc_icl(struct p9221_charger_data *charger, bool enable)
 
 static void p9221_check_icl_stable(struct p9221_charger_data *charger)
 {
-	if (charger->online && charger->disconnect_total_count > 0) {
+	if (!charger->online)
+		return;
+
+	dev_info(charger->dev, "check icl stable: count=%d, time=%d\n",
+		 charger->disconnect_total_count, ICL_STABLE_TIME_MS);
+
+	if (charger->disconnect_total_count > 0) {
 		__pm_stay_awake(charger->icl_stable_ws);
 		schedule_delayed_work(&charger->icl_stable_work,
 				      msecs_to_jiffies(ICL_STABLE_TIME_MS));
@@ -2772,6 +2793,7 @@ int p9221_set_auth_dc_icl(struct p9221_charger_data *charger, bool enable)
 	} else if (!enable && charger->auth_delay) {
 		dev_info(&charger->client->dev, "Disable Auth ICL (%d)\n", ret);
 		charger->auth_delay = false;
+		p9221_check_icl_stable(charger);
 		cancel_delayed_work(&charger->auth_dc_icl_work);
 		alarm_try_to_cancel(&charger->auth_dc_icl_alarm);
 	}
@@ -2950,8 +2972,6 @@ static int p9221_enable_wlc_dc(struct p9221_charger_data *charger)
 		goto not_hpp;
 	}
 	set_renego_state(charger, P9XXX_AVAILABLE);
-
-	p9221_check_icl_stable(charger);
 
 	/* Only returns 1 for success */
 	if (ret != 1) {
@@ -3659,6 +3679,8 @@ static int p9221_set_dc_icl(struct p9221_charger_data *charger)
 		dev_err(&charger->client->dev,
 			"Could not vote DC_ICL %d\n", ret);
 
+	p9221_check_icl_stable(charger);
+
 	if (charger->pdata->has_sw_ramp && !charger->icl_ramp)
 		gvotable_cast_int_vote(charger->dc_icl_votable, P9221_RAMP_VOTER, 0, false);
 
@@ -3836,8 +3858,6 @@ static void p9221_icl_ramp_reset(struct p9221_charger_data *charger)
 	if (alarm_try_to_cancel(&charger->icl_ramp_alarm) < 0)
 		dev_warn(&charger->client->dev, "Couldn't cancel icl_ramp_alarm\n");
 	cancel_delayed_work(&charger->icl_ramp_work);
-
-	p9221_check_icl_stable(charger);
 }
 
 static void p9221_icl_ramp_start(struct p9221_charger_data *charger)

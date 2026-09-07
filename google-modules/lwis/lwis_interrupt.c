@@ -79,16 +79,14 @@ struct lwis_interrupt_list *lwis_interrupt_list_alloc(struct lwis_device *lwis_d
 
 void lwis_interrupt_free_leaves(struct lwis_interrupt *irq)
 {
-	struct lwis_interrupt_leaf_node *leaf_node;
-	struct list_head *it_leaf, *it_tmp;
+	struct lwis_interrupt_leaf_node *leaf_node, *leaf_tmp;
 
 	if (!irq || irq->irq_type != AGGREGATE_INTERRUPT || list_empty(&irq->leaf_nodes)) {
 		// Nothing to clean
 		return;
 	}
 
-	list_for_each_safe(it_leaf, it_tmp, &irq->leaf_nodes) {
-		leaf_node = list_entry(it_leaf, struct lwis_interrupt_leaf_node, node);
+	list_for_each_entry_safe(leaf_node, leaf_tmp, &irq->leaf_nodes, node) {
 		list_del(&leaf_node->node);
 		kfree(leaf_node->leaf_irq_indexes);
 		kfree(leaf_node);
@@ -341,7 +339,6 @@ static void interrupt_emit_events(struct lwis_interrupt *irq, uint64_t source_va
 {
 	struct lwis_client_event_state *event_state;
 	struct lwis_single_event_info *event;
-	struct list_head *p;
 	uint64_t reset_value = 0;
 	struct lwis_client *lwis_client;
 #ifdef LWIS_INTERRUPT_DEBUG
@@ -352,9 +349,7 @@ static void interrupt_emit_events(struct lwis_interrupt *irq, uint64_t source_va
 	bool disable_mask = false;
 
 	spin_lock_irqsave(&irq->lock, flags);
-	list_for_each(p, &irq->enabled_event_infos) {
-		event = list_entry(p, struct lwis_single_event_info, node_enabled);
-
+	list_for_each_entry(event, &irq->enabled_event_infos, node_enabled) {
 		/* Check if this event needs to be emitted */
 		if ((source_value >> event->int_reg_bit) & 0x1) {
 			lwis_device_event_emit(irq->lwis_dev, event->event_id, NULL, 0);
@@ -474,13 +469,11 @@ static int lwis_interrupt_handle_aggregation(struct lwis_interrupt *irq, uint64_
 	struct lwis_interrupt_leaf_node *leaf;
 	struct lwis_interrupt *leaf_irq = NULL;
 	int leaf_irq_index = 0;
-	struct list_head *p;
 	uint64_t reset_value = 0;
 	struct lwis_device *lwis_dev = irq->lwis_dev;
 	int i;
 
-	list_for_each(p, &irq->leaf_nodes) {
-		leaf = list_entry(p, struct lwis_interrupt_leaf_node, node);
+	list_for_each_entry(leaf, &irq->leaf_nodes, node) {
 		/* Check if this leaf has signal */
 		if ((source_value >> leaf->int_reg_bit) & 0x1) {
 			for (i = 0; i < leaf->count; ++i) {
@@ -547,11 +540,9 @@ static irqreturn_t lwis_interrupt_gpios_event_isr(int irq_number, void *data)
 	unsigned long flags;
 	struct lwis_interrupt *irq = (struct lwis_interrupt *)data;
 	struct lwis_single_event_info *event;
-	struct list_head *p;
 
 	spin_lock_irqsave(&irq->lock, flags);
-	list_for_each(p, &irq->enabled_event_infos) {
-		event = list_entry(p, struct lwis_single_event_info, node_enabled);
+	list_for_each_entry(event, &irq->enabled_event_infos, node_enabled) {
 		/* Emit the event */
 		lwis_device_event_emit(irq->lwis_dev, event->event_id, NULL, 0);
 	}

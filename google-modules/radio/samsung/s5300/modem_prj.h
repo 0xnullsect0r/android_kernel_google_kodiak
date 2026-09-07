@@ -31,7 +31,6 @@
 #if IS_ENABLED(CONFIG_GS_S2MPU)
 #include <soc/google/s2mpu.h>
 #endif
-#include <logbuffer.h>
 #endif
 #include "modem_v1.h"
 

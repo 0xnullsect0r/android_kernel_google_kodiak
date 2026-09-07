@@ -38,7 +38,7 @@ static const wmi_host_channel_width mode_to_width[WMI_HOST_MODE_MAX] = {
 	[WMI_HOST_MODE_11AC_VHT40_2G] = WMI_HOST_CHAN_WIDTH_40,
 	[WMI_HOST_MODE_11AC_VHT80]    = WMI_HOST_CHAN_WIDTH_80,
 	[WMI_HOST_MODE_11AC_VHT80_2G] = WMI_HOST_CHAN_WIDTH_80,
-#if CONFIG_160MHZ_SUPPORT
+#ifdef CONFIG_160MHZ_SUPPORT
 	[WMI_HOST_MODE_11AC_VHT80_80] = WMI_HOST_CHAN_WIDTH_80P80,
 	[WMI_HOST_MODE_11AC_VHT160]   = WMI_HOST_CHAN_WIDTH_160,
 #endif
@@ -2725,6 +2725,21 @@ QDF_STATUS wmi_extract_sar_cap_service_ready_ext2(
 	return QDF_STATUS_E_FAILURE;
 }
 
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+QDF_STATUS wmi_extract_rtt_peer_meas_caps_service_ready_ext2(
+		wmi_unified_t wmi_handle,
+		uint8_t *evt_buf,
+		struct wifi_pos_pmsr_fw_caps *caps)
+{
+	if (!wmi_handle ||
+	    !wmi_handle->ops->extract_rtt_peer_meas_caps_service_ready_ext2)
+		return QDF_STATUS_E_FAILURE;
+
+	return wmi_handle->ops->extract_rtt_peer_meas_caps_service_ready_ext2(
+				wmi_handle, evt_buf, caps);
+}
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
+
 QDF_STATUS wmi_extract_hw_mode_cap_service_ready_ext(
 			wmi_unified_t wmi_handle,
 			uint8_t *evt_buf, uint8_t hw_mode_idx,
@@ -3672,6 +3687,39 @@ wmi_send_rtt_pasn_deauth_cmd(wmi_unified_t wmi, struct qdf_mac_addr *peer_mac)
 }
 #endif
 
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+QDF_STATUS
+wmi_send_rtt_peer_meas_cancel_cmd(wmi_unified_t wmi, uint32_t req_id)
+{
+	if (!wmi || !wmi->ops->send_rtt_peer_meas_cancel_cmd)
+		return QDF_STATUS_E_FAILURE;
+
+	return wmi->ops->send_rtt_peer_meas_cancel_cmd(wmi, req_id);
+}
+
+QDF_STATUS
+wmi_send_rtt_peer_meas_req_cmd(wmi_unified_t wmi,
+			       struct wmi_rtt_peer_meas_req_cmd_params *params)
+{
+	if (wmi->ops->send_rtt_peer_meas_req_cmd)
+		return wmi->ops->send_rtt_peer_meas_req_cmd(wmi, params);
+
+	return QDF_STATUS_E_FAILURE;
+}
+
+QDF_STATUS
+wmi_extract_rtt_peer_meas_report(wmi_unified_t wmi, void *evt_buf,
+				 struct wifi_pos_peer_meas_report *dst)
+{
+	if (wmi->ops->extract_rtt_peer_meas_report_ev)
+		return wmi->ops->extract_rtt_peer_meas_report_ev(wmi,
+								 evt_buf,
+								 dst);
+
+	return QDF_STATUS_E_FAILURE;
+}
+#endif
+
 QDF_STATUS wmi_unified_extract_hw_mode_resp(wmi_unified_t wmi,
 					    void *evt_buf,
 					    uint32_t *cmd_status)
@@ -4394,6 +4442,46 @@ QDF_STATUS wmi_unified_ocb_get_tsf_timer(struct wmi_unified *wmi_hdl,
 		return wmi_hdl->ops->send_ocb_get_tsf_timer_cmd(wmi_hdl,
 								req->vdev_id);
 
+	return QDF_STATUS_E_FAILURE;
+}
+#endif
+
+#ifdef DRIVER_PASSTHRU_MODE
+QDF_STATUS wmi_unified_vdev_get_chan_hop_status(
+	struct wmi_unified *wmi_handle,
+	struct vdev_chan_hop_status_req *req)
+{
+	if (!wmi_handle || !req) {
+		wmi_err("Invalid parameters");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	if (wmi_handle->ops->send_vdev_get_chan_hop_status_cmd)
+		return wmi_handle->ops->send_vdev_get_chan_hop_status_cmd(
+								wmi_handle,
+								req->vdev_id);
+
+	wmi_err("send_vdev_get_chan_hop_status_cmd not registered");
+	return QDF_STATUS_E_FAILURE;
+}
+
+QDF_STATUS wmi_extract_vdev_chan_hop_status(
+	struct wmi_unified *wmi_handle,
+	void *evt_buf,
+	struct vdev_chan_hop_status_response *resp)
+{
+	if (!wmi_handle || !evt_buf || !resp) {
+		wmi_err("Invalid parameters");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	if (wmi_handle->ops->extract_vdev_chan_hop_status)
+		return wmi_handle->ops->extract_vdev_chan_hop_status(
+							wmi_handle,
+							evt_buf,
+							resp);
+
+	wmi_err("extract_vdev_chan_hop_status not registered");
 	return QDF_STATUS_E_FAILURE;
 }
 #endif

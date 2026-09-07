@@ -225,6 +225,11 @@ enum BCL_BATT_IRQ {
 	MAX_BCL_BATT_IRQ,
 };
 
+enum wlc_tx_state {
+	WLC_ENABLED_TX,
+	WLC_DISABLED_TX,
+};
+
 enum MITIGATION_MODE {
 	START,
 	LIGHT,

@@ -575,10 +575,10 @@ struct gs_panel_funcs {
 	/**
 	 * @get_panel_rev
 	 *
-	 * This callback is used to get panel HW revision from panel_extinfo.
+	 * This callback is used to get panel HW revision from panel_id.
 	 * It is expected to fill in the `panel_rev_id` member of the `gs_panel`
 	 *
-	 * @id: contents of `extinfo`, read as a binary value
+	 * @id: 32-bit panel id integer. See &gs_panel.panel_id for format and byte layout.
 	 */
 	void (*get_panel_rev)(struct gs_panel *gs_panel, u32 id);
 
@@ -1244,6 +1244,7 @@ struct gs_panel_timestamps {
 	ktime_t timeline_expected_present_ts;
 	/** @conn_last_present_ts: last expected present timestamp */
 	ktime_t conn_last_present_ts;
+	ktime_t last_panel_settings_trace_ts;
 };
 
 /**
@@ -1568,16 +1569,22 @@ struct gs_panel {
 	char panel_name[PANEL_NAME_MAX];
 	char panel_serial_number[PANEL_SERIAL_MAX];
 	/**
-	 * @panel_extinfo: contents of extended info registers
-	 * Stored as hex string; data used in part to derive panel_rev_id and
-	 * panel_rev_bitmask members
+	 * @panel_id: 32-bit panel ID read from bootloader or panel registers.
+	 * Stored as a little-endian integer (reversed relative to register read order).
+	 *
+	 * Register read order: ID1 (DAh), ID2 (DBh), ID3 (DCh), ID4 (A1h)
+	 * Memory layout (LE):  [ID1, ID2, ID3, ID4]
+	 * Integer value (LE):  0x(ID4)(ID3)(ID2)(ID1)
+	 *
+	 * Example: If reads return DAh=0xDA, DBh=0xDB, DCh=0xDC, A1h=0xA1
+	 * (sysfs panel_extinfo: "dadbdca1"), then panel_id is 0xA1DCDBDA.
 	 */
-	char panel_extinfo[PANEL_EXTINFO_MAX];
+	u32 panel_id;
 	char panel_model[PANEL_MODEL_MAX];
 	/**
 	 * @panel_rev_id: panel revision id
 	 * A way to encode the panel revision that is descriptive, expandable,
-	 * and disconnected from manufacturer encodings like panel_extinfo is
+	 * and disconnected from manufacturer encodings like panel_id is
 	 */
 	panel_rev_id_t panel_rev_id;
 	/** @panel_rev_bitmask: panel_rev_id, converted to bitmask */
@@ -1702,6 +1709,12 @@ struct gs_panel {
 	 * collision.
 	 */
 	bool trigger_dumps_for_gram_collision;
+
+	/**
+	 * @panel_settings_changed: whether panel settings are changed.
+	 * This is used for trace_panel_settings_full and trace_panel_settings_lite.
+	 */
+	bool panel_settings_changed;
 };
 
 /* FUNCTIONS */
@@ -2216,23 +2229,6 @@ void gs_panel_refresh_ctrl(struct gs_panel *ctx, ktime_t frame_start_ts);
  * @work: Reference to work struct executing callback
  */
 void gs_panel_detect_fault_work(struct kthread_work *work);
-
-#define GS_HBM_FLAG_GHBM_UPDATE BIT(0)
-#define GS_HBM_FLAG_BL_UPDATE BIT(1)
-#define GS_HBM_FLAG_LHBM_UPDATE BIT(2)
-#define GS_HBM_FLAG_DIMMING_UPDATE BIT(3)
-#define GS_FLAG_OP_RATE_UPDATE BIT(4)
-#define GS_FLAG_MIN_RR_UPDATE BIT(5)
-#define GS_FLAG_INSERT_FRAMES BIT(6)
-#define GS_FLAG_AUTO_FI_UPDATE BIT(7)
-#define GS_FLAG_PWM_MODE_UPDATE BIT(8)
-#define GS_FLAG_POWER_STATE_UPDATE BIT(9)
-#define GS_FLAG_EARLY_EXIT_UPDATE BIT(10)
-
-#define GS_FLAG_REFRESH_CTRL_UPDATE (GS_FLAG_MIN_RR_UPDATE | \
-				     GS_FLAG_INSERT_FRAMES | \
-				     GS_FLAG_AUTO_FI_UPDATE |\
-				     GS_FLAG_EARLY_EXIT_UPDATE)
 
 /* TODO: b/402868084 - refactor when more states are controlled by HWC */
 /* HBM */

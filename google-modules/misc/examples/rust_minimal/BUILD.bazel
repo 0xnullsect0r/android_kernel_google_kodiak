@@ -2,6 +2,11 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "rust_minimal",
     srcs = ["rust_minimal.rs"],
@@ -10,7 +15,6 @@ ddk_module(
     defconfig = "defconfig",
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//visibility:public"],
     deps = [
         "//common:all_headers_aarch64",
     ],

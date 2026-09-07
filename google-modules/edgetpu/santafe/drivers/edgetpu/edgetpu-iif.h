@@ -9,12 +9,14 @@
 #define __EDGETPU_IIF_H__
 
 #include <linux/list.h>
-#include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
+#include <gcip/gcip-fence-array.h>
 #include <gcip/gcip-mailbox.h>
 #include <gcip/gcip-memory.h>
+#include <iif/iif-fence.h>
+#include <iif/iif-manager.h>
 
 #include "edgetpu-internal.h"
 #include "edgetpu-mailbox.h"
@@ -30,7 +32,11 @@ struct edgetpu_iif {
 	/* Interface for accessing the mailbox hardware and the values in their data registers. */
 	struct edgetpu_mailbox *mbx_hardware;
 	struct gcip_memory cmd_queue_mem;
-	struct mutex cmd_queue_lock;
+	spinlock_t cmd_queue_lock;
+	unsigned long cmd_queue_lock_flags;
+	struct gcip_memory resp_queue_mem;
+	spinlock_t resp_queue_lock;
+	unsigned long resp_queue_lock_flags;
 
 	/*
 	 * Fields used to ensure pending signal commands are flushed when firmware resets.
@@ -51,11 +57,17 @@ struct edgetpu_iif {
 	spinlock_t flush_lock;
 
 	/* The work sending IIF unblock notification to the firmware. */
-	struct work_struct unblocked_work;
+	struct delayed_work unblocked_work;
 	/* The list of unblocked IIF. */
 	struct list_head unblocked_list;
 	/* Protects @unblocked_list. */
 	spinlock_t unblocked_lock;
+};
+
+/* Wrapper of `iif_fence_poll_cb` to have private per-callback data. */
+struct edgetpu_iif_poll_cb {
+	struct iif_fence_poll_cb cb;
+	struct edgetpu_iif *etiif;
 };
 
 /*
@@ -100,16 +112,58 @@ void edgetpu_iif_release_mailbox(struct edgetpu_iif *etiif);
  */
 void edgetpu_iif_reinit_mailbox(struct edgetpu_iif *etiif);
 
-
 /*
  * Notifies the firmware of the unblock of the @fence_id inter-IP fence.
  *
  * Note that this function will be called when the fence has been unblocked and the IIF driver calls
  * the unblocked callback.
  *
- * This function MUST NOT be called from an interrupt context or a user-thread. It will block until
- * space is available in the IIF mailbox queue or a watchdog timer restarts firmware.
+ * This function can be called in any context. It's caller's responsibility to retry when it returns
+ * an -EBUSY error.
+ *
+ * Returns 0 on success, or a negative errno on error. Specifically, it returns -EBUSY if the IIF
+ * command queue is full.
  */
-void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_id);
+int edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_id);
+
+/**
+ * edgetpu_iif_submit_waiter_and_signaler() - Submits waiter and signaler to in-fences and
+ *                                            out-fences of @ikv_resp.
+ * @etiif: TPU IIF support context.
+ * @in_fence_array: Array of in-fences.
+ * @out_fence_array: Array of out-fences.
+ * @poll_cb_array: Array of poll callbacks for the in-fences. Its size must be equal to the size of
+ *                 @in_fence_array.
+ *
+ * A waiter will be submitted to IIFs in @in_fence_array and a signaler will be submitted to IIFs in
+ * @out_fence_array. Also, poll callbacks will be registered to IIFs in @in_fence_array.
+ *
+ * Context: Normal.
+ * Return: 0 on success. Otherwise, a negative errno.
+ */
+int edgetpu_iif_submit_waiter_and_signaler(struct edgetpu_iif *etiif,
+					   struct gcip_fence_array *in_fence_array,
+					   struct gcip_fence_array *out_fence_array,
+					   struct edgetpu_iif_poll_cb *poll_cb_array);
+
+/**
+ * edgetpu_iif_waiter_and_signaler_completed_async() - Notifies completion of waiter and signaler
+ *                                                     to in-fences and out-fences of @ikv_resp.
+ *
+ * @etiif: TPU IIF support context.
+ * @in_fence_array: Array of in-fences.
+ * @out_fence_array: Array of out-fences.
+ * @poll_cb_array: Array of poll callbacks for the in-fences. Its size must be equal to the size of
+ *                 @in_fence_array.
+ *
+ * Notifies IIFs in @in_fence_array that a waiter has completed and IIFs in @out_fence_array that a
+ * signaler has completed. Also, the poll callbacks will be removed from IIFs in @in_fence_array.
+ *
+ * Context: Any.
+ */
+void edgetpu_iif_waiter_and_signaler_completed_async(struct edgetpu_iif *etiif,
+						     struct gcip_fence_array *in_fence_array,
+						     struct gcip_fence_array *out_fence_array,
+						     struct edgetpu_iif_poll_cb *poll_cb_array);
 
 #endif /* __EDGETPU_IIF_H__*/

@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_module(
     name = "sscoredump_sample_test",
@@ -21,16 +26,5 @@ ddk_module(
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "sscoredump",
-    srcs = [
-        ":sscoredump_sample_test",
-        ":sscoredump_test",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

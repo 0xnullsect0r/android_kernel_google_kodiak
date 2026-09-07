@@ -22,6 +22,11 @@ load(
     "kernel_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 _midgard_modules = [
     "mali_kbase.ko",
     "tests/kutf/mali_kutf.ko",

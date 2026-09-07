@@ -40,18 +40,17 @@ static const struct regmap_config irm_regmap_config = {
 static u32 num_vc;
 static struct irm_dev *irm_device;
 
-static void irm_mbox_rx_process(struct irm_dev *irm_dev, u32 payload[])
+static void irm_mbox_rx_process(struct irm_dev *irm_dev, u32 client_mask)
 {
 	struct irm_client *client;
 	u32 idx, client_id;
 
-	dev_dbg(irm_dev->dev, "irm mbox rx callback msg %08x %08x %08x\n",
-		payload[0], payload[1], payload[2]);
+	dev_dbg(irm_dev->dev, "irm mbox rx callback client_mask %08x\n", client_mask);
 
 	trace_google_irm_event(TPS("irm_mbox_rx_callback"), goog_gtc_get_counter());
 
 	for (idx = 0; idx < 32; idx++) {
-		if (payload[1] & BIT(idx)) {
+		if (client_mask & BIT(idx)) {
 			client_id = irm_dev->client_map[idx];
 			client = &irm_dev->client[client_id];
 			if (client->sync_type & GOOGLE_ICC_UPDATE_SYNC)
@@ -60,35 +59,14 @@ static void irm_mbox_rx_process(struct irm_dev *irm_dev, u32 payload[])
 	}
 }
 
-/*
- * This callback is triggered when kernel receives mailbox messages from CPM MIPM.
- */
-static void irm_mbox_rx_callback(u32 context, void *msg, void *priv_data)
+void google_irm_delegate_rx(u32 client_mask)
 {
-	struct irm_dev *irm_dev = priv_data;
-	struct cpm_iface_payload *cpm_msg = msg;
-
-	irm_mbox_rx_process(irm_dev, cpm_msg->payload);
+	if (irm_device)
+		irm_mbox_rx_process(irm_device, client_mask);
 }
+EXPORT_SYMBOL_GPL(google_irm_delegate_rx);
 
-static int irm_initialize_mailbox(struct device *dev, struct irm_mbox *mbox)
-{
-	int ret;
-	struct irm_dev *irm_dev = container_of(mbox, struct irm_dev, mbox);
 
-	mbox->client = cpm_iface_request_client(dev, APC_COMMON_SERVICE_ID_MIPM,
-						irm_mbox_rx_callback, irm_dev);
-	if (IS_ERR(mbox->client)) {
-		ret = PTR_ERR(mbox->client);
-		if (ret == -EPROBE_DEFER)
-			dev_dbg(dev, "cpm interface not ready. Try again later\n");
-		else
-			dev_err(dev, "failed to request cpm mailbox client err %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
 
 static inline int poll_until_zero(struct irm_dev *irm_dev, u32 addr)
 {
@@ -577,9 +555,6 @@ static int google_irm_platform_probe(struct platform_device *pdev)
 		mutex_init(&client->mutex);
 	}
 
-	ret = irm_initialize_mailbox(dev, &irm_dev->mbox);
-	if (ret)
-		return ret;
 
 	size = of_property_count_strings(np, "client-name");
 	if (size != IRM_IDX_NUM) {
@@ -617,18 +592,12 @@ bool irm_probing_completed(void)
 }
 EXPORT_SYMBOL(irm_probing_completed);
 
-static inline void irm_mbox_free(struct irm_mbox *mbox)
-{
-	cpm_iface_free_client(mbox->client);
-}
-
 static void google_irm_platform_remove(struct platform_device *pdev)
 {
 	struct irm_dev *irm_dev = platform_get_drvdata(pdev);
 
 	irm_device = NULL;
 	irm_remove_debugfs(irm_dev);
-	irm_mbox_free(&irm_dev->mbox);
 }
 
 static const struct of_device_id google_irm_of_match_table[] = {

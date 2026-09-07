@@ -2,12 +2,10 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -37,9 +35,7 @@ ddk_module(
         ":google_8250",
         ":google_8250_base",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms:headers",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
     ],
@@ -63,9 +59,7 @@ ddk_module(
     deps = [
         ":google_8250_base",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms:headers",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
 )
@@ -88,9 +82,7 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms:headers",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
 )

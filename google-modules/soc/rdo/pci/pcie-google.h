@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright 2022 Google LLC
+ * Copyright 2022-2026 Google LLC
  */
 
 #ifndef _PCIE_GOOGLE_H_
@@ -8,7 +8,11 @@
 
 #include <clk/clk-cpm.h>
 
+#include <linux/bits.h>
+#include <linux/cleanup.h>
 #include <linux/clk.h>
+#include <linux/compiler.h>
+#include <linux/spinlock.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
@@ -75,6 +79,14 @@ enum link_duration_opcodes {
 	LINK_DURATION_OPCODE_MAX
 };
 
+enum google_pcie_recovery_flags {
+	GPCIE_IN_CPL_TIMEOUT = 0,
+	GPCIE_IN_LINK_DOWN,
+};
+
+#define GPCIE_RECOVERY_MASK \
+	(BIT(GPCIE_IN_LINK_DOWN) | BIT(GPCIE_IN_CPL_TIMEOUT))
+
 struct google_pcie {
 	struct device *dev;
 	struct dw_pcie *pci;
@@ -106,14 +118,18 @@ struct google_pcie {
 	bool enumeration_done;
 	bool is_link_up;
 	bool power_ready; /* external power, such as from pwrctrl */
-	bool in_cpl_timeout;
-	bool in_link_down;
+	unsigned long recovery_flags;
 	bool powered_on;
 	bool error_recovery_walk_rpm; /* walk rpm in the error recovery path */
 	bool perst_walk_rpm; /* walk rpm in the perst path */
 	bool l1_pwrgate_disable;
 	bool skip_link_eq;
 	bool allow_suspend_in_linkup;
+
+	struct workqueue_struct *recovery_wq;
+	struct work_struct cpl_timeout_work;
+	struct work_struct link_down_work;
+	struct work_struct aggr_err_work;
 
 	struct clk *phy_fw_clk;
 	struct clk *aux_clk;
@@ -131,6 +147,7 @@ struct google_pcie {
 	spinlock_t link_duration_lock;	/* Protect link_duration_stats access */
 	spinlock_t link_stats_lock;	/* Protect link_stats attributes access */
 	struct mutex link_lock;		/* Serialize link poweron and poweroff */
+	struct mutex rpm_walk_lock; /* Protect PM bus walks for recovery */
 
 	struct google_pcie_power_stats link_up;
 	struct google_pcie_power_stats link_down;
@@ -180,5 +197,17 @@ static void google_pcie_exit_debugfs(void *data) {}
 
 void google_pcie_init_devcoredump(struct google_pcie *gpcie);
 void google_pcie_create_devcoredump(struct google_pcie *gpcie);
+
+static inline bool google_pcie_in_recovery(struct google_pcie *gpcie)
+{
+	return (READ_ONCE(gpcie->recovery_flags) & GPCIE_RECOVERY_MASK) != 0;
+}
+
+static inline void google_pcie_set_powered_on(struct google_pcie *gpcie,
+					      bool powered_on)
+{
+	guard(spinlock_irqsave)(&gpcie->power_on_lock);
+	gpcie->powered_on = powered_on;
+}
 
 #endif /* _PCIE_GOOGLE_H_ */

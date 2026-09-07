@@ -16,6 +16,8 @@
 #include <linux/dev_printk.h>
 #include <linux/of_device.h>
 
+#include <misc/logbuffer.h>
+
 #include "ln8411_regs.h"
 #include "ln8411_charger.h"
 #include "google_psy.h"

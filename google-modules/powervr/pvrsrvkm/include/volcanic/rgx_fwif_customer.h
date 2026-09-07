@@ -55,6 +55,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 enum pixel_rgxfwif_cmd_type {
 	/** PIXEL_RGXFWIF_PLATFORM_CMD_DVFS_SET_RATE: FW clock rate instruction */
 	PIXEL_RGXFWIF_PLATFORM_CMD_DVFS_SET_RATE,
+	/** PIXEL_RGXFWIF_PLATFORM_CMD_SET_MAX_DEFERRAL_LIMIT: max defer limit */
+	PIXEL_RGXFWIF_PLATFORM_CMD_SET_MAX_DEFERRAL_LIMIT,
 };
 
 /**
@@ -65,6 +67,13 @@ struct pixel_rgxfwif_dvfs_set_rate_data {
 	uint32_t opp;
 } UNCACHED_ALIGN;
 
+/**
+ * struct pixel_rgxfwif_sched_max_deferral_limit - data for setting the max deferral limit in the firmware.
+ */
+struct pixel_rgxfwif_sched_max_deferral_limit {
+	/** max_deferral: the maximum context deferral limit to allow */
+	uint32_t max_deferral;
+} UNCACHED_ALIGN;
 
 #define PIXEL_RGXFWIF_IIF_HANDLE_ID_WIDTH (14)
 

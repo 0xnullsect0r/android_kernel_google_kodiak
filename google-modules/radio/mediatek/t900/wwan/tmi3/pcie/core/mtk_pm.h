@@ -54,8 +54,9 @@ enum mtk_sleep_entity {
 };
 
 enum mtk_pm_entity_flag {
-	PM_SUSPEND_DONE = 1,
-	PM_SUSPEND_LATE_DONE = 2,
+	PM_PREPARE_DONE = 1,
+	PM_SUSPEND_DONE = 2,
+	PM_SUSPEND_LATE_DONE = 3,
 	PM_MAX
 };
 
@@ -65,10 +66,12 @@ struct mtk_pm_entity {
 	unsigned long flag;
 	void *param;
 
+	int (*prepare)(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend);
 	int (*suspend)(struct mtk_md_dev *mdev, void *param, bool is_runtime);
 	int (*suspend_late)(struct mtk_md_dev *mdev, void *param, bool is_runtime);
 	int (*resume_early)(struct mtk_md_dev *mdev, void *param, bool is_runtime, bool link_ready);
 	int (*resume)(struct mtk_md_dev *mdev, void *param, bool is_runtime, bool link_ready);
+	int (*complete)(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend);
 };
 
 enum mtk_pm_dbg_type {
@@ -149,6 +152,7 @@ struct mtk_pci_pm {
 	struct mtk_pm_dbg pm_dbg;
 	struct dentry *dentry;
 	struct mtk_pm_statistics pm_stats;
+	bool smart_rpm_resume;
 };
 
 int mtk_pm_init(struct mtk_md_dev *mdev);
@@ -169,6 +173,7 @@ int mtk_pm_runtime_idle(struct device *dev);
 int mtk_pm_runtime_suspend(struct device *dev);
 int mtk_pm_runtime_resume(struct device *dev, bool atr_init);
 int mtk_pm_prepare(struct device *dev);
+void mtk_pm_complete(struct device *dev);
 int mtk_pm_suspend(struct device *dev);
 int mtk_pm_resume(struct device *dev, bool atr_init);
 int mtk_pm_freeze(struct device *dev);
@@ -178,5 +183,10 @@ int mtk_pm_runtime_get(struct mtk_md_dev *mdev, enum mtk_user_id user, bool sync
 int mtk_pm_runtime_put(struct mtk_md_dev *mdev, enum mtk_user_id user, bool sync);
 int mtk_pm_stats_init_op(struct mtk_md_dev *mdev);
 void mtk_pm_stats_exit_op(struct mtk_md_dev *mdev);
+bool mtk_pm_allow_smart_suspend(struct mtk_md_dev *mdev);
+void mtk_pm_set_smart_suspend_wake(struct mtk_md_dev *mdev, bool is_wake);
+bool mtk_pm_smart_suspend_enabled(void);
 ssize_t mtk_pm_stats_cb_op(struct mtk_md_dev *mdev, void *data, char *buf);
+ssize_t exit_d3l2_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			size_t count);
 #endif /* __MTK_PM_H__ */

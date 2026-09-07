@@ -37,9 +37,9 @@
 			no-map;
 		};
 
-		cpu_stats_carveout: cpu_stats_carveout@8b20f000 {
+		cpu_stats_carveout: cpu_stats_carveout@8b20c000 {
 			compatible = "cpu-stats-carveout";
-			reg = <0x00000000 0x8b20f000 0x00000000 0x00001000>; /* 4KB */
+			reg = <0x00000000 0x8b20c000 0x00000000 0x00004000>; /* 16KB */
 			no-map;
 		};
 
@@ -331,7 +331,7 @@
 
 		vframe: vframe {
 			compatible = "shared-dma-pool";
-			size = <0x0 0x28000000>; /* 640MB */
+			size = <0x0 0x21400000>; /* 532MB */
 			alignment = <0x0 0x00010000>;
 			reusable;
 		};

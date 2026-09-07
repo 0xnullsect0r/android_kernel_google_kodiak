@@ -15,6 +15,8 @@
 #include <linux/dev_printk.h>
 #include <linux/of_device.h>
 
+#include <misc/logbuffer.h>
+
 #include "pe26100_regs.h"
 #include "pe26100_driver.h"
 #include "pe26100_cp_charger.h"

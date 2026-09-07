@@ -2,7 +2,7 @@
 /*
  * File operations for EdgeTPU ML accel chips.
  *
- * Copyright (C) 2019-2025 Google LLC
+ * Copyright (C) 2019-2026 Google LLC
  */
 
 #include <linux/atomic.h>
@@ -39,6 +39,7 @@
 #include <iif/iif-dma-fence.h>
 #include <soc/google/tpu-ext.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-dmabuf.h"
@@ -48,6 +49,7 @@
 #include "edgetpu-ikv.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-kci.h"
+#include "edgetpu-mailbox.h"
 #include "edgetpu-mapping.h"
 #include "edgetpu-pm.h"
 #include "edgetpu-telemetry.h"
@@ -71,7 +73,7 @@ static void log_event(struct edgetpu_dev *etdev, enum edgetpu_eventlog_eventcode
 {
 	uint slot = atomic_fetch_inc(&etdev->eventlog.next_slot) % EDGETPU_EVENTLOG_SLOTS;
 
-	ktime_get_ts64(&etdev->eventlog.event[slot].timestamp);
+	ktime_get_real_ts64(&etdev->eventlog.event[slot].timestamp);
 	etdev->eventlog.event[slot].code = code;
 	etdev->eventlog.event[slot].arg = arg;
 }
@@ -112,7 +114,7 @@ static ssize_t eventlog_show(struct device *dev, struct device_attribute *attr, 
 	int i;
 	ssize_t len = 0;
 
-	ktime_get_ts64(&currtime);
+	ktime_get_real_ts64(&currtime);
 
 	for (i = 0; i < EDGETPU_EVENTLOG_SLOTS; i++, slot = (slot + 1) % EDGETPU_EVENTLOG_SLOTS) {
 		if (etdev->eventlog.event[slot].code == EVENTLOG_EMPTY_SLOT)
@@ -133,14 +135,13 @@ static int debugfs_eventlog_show(struct seq_file *s, void *data)
 {
 	struct edgetpu_dev *etdev = s->private;
 	int slot = atomic_read(&etdev->eventlog.next_slot) % EDGETPU_EVENTLOG_SLOTS;
-	struct timespec64 currtime, evdelta;
+	struct timespec64 ts;
+	struct tm tm_val;
 	int i;
 	static const char *const event_strings[] = {
 		"none", "client-init", "client-exit", "wake-acquire-start", "wake-acquire-end",
 		"wake-release", "power-start", "power-end", "power-wait", "rpm-done", "trim-done",
 		"remap-done", "access-fault"};
-
-	ktime_get_ts64(&currtime);
 
 	for (i = 0; i < EDGETPU_EVENTLOG_SLOTS; i++, slot = (slot + 1) % EDGETPU_EVENTLOG_SLOTS) {
 		enum edgetpu_eventlog_eventcode code = etdev->eventlog.event[slot].code;
@@ -182,10 +183,12 @@ static int debugfs_eventlog_show(struct seq_file *s, void *data)
 			break;
 		}
 
-		evdelta = timespec64_sub(currtime, etdev->eventlog.event[slot].timestamp);
-		seq_printf(s, "-%lld.%ld %s %s %ld\n",
-			   evdelta.tv_sec, evdelta.tv_nsec / NSEC_PER_USEC,
-			   event_s, arg_tag, etdev->eventlog.event[slot].arg);
+		ts = etdev->eventlog.event[slot].timestamp;
+		time64_to_tm(ts.tv_sec, 0 /* UTC */, &tm_val);
+		seq_printf(s, "%02d-%02d %02d:%02d:%02d.%06ld %s %s %ld\n",
+			   tm_val.tm_mon + 1, tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
+			   tm_val.tm_sec, ts.tv_nsec / NSEC_PER_USEC, event_s, arg_tag,
+			   etdev->eventlog.event[slot].arg);
 	}
 
 	return 0;
@@ -210,7 +213,7 @@ int edgetpu_open(struct edgetpu_dev_iface *etiface, struct file *file)
 
 	/* Set client pointer to NULL if error creating client. */
 	file->private_data = NULL;
-	client = edgetpu_client_add(etiface);
+	client = edgetpu_client_add(etiface->etdev);
 	if (IS_ERR(client))
 		return PTR_ERR(client);
 	file->private_data = client;
@@ -315,11 +318,6 @@ edgetpu_ioctl_set_perdie_eventfd(struct edgetpu_client *client,
 		return edgetpu_telemetry_set_event(etdev, etdev->telemetry_log, eventreg.eventfd);
 	case EDGETPU_PERDIE_EVENT_TRACES_AVAILABLE:
 		return edgetpu_telemetry_set_event(etdev, etdev->telemetry_trace, eventreg.eventfd);
-	case EDGETPU_PERDIE_EVENT_HWTRACES_AVAILABLE:
-		if (!edgetpu_telemetry_mapped(&etdev->telemetry_hwtrace))
-			return -ENOENT;
-		return edgetpu_telemetry_set_event(etdev, &etdev->telemetry_hwtrace,
-						   eventreg.eventfd);
 	default:
 		return -EINVAL;
 	}
@@ -341,11 +339,6 @@ static int edgetpu_ioctl_unset_perdie_eventfd(struct edgetpu_client *client,
 	case EDGETPU_PERDIE_EVENT_TRACES_AVAILABLE:
 		edgetpu_telemetry_unset_event(etdev, etdev->telemetry_trace);
 		break;
-	case EDGETPU_PERDIE_EVENT_HWTRACES_AVAILABLE:
-		if (!edgetpu_telemetry_mapped(&etdev->telemetry_hwtrace))
-			return -ENOENT;
-		edgetpu_telemetry_unset_event(etdev, &etdev->telemetry_hwtrace);
-		break;
 	default:
 		return -EINVAL;
 	}
@@ -357,16 +350,18 @@ static int edgetpu_ioctl_create_group(struct edgetpu_client *client,
 				      struct edgetpu_mailbox_attr __user *argp)
 {
 	struct edgetpu_mailbox_attr attr;
-	struct edgetpu_device_group *group;
+	int ret;
 
 	if (copy_from_user(&attr, argp, sizeof(attr)))
 		return -EFAULT;
 
-	group = edgetpu_device_group_create(client, &attr);
-	if (IS_ERR(group))
-		return PTR_ERR(group);
+	ret = edgetpu_mailbox_validate_attr(&attr);
+	if (ret)
+		return ret;
 
-	edgetpu_device_group_put(group);
+	ret = edgetpu_client_create_group(client, &attr);
+	if (ret)
+		return ret;
 	trace_edgetpu_client_group_create(client);
 	return 0;
 }
@@ -578,21 +573,41 @@ static int edgetpu_ioctl_release_wakelock(struct edgetpu_client *client)
 {
 	int count;
 	enum gcip_pm_flags gcip_pm_flags;
+	int ret;
 
 	trace_edgetpu_release_wakelock_start(client);
 	edgetpu_eventlog_event(client->etdev, EVENTLOG_EVENT_WAKELOCK_RELEASE, client);
 
 	edgetpu_wakelock_lock(client);
+	if (client->wakelock.force_released) {
+		edgetpu_wakelock_unlock(client);
+		etdev_info(client->etdev, "wakelocks already force released for client %s",
+			   client->name);
+		count = 0;
+		ret = 0;
+		goto out;
+	}
+
 	gcip_pm_flags = client->wakelock.suspendable ? GCIP_PM_SUSPENDABLE : 0;
 	count = edgetpu_wakelock_release(client);
 	if (count < 0) {
 		edgetpu_wakelock_unlock(client);
-		trace_edgetpu_release_wakelock_end(client, count);
-		return count;
+		ret = count;
+		goto out;
 	}
 	if (!count) {
+		/*
+		 * Ensure group status is up-to-date when deciding whether to close client's mbox,
+		 * in case of a race establishing a group before the wakelock lock was taken here.
+		 * If the client establishes a group in a race after we acquire the wakelock lock
+		 * here then that code will decide whether to open a mailbox based on the current
+		 * wakelock request count, which is checked with the wakelock lock held and
+		 * cannot occur until we release the wakelock lock here.
+		 */
+		mutex_lock(&client->group_lock);
 		if (client->group)
 			edgetpu_group_close_and_detach_mailbox(client->group);
+		mutex_unlock(&client->group_lock);
 	}
 	edgetpu_wakelock_unlock(client);
 	/* TODO(b/415033638): async PM put when SUSPENDABLE flag is set. */
@@ -602,10 +617,11 @@ static int edgetpu_ioctl_release_wakelock(struct edgetpu_client *client)
 		edgetpu_pm_put_async(client->etdev);
 	etdev_dbg(client->etdev, "%s: wakelock req count = %u", __func__,
 		  count);
+	ret = 0;
 
+out:
 	trace_edgetpu_release_wakelock_end(client, count);
-
-	return 0;
+	return ret;
 }
 
 static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 flags)
@@ -643,6 +659,12 @@ static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 fla
 	}
 
 	edgetpu_wakelock_lock(client);
+	if (client->wakelock.force_released) {
+		etdev_err(client->etdev, "wakelocks are force released for client %s",
+			  client->name);
+		ret = -ECANCELED;
+		goto error_wakelock_unlock;
+	}
 	count = edgetpu_wakelock_acquire(client, flags);
 	suspendable = client->wakelock.suspendable;
 	if (count < 0) {
@@ -650,8 +672,18 @@ static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 fla
 		goto error_wakelock_unlock;
 	}
 	if (!count) {
+		/*
+		 * Ensure group status is up-to-date when deciding whether to open a mailbox for the
+		 * client, in case of a race establishing a group before the wakelock lock was taken
+		 * here. If the client establishes a group in a race after we acquire the wakelock
+		 * lock here then that code will decide whether to open a mailbox based on the
+		 * current wakelock request count, which is checked with the wakelock lock held and
+		 * cannot occur until we release the wakelock lock here.
+		 */
+		mutex_lock(&client->group_lock);
 		if (client->group)
 			ret = edgetpu_group_attach_and_open_mailbox(client->group);
+		mutex_unlock(&client->group_lock);
 		if (ret) {
 			etdev_warn(client->etdev, "failed to attach mailbox: %d", ret);
 			edgetpu_wakelock_release(client);
@@ -696,8 +728,8 @@ edgetpu_ioctl_acquire_ext_mailbox(struct edgetpu_client *client,
 
 	ret = edgetpu_acquire_ext_mailbox(client, &ext_mailbox);
 	if (ret)
-		etdev_err(client->etdev, "client tgid %d failed to acquire ext mailbox",
-			  client->tgid);
+		etdev_err(client->etdev, "client %s failed to acquire ext mailbox: %d",
+			  client->name, ret);
 	return ret;
 }
 
@@ -1441,6 +1473,8 @@ static void show_client(struct edgetpu_client *client, struct seq_file *s)
 		seq_printf(s, "%s ", grp_status_str[group->status]);
 		if (group->status == EDGETPU_DEVICE_GROUP_ERRORED)
 			seq_printf(s, "%#x ", group->fatal_errors);
+		if (client->inactive_count)
+			seq_printf(s, "inactive %u ", client->inactive_count);
 
 		seq_printf(s, "vcid %u ", group->vcid);
 	}
@@ -1449,16 +1483,17 @@ static void show_client(struct edgetpu_client *client, struct seq_file *s)
 
 	total_plus_curr = client->wakelock.total_acquired_time;
 	if (client->wakelock.req_count) {
-		ktime_get_ts64(&curr);
+		ktime_get_real_ts64(&curr);
 		curr = timespec64_sub(curr, client->wakelock.current_acquire_timestamp);
 		total_plus_curr = timespec64_add(total_plus_curr, curr);
 	}
 
 	seq_printf(s,
-		   "    tgid %d wakelock req=%d total=%lu curr=%lu flags=%c\n",
+		   "    tgid %d wakelock req=%d total=%lu curr=%lu flags=%c%c\n",
 		   client->tgid, client->wakelock.req_count, (unsigned long)total_plus_curr.tv_sec,
 		   client->wakelock.req_count ? (unsigned long)curr.tv_sec : 0,
-		   client->wakelock.suspendable ? 's' : ' ');
+		   client->wakelock.suspendable ? 's' : ' ',
+		   client->wakelock.force_released ? 'f' : ' ');
 
 	if (group) {
 		seq_printf(s, "    mappings count=%zd total=%zd total32=%zd totalcow=%zd\n",
@@ -1563,7 +1598,7 @@ static int debugfs_wakelock_acquire(struct edgetpu_dev *etdev, uint flags)
 	struct edgetpu_client *client;
 
 	if (!etdev->debugfs_wakelock_client) {
-		client = edgetpu_client_add(etdev->etiface);
+		client = edgetpu_client_add(etdev);
 		if (IS_ERR(client))
 			return PTR_ERR(client);
 		etdev->debugfs_wakelock_client = edgetpu_client_get(client);
@@ -1739,7 +1774,7 @@ static ssize_t clients_show(
 		total_plus_curr = lc->client->wakelock.total_acquired_time;
 
 		if (lc->client->wakelock.req_count) {
-			ktime_get_ts64(&curr);
+			ktime_get_real_ts64(&curr);
 			curr = timespec64_sub(curr, lc->client->wakelock.current_acquire_timestamp);
 			wakelock_curr_secs = (unsigned long)curr.tv_sec;
 			total_plus_curr = timespec64_add(total_plus_curr, curr);

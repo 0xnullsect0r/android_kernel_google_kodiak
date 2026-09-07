@@ -12,6 +12,7 @@
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/err.h>
@@ -161,6 +162,7 @@ static int dw_i2c_of_configure(struct platform_device *pdev)
 static const struct of_device_id dw_i2c_of_match[] = {
 	{ .compatible = "snps,designware-i2c", },
 	{ .compatible = "google,i2c", .data = (void *)MODEL_GOOGLE },
+	{ .compatible = "google,i2c-mbu", .data = (void *)MODEL_GOOGLE_MBU },
 	{ .compatible = "mscc,ocelot-i2c", .data = (void *)MODEL_MSCC_OCELOT },
 	{ .compatible = "baikal,bt1-sys-i2c", .data = (void *)MODEL_BAIKAL_BT1 },
 	{},
@@ -320,6 +322,107 @@ static int aoss_ssr_write(void *data, u64 val)
 
 DEFINE_DEBUGFS_ATTRIBUTE(aoss_ssr_fops, aoss_ssr_read, aoss_ssr_write, "%llu\n");
 
+static int clk_freq_show(struct seq_file *s, void *unused)
+{
+	struct dw_i2c_dev *dev = s->private;
+	u32 ic_clk = 0;
+	u32 con = 0;
+	u32 hcnt = 0;
+	u32 lcnt = 0;
+	u32 sda_hold = 0;
+	u32 rx_hold = 0;
+	u32 tx_hold = 0;
+	u32 rx_hold_ns = 0;
+	u32 tx_hold_ns = 0;
+	u32 rise_ns = dev->timings.scl_rise_ns;
+	u64 period_ps = 0;
+	u64 freq = 0;
+	const char *mode_str;
+	const char *hcnt_reg_str;
+	const char *lcnt_reg_str;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev->dev);
+	if (ret < 0) {
+		dev_err(dev->dev, "failed to resume the device %d\n", ret);
+		return ret;
+	}
+
+	if (dev->get_clk_rate_khz)
+		ic_clk = i2c_dw_clk_rate(dev);
+
+	if (!ic_clk) {
+		pm_runtime_mark_last_busy(dev->dev);
+		pm_runtime_put_autosuspend(dev->dev);
+		return -EOPNOTSUPP;
+	}
+
+	ret = i2c_dw_acquire_lock(dev);
+	if (ret) {
+		pm_runtime_mark_last_busy(dev->dev);
+		pm_runtime_put_autosuspend(dev->dev);
+		return ret;
+	}
+
+	regmap_read(dev->map, DW_IC_CON, &con);
+
+	switch (con & DW_IC_CON_SPEED_MASK) {
+	case DW_IC_CON_SPEED_HIGH:
+		mode_str = "High Speed (HS)";
+		hcnt_reg_str = "DW_IC_HS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_HS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_HS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_HS_SCL_LCNT, &lcnt);
+		break;
+	case DW_IC_CON_SPEED_FAST:
+		mode_str = "Fast Speed (FS/FMP)";
+		hcnt_reg_str = "DW_IC_FS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_FS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_FS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_FS_SCL_LCNT, &lcnt);
+		break;
+	case DW_IC_CON_SPEED_STD:
+	default:
+		mode_str = "Standard Speed (SS)";
+		hcnt_reg_str = "DW_IC_SS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_SS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_SS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_SS_SCL_LCNT, &lcnt);
+		break;
+	}
+
+	regmap_read(dev->map, DW_IC_SDA_HOLD, &sda_hold);
+	rx_hold = (sda_hold & DW_IC_SDA_HOLD_RX_MASK) >> DW_IC_SDA_HOLD_RX_SHIFT;
+	tx_hold = sda_hold & DW_IC_SDA_HOLD_TX_MASK;
+
+	rx_hold_ns = DIV_ROUND_CLOSEST_ULL((u64)rx_hold * MICRO, ic_clk);
+	tx_hold_ns = DIV_ROUND_CLOSEST_ULL((u64)tx_hold * MICRO, ic_clk);
+
+	if (hcnt + lcnt) {
+		period_ps = DIV_ROUND_CLOSEST_ULL((u64)(hcnt + lcnt + 4) * 1000000000ULL, ic_clk);
+		period_ps += (u64)rise_ns * 1000ULL;
+		if (period_ps)
+			freq = DIV64_U64_ROUND_CLOSEST(1000000000000ULL, period_ps);
+	}
+
+	i2c_dw_release_lock(dev);
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
+	seq_printf(s, "Input Clock Rate: %u kHz\n", ic_clk);
+	seq_printf(s, "Active Speed Mode: %s\n", mode_str);
+	seq_printf(s, "%s: %u\n", hcnt_reg_str, hcnt);
+	seq_printf(s, "%s: %u\n", lcnt_reg_str, lcnt);
+	seq_printf(s, "Rx SDA Hold Delay: %u ns\n", rx_hold_ns);
+	seq_printf(s, "Tx SDA Hold Delay: %u ns\n", tx_hold_ns);
+	seq_printf(s, "Configured Rise Time: %u ns\n", rise_ns);
+	seq_printf(s, "Calculated Clock Frequency: %llu Hz\n", freq);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(clk_freq);
+
 static void i2c_dw_debugfs_init(struct dw_i2c_dev *i2c_dev)
 {
 	struct dentry *tmp;
@@ -340,6 +443,23 @@ static void i2c_dw_debugfs_init(struct dw_i2c_dev *i2c_dev)
 		i2c_dev->debugfs = NULL;
 		return;
 	}
+
+	debugfs_create_file("clk_freq", 0444, i2c_dev->debugfs, i2c_dev, &clk_freq_fops);
+}
+
+static void dw_i2c_plat_toggle_reset(struct dw_i2c_dev *dev)
+{
+	int ret;
+
+	ret = reset_control_assert(dev->rst);
+	if (ret)
+		dev_err(dev->dev, "failed to assert reset: %d\n", ret);
+
+	ndelay(200);
+
+	ret = reset_control_deassert(dev->rst);
+	if (ret)
+		dev_err(dev->dev, "failed to deassert reset: %d\n", ret);
 }
 
 static int dw_i2c_plat_probe(struct platform_device *pdev)
@@ -360,6 +480,7 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	dev->flags = (uintptr_t)device_get_match_data(&pdev->dev);
+
 	if (device_property_present(&pdev->dev, "wx,i2c-snps-model"))
 		dev->flags = MODEL_WANGXUN_SP;
 
@@ -374,8 +495,6 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 	dev->rst = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
 	if (IS_ERR(dev->rst))
 		return PTR_ERR(dev->rst);
-
-	reset_control_deassert(dev->rst);
 
 	t = &dev->timings;
 	i2c_parse_fw_timings(&pdev->dev, t, false);
@@ -435,6 +554,18 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 				DIV_S64_ROUND_CLOSEST(clk_khz * t->sda_hold_ns, MICRO);
 	}
 
+	dw_i2c_plat_toggle_reset(dev);
+
+	/*
+	 * Ensure dev->base is valid before reading registers to avoid a NULL
+	 * pointer dereference on models (e.g. Baikal, Wangxun) that do not
+	 * use MMIO-based register accesses.
+	 */
+	if (dev->base) {
+		dev_info(dev->dev, "Pre-init: SDA_HOLD = 0x%08x, FS_SPKLEN = 0x%08x\n",
+			 readl(dev->base + DW_IC_SDA_HOLD), readl(dev->base + DW_IC_FS_SPKLEN));
+	}
+
 	adap = &dev->adapter;
 	adap->owner = THIS_MODULE;
 	adap->class = dmi_check_system(dw_i2c_hwmon_class_dmi) ?
@@ -446,7 +577,7 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 	if (dev->flags & ACCESS_NO_IRQ_SUSPEND) {
 		dev_pm_set_driver_flags(&pdev->dev,
 					DPM_FLAG_SMART_PREPARE);
-	} else if (MODEL(dev->flags) != MODEL_GOOGLE) {
+	} else if (!IS_GOOGLE_SOC(dev->flags)) {
 		dev_pm_set_driver_flags(&pdev->dev,
 					DPM_FLAG_SMART_PREPARE |
 					DPM_FLAG_SMART_SUSPEND);
@@ -474,8 +605,6 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 		}
 	}
 
-	i2c_dw_debugfs_init(dev);
-
 	pm_runtime_set_active(&pdev->dev);
 
 	if (dev->shared_with_punit)
@@ -486,6 +615,8 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 	ret = i2c_dw_probe(dev);
 	if (ret)
 		goto exit_probe;
+
+	i2c_dw_debugfs_init(dev);
 
 	if (dev->ext_power_control)
 		pm_runtime_suspend(&pdev->dev);
@@ -588,7 +719,22 @@ static int dw_i2c_plat_runtime_resume(struct device *dev)
 	if (!i_dev->shared_with_punit)
 		i2c_dw_prepare_clk(i_dev, true);
 
-	reset_control_deassert(i_dev->rst);
+	dw_i2c_plat_toggle_reset(i_dev);
+
+	/*
+	 * On Malibu (MODEL_GOOGLE_MBU), the hardware reset value of DW_IC_SDA_HOLD
+	 * is 0x1. If the register does not reflect this value post-reset,
+	 * log an error message to capture the occurrence.
+	 */
+	if (i_dev->base && (MODEL(i_dev->flags) == MODEL_GOOGLE_MBU)) {
+		u32 sda_hold = readl(i_dev->base + DW_IC_SDA_HOLD);
+
+		if (sda_hold != 0x1) {
+			dev_info_ratelimited(i_dev->dev,
+					     "SDA_HOLD is %#x instead of 0x1 post-reset!\n",
+					     sda_hold);
+		}
+	}
 
 	i_dev->init(i_dev);
 

@@ -404,6 +404,55 @@ _ErrorUnlock:
 	return eError;
 }
 
+#if defined(SUPPORT_PDVFS_OPS)
+PVRSRV_ERROR PDVFSSetGovernor(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_UINT32 ui32Governor)
+{
+	PVRSRV_ERROR			eError = PVRSRV_OK;
+	RGXFWIF_RUNTIME_CFG		*psRuntimeCfg = psDevInfo->psRGXFWIfRuntimeCfg;
+
+	PVRSRV_VZ_RET_IF_MODE(GUEST, DEVINFO, psDevInfo, PVRSRV_ERROR_NOT_SUPPORTED);
+
+	if (!_PDVFSEnabled())
+	{
+		/* No log message to avoid excessive messages */
+		return PVRSRV_OK;
+	}
+
+	/* Update the firmware config */
+	psRuntimeCfg->ui32Governor = ui32Governor;
+	OSWriteMemoryBarrier(&psRuntimeCfg->ui32Governor);
+	RGXFwSharedMemCacheOpValue(psRuntimeCfg->ui32Governor, FLUSH);
+
+	/* Take power lock */
+	PVRSRVPowerLockWrite(psDevInfo->psDeviceNode);
+
+	if (PVRSRVIsDevicePowered(psDevInfo->psDeviceNode))
+	{
+		RGXFWIF_KCCB_CMD		sGPCCBCmd;
+		IMG_UINT32				ui32CmdKCCBSlot;
+
+		sGPCCBCmd.eCmdType = RGXFWIF_KCCB_CMD_PDVFS_SET_CONFIG;
+		sGPCCBCmd.uCmdData.sDVFSData.eReqType = RGXFWIF_DVFS_GOVERNOR;
+
+		/* Submit command to the firmware. */
+		eError = RGXScheduleCommandAndGetKCCBSlot(psDevInfo,
+			RGXFWIF_DM_GP,
+			&sGPCCBCmd,
+			PDUMP_FLAGS_CONTINUOUS,
+			&ui32CmdKCCBSlot);
+
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_WARNING, "%s: Unable to send command (%u).", __func__, eError));
+		}
+
+	}
+
+	PVRSRVPowerUnlockWrite(psDevInfo->psDeviceNode);
+	return eError;
+}
+#endif
+
 /*************************************************************************/ /*!
 @Function       RGXPDVFSCheckUtilisationChange
 @Description    Checks if utilisation has changed since the last snap-shot.

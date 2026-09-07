@@ -156,7 +156,8 @@ struct gia_device_data {
 	struct kobject gia_kobj;
 };
 
-int gia_set_clear_trigger_reg(struct platform_device *pdev, u32 hwirq, bool set);
+int gia_set_clear_trigger_reg(struct platform_device *pdev, u32 hwirq, bool set,
+			      ktime_t *trig_time);
 
 int gia_init(struct gia_device_data *gdd);
 void gia_exit(struct gia_device_data *gdd);

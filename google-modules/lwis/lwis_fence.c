@@ -13,6 +13,7 @@
 #include <linux/file.h>
 #include <linux/mm.h>
 #include <linux/poll.h>
+#include <linux/slab.h>
 #include <linux/dma-fence.h>
 #include <linux/sync_file.h>
 #include <linux/types.h>
@@ -98,7 +99,7 @@ static void lwis_dma_fence_release(struct dma_fence *fence)
 
 	lwis_debug_dev_info(lwis_fence->lwis_top_dev->dev, "Releasing lwis_fence %p", lwis_fence);
 
-	lwis_allocator_free(lwis_fence->lwis_top_dev, lwis_fence);
+	kfree(lwis_fence);
 }
 
 static struct dma_fence_ops lwis_fence_dma_fence_ops = {
@@ -115,8 +116,7 @@ static struct lwis_fence *fence_create(struct lwis_device *lwis_dev)
 	struct lwis_fence *new_fence;
 
 	/* Allocate a new instance of lwis_fence struct */
-	new_fence =
-		lwis_allocator_allocate(lwis_dev->top_dev, sizeof(struct lwis_fence), GFP_KERNEL);
+	new_fence = kzalloc(sizeof(struct lwis_fence), GFP_KERNEL);
 	if (!new_fence)
 		return ERR_PTR(-ENOMEM);
 
@@ -139,12 +139,14 @@ static const struct file_operations fence_file_ops = {
 struct lwis_fence_fds lwis_fence_create(struct lwis_device *lwis_dev)
 {
 	struct lwis_fence *new_fence;
-	struct sync_file *sync_file;
+	struct sync_file *sync_file = NULL;
 	int fd, signal_fd;
 	int ret;
 
 	new_fence = fence_create(lwis_dev);
 	if (IS_ERR(new_fence)) {
+		dev_err(lwis_dev->dev, "Failed to create underlying fence, error %ld\n",
+			PTR_ERR(new_fence));
 		return (struct lwis_fence_fds){
 			.error = PTR_ERR(new_fence),
 			.fd = -1,
@@ -183,8 +185,10 @@ struct lwis_fence_fds lwis_fence_create(struct lwis_device *lwis_dev)
 
 error_put_fd:
 	put_unused_fd(fd);
+	if (sync_file)
+		fput(sync_file->file);
 error:
-	lwis_allocator_free(lwis_dev->top_dev, new_fence);
+	dma_fence_put(&new_fence->dma_fence);
 	dev_err(lwis_dev->dev, "Failed to create a new file instance for lwis_fence\n");
 	return (struct lwis_fence_fds){
 		.error = ret,
@@ -205,10 +209,20 @@ static int trigger_event_add_transaction(struct lwis_client *client,
 	int precondition_fence_status = LWIS_FENCE_STATUS_NOT_SIGNALED;
 
 	/* Check if the event has been encountered and if the event counters match. */
-	event_state = lwis_device_event_state_find(lwis_dev, event->id);
-	if (event_state != NULL && transaction->info.is_level_triggered &&
-	    EXPLICIT_EVENT_COUNTER(event->counter) &&
-	    event->counter == event_state->event_counter) {
+	unsigned long dev_flags;
+	uint64_t current_event_counter = 0;
+	bool event_found = false;
+
+	spin_lock_irqsave(&lwis_dev->lock, dev_flags);
+	event_state = lwis_device_event_state_find_locked(lwis_dev, event->id);
+	if (event_state != NULL) {
+		current_event_counter = event_state->event_counter;
+		event_found = true;
+	}
+	spin_unlock_irqrestore(&lwis_dev->lock, dev_flags);
+
+	if (event_found && transaction->info.is_level_triggered &&
+	    EXPLICIT_EVENT_COUNTER(event->counter) && event->counter == current_event_counter) {
 		/* The event is currently level triggered, first we need to check if there is a
 		 * precondition fence associated with the event.
 		 */
@@ -248,12 +262,27 @@ static void fence_signal_transaction_cb(struct dma_fence *dma_fence, struct dma_
 {
 	struct lwis_pending_transaction_id *pending_transaction =
 		container_of(cb, struct lwis_pending_transaction_id, fence_cb);
+	struct lwis_client *client = lwis_client_get(pending_transaction->owner);
+	unsigned long flags;
+	bool free_me = false;
+	int64_t tx_id;
 
-	/* Lets avoid removing this callback from the `dma_fence` down the trigger path. */
+	spin_lock_irqsave(&client->transaction_lock, flags);
 	pending_transaction->triggered = true;
+	tx_id = pending_transaction->id;
+	if (pending_transaction->free_on_trigger)
+		free_me = true;
+	spin_unlock_irqrestore(&client->transaction_lock, flags);
 
-	lwis_transaction_fence_trigger(pending_transaction->owner, dma_fence,
-				       pending_transaction->id);
+	if (free_me) {
+		dma_fence_put(pending_transaction->fence);
+		lwis_allocator_free(client->lwis_dev, pending_transaction);
+		lwis_client_put(client);
+	} else {
+		lwis_transaction_fence_trigger(client, dma_fence, tx_id);
+	}
+
+	lwis_client_put(client);
 }
 
 static int trigger_fence_add_transaction(int fence_fd, struct lwis_client *client,
@@ -265,8 +294,12 @@ static int trigger_fence_add_transaction(int fence_fd, struct lwis_client *clien
 
 	pending_transaction_id = lwis_allocator_allocate(
 		client->lwis_dev, sizeof(struct lwis_pending_transaction_id), GFP_ATOMIC);
-	if (!pending_transaction_id)
+	if (!pending_transaction_id) {
+		dev_err(client->lwis_dev->dev,
+			"Transaction %llu (%s) failed to allocate pending_transaction_id\n",
+			transaction->info.id, transaction->info.transaction_name);
 		return -ENOMEM;
+	}
 
 	fence = sync_file_get_fence(fence_fd);
 	if (IS_ERR_OR_NULL(fence)) {
@@ -277,8 +310,9 @@ static int trigger_fence_add_transaction(int fence_fd, struct lwis_client *clien
 
 	pending_transaction_id->id = transaction->info.id;
 	pending_transaction_id->fence = fence;
-	pending_transaction_id->owner = client;
+	pending_transaction_id->owner = lwis_client_get(client);
 	pending_transaction_id->triggered = false;
+	pending_transaction_id->free_on_trigger = false;
 
 	ret = dma_fence_add_callback(fence, &pending_transaction_id->fence_cb,
 				     fence_signal_transaction_cb);
@@ -294,14 +328,19 @@ static int trigger_fence_add_transaction(int fence_fd, struct lwis_client *clien
 
 		if (!transaction->info.is_level_triggered) {
 			/* If level triggering is disabled, return an error. */
+			dev_err(client->lwis_dev->dev,
+				"Transaction %llu (%s) fence %pK already signaled but level triggering is disabled\n",
+				transaction->info.id, transaction->info.transaction_name, fence);
+			lwis_client_put(pending_transaction_id->owner);
 			lwis_allocator_free(client->lwis_dev, pending_transaction_id);
 			dma_fence_put(fence);
 			return -EINVAL;
 		}
 
 		/* Add it to the list of trigger fences so the transaction put it once it's done
-		 * with it.
+		 * with it. Mark it as triggered since the fence signal event has already occurred.
 		 */
+		pending_transaction_id->triggered = true;
 		list_add(&pending_transaction_id->node, &transaction->trigger_fences);
 		/* If the transaction's trigger_condition evaluates to true, queue the
 		 * transaction to be executed immediately.
@@ -311,12 +350,19 @@ static int trigger_fence_add_transaction(int fence_fd, struct lwis_client *clien
 				transaction->resp->error_code = -ECANCELED;
 			transaction->queue_immediately = true;
 		}
-	} else {
+	} else if (ret == 0) {
 		list_add(&pending_transaction_id->node, &transaction->trigger_fences);
 		lwis_debug_dev_info(
 			client->lwis_dev->dev,
 			"lwis_fence transaction id %llu added to its trigger fence=%p fd %d ",
 			transaction->info.id, fence, fence_fd);
+	} else {
+		/* Unexpected error from dma_fence_add_callback */
+		dev_err(client->lwis_dev->dev, "Error %d from dma_fence_add_callback\n", ret);
+		lwis_client_put(pending_transaction_id->owner);
+		lwis_allocator_free(client->lwis_dev, pending_transaction_id);
+		dma_fence_put(fence);
+		return ret;
 	}
 
 	return 0;
@@ -447,8 +493,9 @@ int lwis_parse_trigger_condition(struct lwis_client *client, struct lwis_transac
 
 	if (info->trigger_condition.num_nodes > LWIS_TRIGGER_NODES_MAX_NUM) {
 		dev_err(lwis_dev->dev,
-			"Trigger condition contains %lu node, more than the limit of %d\n",
-			info->trigger_condition.num_nodes, LWIS_TRIGGER_NODES_MAX_NUM);
+			"Trigger condition contains %llu node, more than the limit of %d\n",
+			(unsigned long long)info->trigger_condition.num_nodes,
+			LWIS_TRIGGER_NODES_MAX_NUM);
 		return -EINVAL;
 	}
 
@@ -488,8 +535,12 @@ int lwis_initialize_transaction_fences(struct lwis_client *client,
 			}
 
 			fence_fds = lwis_fence_create(lwis_dev);
-			if (fence_fds.error != 0)
+			if (fence_fds.error != 0) {
+				dev_err(lwis_dev->dev,
+					"Transaction %llu (%s) trigger fence creation failed with error %d\n",
+					info->id, info->transaction_name, fence_fds.error);
 				return fence_fds.error;
+			}
 			info->trigger_condition.trigger_nodes[i].fence_fd = fence_fds.fd;
 			info->trigger_condition.trigger_nodes[i].fence_signal_fd =
 				fence_fds.signal_fd;
@@ -499,8 +550,12 @@ int lwis_initialize_transaction_fences(struct lwis_client *client,
 	/* Initialize completion fence if one is requested */
 	if (info->create_completion_fence_fd == LWIS_CREATE_COMPLETION_FENCE) {
 		struct lwis_fence_fds fence_fds = lwis_fence_create(lwis_dev);
-		if (fence_fds.error != 0)
+		if (fence_fds.error != 0) {
+			dev_err(lwis_dev->dev,
+				"Transaction %llu (%s) completion fence creation failed with error %d\n",
+				info->id, info->transaction_name, fence_fds.error);
 			return fence_fds.error;
+		}
 		info->create_completion_fence_fd = fence_fds.fd;
 		info->create_completion_fence_signal_fd = fence_fds.signal_fd;
 	}
@@ -537,6 +592,9 @@ static int add_completion_fence(struct lwis_client *client, struct lwis_transact
 
 	fence_pending_signal = fence_pending_signal_create(client->lwis_dev, fence);
 	if (fence_pending_signal == NULL) {
+		dev_err(client->lwis_dev->dev,
+			"Transaction %llu (%s) failed to allocate pending fence signal\n",
+			transaction->info.id, transaction->info.transaction_name);
 		dma_fence_put(fence);
 		return -ENOMEM;
 	}
@@ -588,11 +646,9 @@ void lwis_fences_pending_signal_emit(struct lwis_device *lwis_device,
 				     struct list_head *pending_fences)
 {
 	int ret;
-	struct lwis_fence_pending_signal *pending_fence;
-	struct list_head *it_fence, *it_fence_tmp;
+	struct lwis_fence_pending_signal *pending_fence, *pending_fence_tmp;
 
-	list_for_each_safe(it_fence, it_fence_tmp, pending_fences) {
-		pending_fence = list_entry(it_fence, struct lwis_fence_pending_signal, node);
+	list_for_each_entry_safe(pending_fence, pending_fence_tmp, pending_fences, node) {
 		ret = lwis_dma_fence_signal_with_status(pending_fence->fence,
 							pending_fence->pending_status);
 		if (ret) {

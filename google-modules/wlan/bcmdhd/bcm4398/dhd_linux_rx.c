@@ -2,7 +2,7 @@
  * Broadcom Dongle Host Driver (DHD),
  * Linux-specific network interface for receive(rx) path
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -1370,15 +1370,15 @@ dhd_validate_monitor_packet_sanity(struct sk_buff *skb, dhd_pub_t *dhdp)
 	prhex("mac_hdr", (u8 *)mac_hdr, (u32)sizeof(struct ieee80211_hdr_3addr));
 #endif /* DHD_MON_DBG */
 	/* look for packets of interest by app space based on bssid */
-	if (memcmp(mac_hdr->addr3, cfg->art_bssid, ETH_ALEN) == 0) {
+	if ((memcmp(mac_hdr->addr3, dhdp->art_bssid, ETH_ALEN) == 0)) {
 		DHD_MON_TRACE(("bssid mached. allow packet skb->len:%d\n", len));
 		return BCME_OK;
 	}
 
 	/* unknown packets - drop */
 	DHD_MON_TRACE(("bssid mismatch. drop packet. skb->len:%d\n", len));
-	DHD_MON_TRACE(("mac_addr3:" MACF " art_bssid:" MACF "\n",
-		ETHERP_TO_MACF(mac_hdr->addr3), ETHERP_TO_MACF(cfg->art_bssid)));
+	DHD_MON_TRACE(("mac_addr3:" MACF " dhd art_bssid:" MACF "\n",
+		ETHERP_TO_MACF(mac_hdr->addr3), ETHERP_TO_MACF(dhdp->art_bssid)));
 	return BCME_ERROR;
 #else
 	return BCME_OK;
@@ -1390,6 +1390,14 @@ void
 dhd_rx_mon_pkt(dhd_pub_t *dhdp, host_rxbuf_cmpl_t *msg, void *pkt, int ifidx)
 {
 	dhd_info_t *dhd = (dhd_info_t *)dhdp->info;
+
+	if (dhdp->monitor_iface_up == FALSE) {
+		DHD_PRINT(("%s monitor iface is down. dropping the monitor packet\n", __func__));
+		dhd_prhex("[monitor_packet_dump]", (char *)PKTDATA(dhdp->osh, pkt),
+			MIN(PKTLEN(dhdp->osh, pkt), 64), DHD_ERROR_VAL);
+		PKTFREE(dhdp->osh, pkt, FALSE);
+		return;
+	}
 #ifdef HOST_RADIOTAP_CONV
 	if (dhd->host_radiotap_conv) {
 		uint16 len = 0, offset = 0;

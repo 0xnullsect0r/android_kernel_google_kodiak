@@ -296,6 +296,9 @@
 #define SCL_I2C_FM_TIMING_HCNT_VAL(reg)		(((reg) >> 16) & GENMASK(15, 0))
 #define SCL_I2C_FMP_TIMING_LCNT_VAL(reg)	((reg) & GENMASK(15, 0))
 #define SCL_I2C_FMP_TIMING_HCNT_VAL(reg)	(((reg) >> 16) & GENMASK(7, 0))
+#define SDA_TX_HOLD_VAL(reg)			(((reg) >> 16) & GENMASK(2, 0))
+#define SDA_PP_OD_SWITCH_DLY_VAL(reg)		(((reg) >> 8) & GENMASK(2, 0))
+#define SDA_OD_PP_SWITCH_DLY_VAL(reg)		((reg) & GENMASK(2, 0))
 
 #define TLOW_OD_MARGIN_NS 5
 #define DCT_PTR_I 5

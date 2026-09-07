@@ -94,6 +94,8 @@ static DEFINE_MUTEX(gpowercap_lock);
 static struct powercap_control_type *pct;
 static struct gpowercap *root;
 
+struct workqueue_struct *gpowercap_wq;
+
 static const char * const constraint_name[] = {
 	"Average",
 };
@@ -234,9 +236,9 @@ void __gpowercap_sub_power(struct gpowercap *gpowercap)
 	struct gpowercap *parent = gpowercap->parent;
 
 	while (parent) {
-		parent->power_min -= gpowercap->power_min;
 		parent->power_max -= gpowercap->power_max;
 		parent->power_limit -= gpowercap->power_limit;
+		parent->power_min = 0;
 		if (parent->ops && parent->ops->evaluate)
 			parent->ops->evaluate(parent);
 
@@ -250,9 +252,9 @@ void __gpowercap_add_power(struct gpowercap *gpowercap)
 	struct gpowercap *parent = gpowercap->parent;
 
 	while (parent) {
-		parent->power_min += gpowercap->power_min;
 		parent->power_max += gpowercap->power_max;
 		parent->power_limit += gpowercap->power_limit;
+		parent->power_min = 0;
 		if (parent->ops && parent->ops->evaluate)
 			parent->ops->evaluate(parent);
 
@@ -385,6 +387,19 @@ int gpowercap_set_parent_power_limit(struct gpowercap *gpowercap, u64 power_limi
 	if (!gpowercap->num_opps)
 		return -EAGAIN;
 
+	if (gpowercap->parent) {
+		/*
+		 * If this is a leaf node, then we just inherit the parent's decision ID.
+		 * Otherwise, we need to decrement the parent's decision ID since this node
+		 * will be making a decision and increment its decision ID. This is to make
+		 * sure that grand parent's decision ID is used by parents and leaf nodes.
+		 */
+		if (list_empty(&gpowercap->children))
+			gpowercap->decision_id = gpowercap->parent->decision_id;
+		else
+			gpowercap->decision_id = gpowercap->parent->decision_id - 1;
+	}
+
 	/*
 	 * Don't allow values outside of the power range previously
 	 * set when initializing the power numbers.
@@ -438,7 +453,7 @@ int __power_limit_bypass(struct gpowercap *gpowercap, int time_ms)
 	}
 	mutex_unlock(&gpowercap->lock);
 
-	mod_delayed_work(system_highpri_wq, &gpowercap->bypass_work,
+	mod_delayed_work(gpowercap_wq ? : system_unbound_wq, &gpowercap->bypass_work,
 			 msecs_to_jiffies(bypass_time_msec));
 
 	return bypass_time_msec;
@@ -553,6 +568,8 @@ int __gpowercap_register(const char *name, struct gpowercap *gpowercap, struct g
 		gpowercap->power_limit = gpowercap->power_max;
 		__gpowercap_add_power(gpowercap);
 	}
+
+	gpowercap_propagate_time_window(gpowercap);
 
 	gpc_stats_init(gpowercap);
 
@@ -751,9 +768,21 @@ int gpowercap_dt_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	gpowercap_wq = alloc_workqueue("gpowercap_wq", WQ_HIGHPRI | WQ_UNBOUND, 0);
+	if (!gpowercap_wq) {
+		dev_err(&pdev->dev, "Failed to create gpowercap_wq\n");
+		ret = -ENOMEM;
+		gpc_powercap_unregister_control_type(pct);
+		pct = NULL;
+		mutex_unlock(&gpowercap_lock);
+		return ret;
+	}
+
 	ret = gpowercap_dt_parse_nodes(&pdev->dev, np, NULL);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to create hierarchy from DT: %d\n", ret);
+		destroy_workqueue(gpowercap_wq);
+		gpowercap_wq = NULL;
 		mutex_unlock(&gpowercap_lock);
 		__gpowercap_destroy_hierarchy();
 		return ret;
@@ -766,6 +795,10 @@ int gpowercap_dt_probe(struct platform_device *pdev)
 void gpowercap_dt_remove(struct platform_device *pdev)
 {
 	__gpowercap_destroy_hierarchy();
+	if (gpowercap_wq) {
+		destroy_workqueue(gpowercap_wq);
+		gpowercap_wq = NULL;
+	}
 }
 
 /**
@@ -834,9 +867,11 @@ bool gpowercap_report_power_uw(struct gpowercap *gpowercap, u64 power_uw)
 	bool all_updated = true;
 	u64 total_power = 0;
 	bool parent_rebalanced = false;
+	bool siblings_polling = false;
 
 	gpowercap->current_power_uw = power_uw;
 	gpowercap->power_updated = true;
+	gpowercap->last_report_jiffies = jiffies;
 
 	if (!parent)
 		return false;
@@ -845,9 +880,27 @@ bool gpowercap_report_power_uw(struct gpowercap *gpowercap, u64 power_uw)
 	list_for_each_entry(child, &parent->children, siblings) {
 		if (!child->power_updated) {
 			all_updated = false;
-			break;
+			if (child->time_window_us > 0) {
+				unsigned long next_report = (child->last_report_jiffies +
+							usecs_to_jiffies(child->time_window_us));
+				unsigned long threshold_past =
+					msecs_to_jiffies(GPOWERCAP_POLLING_THRESHOLD_PAST_MSEC);
+				unsigned long threshold_future =
+					msecs_to_jiffies(GPOWERCAP_POLLING_THRESHOLD_FUTURE_MSEC);
+
+				/*
+				 * If the sibling is expected to report soon (e.g. next expected
+				 * report is within the polling thresholds), we flag it as
+				 * actively polling and imminent.
+				 */
+				if (time_after(next_report, jiffies - threshold_past) &&
+				    time_before_eq(next_report, jiffies + threshold_future)) {
+					siblings_polling = true;
+				}
+			}
+		} else {
+			total_power += child->current_power_uw;
 		}
-		total_power += child->current_power_uw;
 	}
 
 	if (all_updated) {
@@ -866,7 +919,47 @@ bool gpowercap_report_power_uw(struct gpowercap *gpowercap, u64 power_uw)
 	}
 	mutex_unlock(&parent->lock);
 
+	/*
+	 * If some siblings are still pending report but are configured to active-poll and
+	 * their reports are imminent, defer local fallback rebalance.
+	 */
+	if (siblings_polling)
+		return true;
+
 	return false;
+}
+
+void gpowercap_propagate_time_window(struct gpowercap *gpowercap)
+{
+	struct gpowercap *parent = gpowercap->parent;
+	struct gpowercap *sibling;
+	u64 max_time_window = 0;
+
+	if (!parent)
+		return;
+
+	mutex_lock(&parent->lock);
+	list_for_each_entry(sibling, &parent->children, siblings) {
+		if (sibling->time_window_us > max_time_window)
+			max_time_window = sibling->time_window_us;
+	}
+
+	if (parent->time_window_us == max_time_window) {
+		mutex_unlock(&parent->lock);
+		return;
+	}
+
+	if (!parent->parent) {
+		parent->time_window_us = max_time_window;
+		mutex_unlock(&parent->lock);
+		return;
+	}
+	mutex_unlock(&parent->lock);
+
+	mutex_lock(&parent->parent->lock);
+	parent->time_window_us = max_time_window;
+	mutex_unlock(&parent->parent->lock);
+	gpowercap_propagate_time_window(parent);
 }
 
 /**

@@ -280,10 +280,10 @@
 		mbox-channels = <192>; /* 64 * 3 */
 		mbox-doorbell-mode-enabled;
 		mbox-non-waking = <
-			/* Mbox reg base address and offset of mask reg */
-			&mba_ambss_cpu_mba_client_5 0x24
-			&mba_aonss_sc_mba_client_3 0x24
-			&mba_aonss_adsp_mba_client_3 0x24
+			/* Mbox reg base address, offset and bitmask for mask reg */
+			&mba_ambss_cpu_mba_client_5 0x24 0x7FFF
+			&mba_aonss_sc_mba_client_3 0x24  0x7FFF
+			&mba_aonss_adsp_mba_client_3 0x24 0xFFFF
 			>;
 
 		mboxes = <
@@ -503,7 +503,7 @@
 
 		boot-breadcrumbs-enabled;
 
-		aoc-coredump-mbox = <191>;
+		aoc-coredump-mbox = <63>;
 		ramdump-header-offset = <0x3000000>;
 		carveout-paddr-from-aoc = <0x6000000>;
 		carveout-vaddr-from-aoc = <0xB6000000>;

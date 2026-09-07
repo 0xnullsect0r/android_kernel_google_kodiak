@@ -788,7 +788,8 @@ int gxp_kci_send_coresight_remote_cmd(void *data, struct gcip_coresight_remote_b
 	};
 	u32 *cmds;
 
-	if (bulk_cmds->num_commands <= GCIP_CORESIGHT_REMOTE_MAX_COMMANDS_IN_KCI_DMA_DESCRIPTOR) {
+	if (bulk_cmds->num_commands <=
+	    offsetof(struct gcip_kci_dma_descriptor, flags) / sizeof(u32)) {
 		cmds = (u32 *)&kci_cmd.dma.address;
 		memcpy(cmds, bulk_cmds->commands, bulk_cmds->num_commands * sizeof(u32));
 		kci_cmd.dma.flags =

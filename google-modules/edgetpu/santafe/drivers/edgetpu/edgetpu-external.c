@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Utility functions for interfacing other modules with Edge TPU ML accelerator.
  *
- * Copyright (C) 2021 Google, Inc.
+ * Copyright (C) 2021-2026 Google LLC
  */
 
 #include <linux/device.h>
@@ -14,6 +14,7 @@
 
 #include <iif/iif-manager.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-iif.h"
@@ -318,6 +319,10 @@ static int edgetpu_external_start_offload(struct device *edgetpu_dev,
 	mutex_unlock(&client->group_lock);
 
 	down_write(&group->lock);
+	if (!edgetpu_device_group_is_ready(group)) {
+		ret = -EINVAL;
+		goto out_group_unlock;
+	}
 	etdomain = edgetpu_group_domain_locked(group);
 	if (edgetpu_mmu_domain_detached(etdomain)) {
 		ret = -EINVAL;

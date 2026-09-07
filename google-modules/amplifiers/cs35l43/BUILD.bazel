@@ -4,8 +4,12 @@ load(
     "@kleaf//build/kernel/kleaf:kernel.bzl",
     "ddk_headers",
     "ddk_module",
-    "kernel_module_group",
 )
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "headers",
@@ -91,19 +95,5 @@ ddk_module(
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
-    ],
-)
-
-kernel_module_group(
-    name = "cs35l43",
-    srcs = [
-        ":fw_cs_dsp",
-        ":snd-soc-cs35l43",
-        ":snd-soc-cs35l43-i2c",
-        ":snd-soc-cs35l43-spi",
-        ":snd-soc-wm-adsp",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

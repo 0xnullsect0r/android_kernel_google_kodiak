@@ -39,7 +39,7 @@
 /* The total size of the configuration region. */
 #define GXP_SHARED_BUFFER_SIZE SZ_512K
 /* Size of slice per VD. */
-#define GXP_SHARED_SLICE_SIZE 0x6000
+#define GXP_SHARED_SLICE_SIZE SZ_32K
 
 #define GXP_SEPARATE_LPM_OFFSET
 /* PSM already initialized with required valid states. */
@@ -80,6 +80,7 @@
 
 /* arm-smmu-v3 requires domain finalization to do iommu map. */
 #define GXP_MMU_REQUIRE_ATTACH 1
+#define GXP_MMU_GRANULARITY_IS_PAGE 1
 
 #define GXP_HAS_GSA 1
 

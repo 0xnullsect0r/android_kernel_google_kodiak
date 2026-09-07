@@ -1,7 +1,7 @@
 /*
  * Linux DHD Bus Module for PCIE
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -1291,7 +1291,13 @@ static int dhdpcie_suspend_dev(struct pci_dev *dev)
 #else
 	DHD_PRINT(("%s: Enter\n", __FUNCTION__));
 #endif /* CUSTOMER_HW4_DEBUG */
-
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+	/*
+	 * Ensure any pending L1SS enablement is finished or cancelled
+	 * before we proceed to disable it for suspend.
+	 */
+	cancel_work_sync(&bus->l1ss_enable_work);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 	/*
 	 * Disable L1ss on EP and RC side ... defaults to NOP
 	 * If needed implement this function in the dhd_custom_xxx.c
@@ -1429,11 +1435,20 @@ static int dhdpcie_resume_dev(struct pci_dev *dev)
 	dhdpcie_suspend_dump_rc_cfgregs(pch->bus, "AFTER_EP_RESUME");
 	dhdpcie_suspend_dump_cfgregs(pch->bus, "AFTER_EP_RESUME");
 
+#ifndef DHD_DEFER_L1SS_ENABLE_IN_RESUME
 	/*
-	 * Re-enable L1ss in Resume path. Implementation defalts to NOP
+	 * Re-enable L1ss in Resume path. Implementation defaults to NOP
 	 * If need override in the paltform file
+	 *
+	 * case1:
+	 * When DHD_DEFER_L1SS_ENABLE_IN_RESUME is defined, l1ss is enabled
+	 * from dhd_bus_handle_mb_data().
+	 *
+	 * case2:
+	 * when DHD_DEFER_L1SS_ENABLE_IN_RESUME is not defined, l1ss is enabled here
 	 */
 	dhd_plat_l1ss_ctrl(1);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 
 
 out:

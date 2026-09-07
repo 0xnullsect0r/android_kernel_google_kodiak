@@ -1,7 +1,7 @@
 /*
  * Linux cfgp2p driver
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -145,6 +145,26 @@ bool wl_cfgp2p_is_pub_action(void *frame, u32 frame_len)
 	return false;
 }
 
+bool wl_cfgp2p_is_usd_pub_action(void *frame, u32 frame_len)
+{
+	wifi_p2p_pub_act_frame_t *pact_frm;
+
+	if (frame == NULL) {
+		return false;
+	}
+	pact_frm = (wifi_p2p_pub_act_frame_t *)frame;
+	if (frame_len < sizeof(wifi_p2p_pub_act_frame_t) -1) {
+		return false;
+	}
+	if (pact_frm->category == P2P_PUB_AF_CATEGORY &&
+		pact_frm->action == P2P_PUB_AF_ACTION &&
+		pact_frm->oui_type == OUI_TYPE_USD &&
+		memcmp(pact_frm->oui, P2P_OUI, sizeof(pact_frm->oui)) == 0) {
+		return true;
+	}
+
+	return false;
+}
 
 bool wl_cfgp2p_is_p2p_action(void *frame, u32 frame_len)
 {
@@ -1779,14 +1799,48 @@ wl_cfgp2p_action_tx_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev
 	u32 status = ntoh32(e->status);
 	struct net_device *ndev = NULL;
 	u8 bsscfgidx = e->bsscfgidx;
-
-	CFGP2P_DBG((" Enter\n"));
+	uint32 packetID;
+	bool ack = false;
+	const u8 *buf = NULL;
+	size_t len = 0;
+	u32 datalen = ntoh32(e->datalen);
 
 	ndev = cfgdev_to_wlc_ndev(cfgdev, cfg);
+	if ((event_type == WLC_E_ACTION_FRAME_COMPLETE) && (datalen > 0)) {
+		packetID = *(u32 *)data;
+		if (cfg->afx_hdl->usd_pub_tx_active == true) {
+			CFGP2P_DBG(("RX packetID %0x\n", packetID));
+		}
+		if (packetID == cfg->afx_hdl->usd_pub_tx_cookie) {
+			if (status == WLC_E_STATUS_SUCCESS) {
+				CFGP2P_ACTION(("USD TX AF: ACK. wait_rx:%d\n",
+					cfg->need_wait_afrx));
+				ack = true;
+			} else if (!wl_get_p2p_status(cfg, ACTION_TX_COMPLETED)) {
+				if (status == WLC_E_STATUS_SUPPRESS) {
+					CFGP2P_ACTION(("USD TX actfrm : SUPPRESS\n"));
+				} else {
+					CFGP2P_ACTION(("USD TX actfrm : NO ACK\n"));
+				}
+			}
+			cfg->afx_hdl->usd_pub_tx_active = false;
+			buf = cfg->afx_hdl->usd_frm_p;
+			len = cfg->afx_hdl->usd_frm_len;
+			if (buf && len > 0) {
+				cfg80211_mgmt_tx_status(cfgdev, packetID, buf, len,
+					ack, GFP_KERNEL);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+				cfg80211_tx_mgmt_expired(cfgdev, packetID,
+					&cfg->afx_hdl->channel,	GFP_KERNEL);
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0) */
+			}
+			goto done;
+		}
+	}
+
 	if (wl_get_drv_status_all(cfg, SENDING_ACT_FRM)) {
 		if (event_type == WLC_E_ACTION_FRAME_COMPLETE) {
-
-			CFGP2P_DBG((" WLC_E_ACTION_FRAME_COMPLETE is received : %d\n", status));
+			CFGP2P_ACTION((" WLC_E_ACTION_FRAME_COMPLETE is received : %d", status));
 			if (status == WLC_E_STATUS_SUCCESS) {
 				wl_set_p2p_status(cfg, ACTION_TX_COMPLETED);
 				CFGP2P_ACTION(("TX AF: ACK. wait_rx:%d\n", cfg->need_wait_afrx));
@@ -1812,7 +1866,7 @@ wl_cfgp2p_action_tx_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev
 			}
 		} else {
 			CFGP2P_ACTION((" WLC_E_ACTION_FRAME_OFFCHAN_COMPLETE is received,"
-						"status : %d\n", status));
+					" status : %d\n", status));
 
 			cfg->randomized_gas_tx = FALSE;
 			/* signal to interrupt event wait timer */
@@ -1820,6 +1874,36 @@ wl_cfgp2p_action_tx_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev
 			OSL_SMP_WMB();
 			wake_up_interruptible(&cfg->netif_change_event);
 		}
+	}
+
+done:
+	return ret;
+}
+
+s32
+wl_cfg80211_abort_d11_frame(struct bcm_cfg80211 *cfg, struct net_device *dev, s32 bssidx)
+{
+	s32 ret = BCME_OK;
+	char iov_buf[WLC_IOCTL_SMLEN] = {0};
+	u8 ioctl_buf[WLC_IOCTL_SMLEN] = {0};
+	u32 buflen = WLC_IOCTL_SMLEN;
+	u8 *rem;
+	u16 rem_len = WLC_IOCTL_SMLEN;
+	bool abort = true;
+
+	rem = &ioctl_buf[0];
+	ret = bcm_pack_xtlv_entry(&rem, &rem_len, WL_D11FRAME_CMD_ABORT,
+		sizeof(abort), (uint8 *)&abort, BCM_XTLV_OPTION_ALIGN32);
+	if (unlikely(ret)) {
+		WL_ERR(("%s: d11frame IOV packing failed, ret %d\n", __func__, ret));
+		goto exit;
+	}
+
+	ret = wldev_iovar_setbuf_bsscfg(dev, "d11frame", &ioctl_buf, (buflen - rem_len),
+			&iov_buf, WLC_IOCTL_SMLEN, bssidx, NULL);
+exit:
+	if (ret < 0) {
+		WL_ERR(("actframe_abort failed. ret:%d\n", ret));
 	}
 	return ret;
 }
@@ -1844,6 +1928,58 @@ wl_cfg80211_abort_action_frame(struct bcm_cfg80211 *cfg, struct net_device *dev,
 static bool af_completion_condition(struct bcm_cfg80211 *cfg, struct net_device *ndev)
 {
 	return !cfg->af_sent_channel;
+}
+
+s32
+wl_cfgp2p_tx_pasn_auth_handler(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
+	const wl_event_msg_t *e, void *data)
+{
+	s32 ret = BCME_OK;
+	u32 event_type = ntoh32(e->event_type);
+	u32 status = ntoh32(e->status);
+	struct net_device *ndev = NULL;
+	u8 bsscfgidx = e->bsscfgidx;
+
+	CFGP2P_DBG((" Enter\n"));
+
+	ndev = cfgdev_to_wlc_ndev(cfgdev, cfg);
+	if (wl_get_drv_status_all(cfg, SENDING_D11_FRM)) {
+		if (event_type == WLC_E_D11FRAME_COMPLETE) {
+			CFGP2P_DBG((" WLC_E_D11_FRAME_COMPLETE is received : %d\n", status));
+			if (status == WLC_E_STATUS_SUCCESS) {
+				wl_set_drv_status(cfg, D11_TX_COMPLETED, ndev);
+				CFGP2P_ACTION(("TX D11: ACK. wait_rx:%d\n",
+					cfg->d11_frm_hdl.need_wait_d11rx));
+				if (!cfg->d11_frm_hdl.need_wait_d11rx &&
+						cfg->d11_frm_hdl.d11_sent_channel) {
+					CFGP2P_DBG(("no need to wait next D11.\n"));
+					wl_stop_wait_next_d11_frame(cfg, ndev, bsscfgidx);
+				}
+			} else {
+				wl_set_drv_status(cfg, D11_TX_NOACK, ndev);
+				if (status == WLC_E_STATUS_SUPPRESS) {
+					CFGP2P_ACTION(("D11 frm : SUPPRESS\n"));
+				} else {
+					CFGP2P_ACTION(("D11 frm : NO ACK\n"));
+				}
+				/* if there is no ack, we don't need to wait for
+				 * WLC_E_D11_FRAME_OFFCHAN_COMPLETE event for ucast
+				 */
+				if (!ETHER_ISBCAST(&cfg->d11_frm_hdl.tx_dst_addr)) {
+					wl_stop_wait_next_d11_frame(cfg, ndev, bsscfgidx);
+				}
+			}
+		} else {
+			CFGP2P_ACTION((" WLC_E_D11_FRAME_OFFCHAN_COMPLETE is received,"
+						"status : %d\n", status));
+
+			/* signal to interrupt event wait timer */
+			cfg->d11_frm_hdl.d11_sent_channel = 0;
+			OSL_SMP_WMB();
+			wake_up_interruptible(&cfg->netif_change_event);
+		}
+	}
+	return ret;
 }
 
 /* Send an action frame immediately without doing channel synchronization.
@@ -1881,7 +2017,6 @@ wl_cfgp2p_tx_action_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	wl_cfg80211_add_to_eventbuffer(&buf, WLC_E_ACTION_FRAME_COMPLETE, true);
 	if ((evt_ret = wl_cfg80211_apply_eventbuffer(bcmcfg_to_prmry_ndev(cfg), cfg, &buf)) < 0)
 		return evt_ret;
-
 	/* Try to use STA connected channel when channel is zero from uppaer layer */
 	if (af_params->channel == 0) {
 		af_params->channel = wl_cfg80211_get_sta_chanspec(cfg);
@@ -1889,6 +2024,7 @@ wl_cfgp2p_tx_action_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	}
 
 	cfg->af_sent_channel  = af_params->channel;
+
 	/* For older FW versions actframe does not support chanspec format */
 	if (cfg->wlc_ver.wlc_ver_major < FW_MAJOR_VER_ACTFRAME_CHSPEC) {
 		af_params->channel = wf_chspec_center_channel(af_params->channel);
@@ -1934,6 +2070,8 @@ wl_cfgp2p_tx_action_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 			cfg->af_sent_channel = 0;
 		}
 		goto exit;
+	} else if (af_params->flags & WL_ACT_FRAME_FLAG_NAN_PUB_USD) {
+		goto exit_usd;
 	}
 
 	dwell_time = af_params->dwell_time + WL_AF_TX_EXTRA_TIME_MAX;
@@ -1971,7 +2109,7 @@ wl_cfgp2p_tx_action_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 		ret = BCME_ERROR;
 	}
 
-	/* clear status bit for action tx */
+exit_usd:
 	wl_clr_p2p_status(cfg, ACTION_TX_COMPLETED);
 	wl_clr_p2p_status(cfg, ACTION_TX_NOACK);
 
@@ -1988,6 +2126,7 @@ exit:
 	}
 
 	CFGP2P_DBG(("via act frame iovar: status = %d af_sent_ch %x\n", ret, cfg->af_sent_channel));
+
 	bzero(&buf, sizeof(wl_eventmsg_buf_t));
 	wl_cfg80211_add_to_eventbuffer(&buf, WLC_E_ACTION_FRAME_OFF_CHAN_COMPLETE, false);
 	wl_cfg80211_add_to_eventbuffer(&buf, WLC_E_ACTION_FRAME_COMPLETE, false);
@@ -1995,6 +2134,7 @@ exit:
 		WL_ERR(("TX frame events revert back failed \n"));
 		return evt_ret;
 	}
+
 	return ret;
 }
 

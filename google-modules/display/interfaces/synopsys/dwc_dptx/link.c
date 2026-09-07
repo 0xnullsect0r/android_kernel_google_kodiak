@@ -6,8 +6,8 @@
  */
 
 #include "dptx.h"
+#include "dptx_utils.h"
 #include "intr.h"
-#include "phy/phy_n621.h"
 #include "regmaps/ctrl_fields.h"
 
 static int dptx_link_read_status(struct dptx *dptx)
@@ -34,6 +34,13 @@ static int dptx_link_check_cr_done(struct dptx *dptx, bool *out_done, u32 delay)
 
 	*out_done = drm_dp_clock_recovery_ok(dptx->link.status,
 					     dptx->link.lanes);
+
+	if (dptx->link_test_mode && dptx->link_test_force_cr) {
+		/* force DP link training clock recovery to pass */
+		dptx_dbg_link(dptx, "%s: LINK STATUS: %02x %02x %02x\n", __func__,
+			      dptx->link.status[0], dptx->link.status[1], dptx->link.status[2]);
+		*out_done = true;
+	}
 
 	dptx_dbg_link(dptx, "%s: CR_DONE = %d\n", __func__, *out_done);
 
@@ -64,8 +71,8 @@ static int dptx_link_check_ch_eq_done(struct dptx *dptx,
 	*out_ch_eq_done = drm_dp_channel_eq_ok(dptx->link.status,
 					       dptx->link.lanes);
 
-	if (dptx->link_test_mode) {
-		/* WAR: PHY pattern testing: bypass CH_EQ failures */
+	if (dptx->link_test_mode && dptx->link_test_force_cheq) {
+		/* force DP link training channel equalization to pass */
 		dptx_dbg_link(dptx, "%s: LINK STATUS: %02x %02x %02x\n", __func__,
 			      dptx->link.status[0], dptx->link.status[1], dptx->link.status[2]);
 		*out_ch_eq_done = true;
@@ -337,7 +344,6 @@ static int dptx_link_cr(struct dptx *dptx)
 	int retval, count;
 	u8 byte;
 	struct ctrl_regfields *ctrl_fields;
-	u32 tx_ready;
 	u32 phyif_reg;
 	u32 rst;
 
@@ -418,18 +424,6 @@ static int dptx_link_cr(struct dptx *dptx)
 	if (retval) {
 		dptx_err(dptx, "Timed out waiting for PHY BUSY\n");
 		return retval;
-	}
-
-	count = 0;
-	tx_ready = 1;  //TODO: phyif_read_mask(dptx, PHY_TX_READY, PHY_TX_READY_MASK);
-	while (tx_ready != 1) {
-		count++;
-		if (count > 20) {
-			dptx_err(dptx, "%s: TIMEOUT - TX_READY", __func__);
-			return -EAGAIN;
-		}
-		fsleep(10);
-		tx_ready = phyif_read_mask(dptx, PHY_TX_READY, PHY_TX_READY_MASK);
 	}
 
 	/* Set PHY_TX_EQ */
@@ -519,11 +513,8 @@ static int dptx_link_ch_eq(struct dptx *dptx)
 	}
 
 	/* ch_eq_delay: 400/4000/8000/12000/16000 usec */
-	retval = dptx_read_dpcd(dptx, DP_TRAINING_AUX_RD_INTERVAL, &byte);
-	if (retval)
-		return retval;
-
-	ch_eq_delay = min_t(u32, (byte & 0x7f), 4);
+	byte = dptx->rx_caps[DP_TRAINING_AUX_RD_INTERVAL];
+	ch_eq_delay = min_t(u32, (byte & DP_TRAINING_AUX_RD_MASK), 4);
 	ch_eq_delay *= 4000;
 	if (ch_eq_delay == 0)
 		ch_eq_delay = 400;
@@ -717,6 +708,9 @@ again:
 			goto fail;
 		}
 	}
+
+	/* Mute audio to set VB-ID AudioMute flag for DP idle pattern */
+	dptx_write_regfield(dptx, ctrl_fields->field_audio_mute, 1);
 
 	dptx_phy_set_pattern(dptx, DPTX_PHYIF_CTRL_TPS_NONE);
 

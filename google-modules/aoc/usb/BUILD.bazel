@@ -2,7 +2,12 @@
 
 # ASoC-based USB driver
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "aoc.usb.kconfig",
@@ -36,18 +41,8 @@ ddk_module(
         "//private/google-modules/aoc:headers",
         "//private/google-modules/aoc/alsa:aoc_alsa_dev_util",
         "//private/google-modules/aoc_ipc",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/usb/host:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "aoc.usb",
-    srcs = [
-        ":aoc_usb_driver",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -50,7 +50,7 @@ void gs_panel_get_panel_rev(struct gs_panel *ctx, u8 rev);
  *
  * @ctx: Handle for gs_panel private data. In particular, it will update the
  *       `panel_rev_id` member variable of this struct.
- * @id: 4-byte panel id read from panel DDIC
+ * @id: 4-byte panel id. See &gs_panel.panel_id for format and byte layout.
  */
 void gs_panel_get_panel_rev_full(struct gs_panel *ctx, u32 id);
 
@@ -64,7 +64,7 @@ void gs_panel_get_panel_rev_full(struct gs_panel *ctx, u32 id);
  *
  * @ctx: Handle for gs_panel private data. In particular, it will update the
  *       `panel_rev_id` member variable of this struct.
- * @id: 4-byte panel id read from panel DDIC
+ * @id: 4-byte panel id. See &gs_panel.panel_id for format and byte layout.
  */
 void gs_panel_get_panel_rev_no_variant(struct gs_panel *ctx, u32 id);
 

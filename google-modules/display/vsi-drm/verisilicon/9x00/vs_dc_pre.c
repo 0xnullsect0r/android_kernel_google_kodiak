@@ -1102,13 +1102,16 @@ static int check_plane_sram_dma_size(const struct vs_dc_info *info,
 	u32 dma_sram_max_size_kb = plane_info->dma_sram_max_size_kb;
 	u32 dma_sram_max_size = dma_sram_max_size_kb << 10;
 	u32 dma_sram_size = 0;
+	u16 width;
 
 	if (!dma_sram_max_size_kb)
 		return 0;
 
+	width = plane_state->rotation & (DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270) ? fb->height :
+										     fb->width;
 	ret = vs_dpu_get_dma_sram_size(to_vs_format(fb->format->format, fb->modifier),
 				       to_vs_tile_mode(fb), to_vs_rotation(plane_state->rotation),
-				       fb->width, &dma_sram_size, dma_sram_alignment,
+				       width, &dma_sram_size, dma_sram_alignment,
 				       dma_sram_extra_buffer, dma_sram_unit_size);
 	if (ret) {
 		dev_warn(dev, "[Reject] plane %d failed to calculate sram dma size\n",
@@ -2594,7 +2597,17 @@ static int dc_fe_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
 
-	return component_add(dev, &dc_fe_component_ops);
+	ret = dc_component_grab_handoff_vote(dev, &dc->fe_handoff_vote[fe_idx]);
+	if (ret)
+		return ret;
+
+	ret = component_add(dev, &dc_fe_component_ops);
+	if (ret) {
+		dc_component_release_handoff_vote(dev, &dc->fe_handoff_vote[fe_idx]);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void dc_fe_remove(struct platform_device *pdev)
@@ -2605,8 +2618,12 @@ static void dc_fe_remove(struct platform_device *pdev)
 
 	if (dc) {
 		fe_idx = dc_get_fe_idx(dev);
-		if (fe_idx >= 0)
+		if (fe_idx >= 0) {
+			if (dc->fe_handoff_vote[fe_idx])
+				dc_component_release_handoff_vote(dev,
+								  &dc->fe_handoff_vote[fe_idx]);
 			dc->fe_dev[fe_idx] = NULL;
+		}
 	}
 
 	component_del(dev, &dc_fe_component_ops);

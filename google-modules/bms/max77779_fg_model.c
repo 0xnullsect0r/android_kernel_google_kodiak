@@ -37,19 +37,44 @@
 DECLARE_CRC8_TABLE(max77779_fg_crc8_table);
 
 /*
- * b/329101930: using MAX77779 sp to save model version
- * SP reset value is undefined and only reset when entering shipmode and UVLO.
- * If current SP value is the same as model version, then model won't reload.
- * Otherwise, model will reload and SP data will be model version.
- * If enter shipmode or UVLO, POR will lead to reload model regardless of SP data.
- * So undefined reset value won't be a side effect for that.
+ * b/524885598: using EEPROM to save model version
+ *
+ * The purpose of saving the model version (MDLV) is to ensure that GMSR
+ * data is correctly cleared whenever the model version changes, regardless
+ * of whether a POR (Power-On Reset) occurred or not.
+ *
+ * - On LOTR_V1 devices, the version is saved in the MAX77779 scratchpad (SP).
+ * - On LOTR_V2 devices, the version is primarily stored in the battery EEPROM.
+ *   If the EEPROM is blank (e.g., due to migration) but the SP retains the
+ *   correct version, it is synchronized back to the EEPROM.
+ *
+ * SP reset value is undefined and only resets when entering shipmode or UVLO.
+ * Since a POR forces a model reload regardless of SP data, the undefined
+ * reset value is harmless.
  */
 int max77779_model_read_version(const struct max77779_model_data *model_data)
 {
-	u8 temp;
+	u8 temp, sp_mdls;
 	int ret;
 
 	ret = gbms_storage_read(GBMS_TAG_MDLV, &temp, sizeof(temp));
+	if (ret == -ENOENT) {
+		/* LOTR_V1 device, read from SP directly */
+		ret = gbms_storage_read(GBMS_TAG_MDLS, &temp, sizeof(temp));
+		return ret < 0 ? ret : temp;
+	}
+
+	/*
+	 * if EEPROM MDLV value is empty and max77779_sp's model version
+	 * is same as dtsi, write dtsi value to EEPROM
+	 */
+	if (ret >= 0 && temp == 0xFF) {
+		ret = gbms_storage_read(GBMS_TAG_MDLS, &sp_mdls, sizeof(sp_mdls));
+		if (ret >= 0 && (sp_mdls == model_data->model_version)) {
+			temp = sp_mdls;
+			gbms_storage_write(GBMS_TAG_MDLV, &temp, sizeof(temp));
+		}
+	}
 
 	return ret < 0 ? ret : temp;
 }
@@ -63,7 +88,13 @@ int max77779_model_write_version(const struct max77779_model_data *model_data, i
 		return 0;
 
 	temp = (u8)version;
-	ret = gbms_storage_write(GBMS_TAG_MDLV, &temp, sizeof(temp));
+
+	/* Always update SP */
+	ret = gbms_storage_write(GBMS_TAG_MDLS, &temp, sizeof(temp));
+
+	/* Update EEPROM if available (LOTR_V2) */
+	if (gbms_storage_write(GBMS_TAG_MDLV, &temp, sizeof(temp)) >= 0)
+		ret = 0; /* Prioritize EEPROM success */
 
 	return ret < 0 ? ret : 0;
 }

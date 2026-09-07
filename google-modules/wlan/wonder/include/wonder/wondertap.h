@@ -407,11 +407,11 @@ struct wondertap_capability {
 			u32 hbs_support: 1;
 			/*
 			 * @brief Maximum number of supported spatial streams (NSS).
-			 * Encoded as (NSS - 1), where 0 = 1 stream and 7 = 8 streams.
+			 * 0: not support, 1: 1NSS, 2: 2NSS, etc.
 			 */
-			u32 nss: 3;
+			u32 nss: 4;
 			/* @brief Reserved for future use. Must be 0. */
-			u32 reserved: 14;
+			u32 reserved: 13;
 		} bits;
 	};
 
@@ -713,6 +713,7 @@ enum wondertap_ver {
 	WONDER_VERSION_1_6_3 = WONDER_VERSION_1_6_1,
 	WONDER_VERSION_1_6_4,
 	WONDER_VERSION_1_6_5,
+	WONDER_VERSION_1_6_6,
 	WONDER_VERSION_MAX,
 };
 

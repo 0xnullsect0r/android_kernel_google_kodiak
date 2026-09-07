@@ -178,10 +178,9 @@ void mtk_pci_mac_write32_with_retry(struct mtk_pci_priv *priv, u64 addr, u32 val
 		read_val = ioread32(priv->mac_reg_base + addr);
 		if (read_val == val)
 			return;
+		MTK_WARN(priv->mdev, "Failed to write MAC reg 0x%llx: val 0x%x, read 0x%x\n",
+			 addr, val, read_val);
 	} while (i++ < retry_count);
-
-	MTK_WARN(priv->mdev, "Failed to write MAC reg 0x%llx: val 0x%x, read 0x%x\n",
-		 addr, val, read_val);
 }
 #endif
 
@@ -357,6 +356,24 @@ void mtk_pci_atr_disable(struct mtk_pci_priv *priv)
 			mtk_pci_mac_write32(priv, REG_ATR_PCIE_WIN0_T0_SRC_ADDR_LSB + offset, val);
 #endif
 		}
+}
+
+void mtk_pci_dump_atr_doorbell(struct mtk_md_dev *mdev)
+{
+	struct mtk_pci_priv *priv = mdev->hw_priv;
+
+	MTK_INFO(mdev, "ATR doorbell: 0x%x, 0x%x, 0x%x, 0x%x\n",
+		 mtk_pci_mac_read32(priv, REG_ISTATUS_A_ADT_SLV0),
+		 mtk_pci_mac_read32(priv, REG_ISTATUS_A_ADT_SLV1),
+		 mtk_pci_mac_read32(priv, REG_ISTATUS_A_ADT_SLV2),
+		 mtk_pci_mac_read32(priv, REG_ISTATUS_A_ADT_SLV3));
+}
+
+void mtk_pci_clear_atr_doorbell(struct mtk_md_dev *mdev)
+{
+	mtk_pci_dump_atr_doorbell(mdev);
+	mtk_pci_mac_write32(mdev->hw_priv, REG_ISTATUS_HOST, A_ATR_EVT_DOORBELL);
+	mtk_pci_dump_atr_doorbell(mdev);
 }
 
 static void mtk_pci_set_msi_merged(struct mtk_pci_priv *priv, int irq_cnt)
@@ -1321,11 +1338,6 @@ int mtk_pci_reinit(struct mtk_md_dev *mdev, enum mtk_reinit_type type)
 		/* We have saved it in probe() */
 		pci_load_saved_state(pdev, priv->saved_state);
 		pci_restore_state(pdev);
-#if IS_ENABLED(CONFIG_GOOGLE_B465916709_WORKAROUND)
-		pci_enable_link_state(pdev, 0);
-		pci_enable_link_state(pdev, PCIE_LINK_STATE_ALL);
-		mtk_pci_aspm_ctrl(mdev);
-#endif
 		val = mtk_pci_get_dev_cfg(mdev);
 		MTK_INFO(mdev, "0x%x reinit reboot reason is 0x%x, devdbg infor is 0x%x\n",
 			 val, (val & 0x1F), mtk_pci_get_dev_info(mdev));
@@ -1408,6 +1420,20 @@ bool mtk_pci_link_check_silent(struct mtk_md_dev *mdev)
 	present = pci_device_is_present(to_pci_dev(mdev->dev));
 
 	return present;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_GOOGLE_B528903481_DEBUG)
+void mtk_pci_mmio_hw_check(struct mtk_md_dev *mdev)
+{
+	struct mtk_pci_priv *priv = mdev->hw_priv;
+
+	MTK_INFO(mdev, "MHCCIF_EP2RC_SW_INT_EAP_MASK: 0x%x\n",
+		 mtk_pci_read32(mdev, priv->cfg->mhccif_rc_base_addr
+		+ MHCCIF_EP2RC_SW_INT_EAP_MASK));
+	MTK_INFO(mdev, "CLDMA version register: 0x%x\n", mtk_pci_read32(mdev, 0x1021E000));
+	MTK_INFO(mdev, "CLDMA 0x1021E014 register: 0x%x\n", mtk_pci_read32(mdev, 0x1021E014));
+	MTK_INFO(mdev, "DPMAIF version register: 0x%x\n", mtk_pci_read32(mdev, 0x1022D46C));
 }
 #endif
 
@@ -2486,6 +2512,11 @@ static ssize_t mtk_pci_dbg_set_rpm_link_state(void *data, const char *buf, ssize
 
 	pm = mdev_get_pm(mdev);
 
+	if (mtk_pm_smart_suspend_enabled()) {
+		MTK_WARN(mdev, "smart suspend is enabled, can not switch rpm mode!");
+		return cnt;
+	}
+
 	if (__mtk_str_begin_with(buf, "L1")) {
 		hs_info.feature_id = PCIE_RPM_CTRL;
 		hs_info.data[0] = RPM_LINK_STATE_L12;
@@ -3083,18 +3114,18 @@ static int mtk_pci_dev_init(struct mtk_md_dev *mdev)
 	if (ret)
 		goto free_data_plane;
 
-	ret = mtk_exception_init(mdev);
+	ret = mtk_frc_sync_init(mdev);
 	if (ret)
 		goto free_devlink;
 
-	ret = mtk_frc_sync_init(mdev);
+	ret = mtk_exception_init(mdev);
 	if (ret)
-		goto free_exception;
+		goto free_frc;
 
 	return 0;
 
-free_exception:
-	mtk_exception_exit(mdev);
+free_frc:
+	mtk_frc_sync_exit(mdev);
 free_devlink:
 	mtk_devlink_exit(mdev);
 free_data_plane:
@@ -3542,6 +3573,11 @@ static int __maybe_unused mtk_pci_pm_prepare(struct device *dev)
 	return mtk_pm_prepare(dev);
 }
 
+static void __maybe_unused mtk_pci_pm_complete(struct device *dev)
+{
+	mtk_pm_complete(dev);
+}
+
 static int __maybe_unused mtk_pci_pm_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -3605,6 +3641,7 @@ static void mtk_pci_pm_shutdown(struct pci_dev *pdev)
 
 static const struct dev_pm_ops mtk_pci_pm_ops = {
 	.prepare = mtk_pci_pm_prepare,
+	.complete = mtk_pci_pm_complete,
 	.suspend = mtk_pci_pm_suspend,
 	.resume = mtk_pci_pm_resume,
 	.freeze = mtk_pci_pm_freeze,

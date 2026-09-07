@@ -27,44 +27,32 @@ static int vs_gem_alloc_buf(struct vs_gem_object *vs_obj)
 		return 0;
 	}
 
-	if (is_iommu_enabled(dev)) {
-		/* IOMMU case: use non-contiguous allocation to save kernel memory.
-		 * Pass 0 attributes to avoid WARNING in dma_alloc_noncontiguous.
-		 */
-		vs_obj->sgt = dma_alloc_noncontiguous(dma_dev, vs_obj->size,
-						      DMA_BIDIRECTIONAL, GFP_KERNEL, 0);
-		if (!vs_obj->sgt) {
-			DRM_DEV_ERROR(dev->dev, "failed to allocate noncontiguous buffer.\n");
-			return -ENOMEM;
-		}
-		vs_obj->dma_addr = sg_dma_address(vs_obj->sgt->sgl);
-		vs_obj->cookie = NULL;
-	} else {
-		/* Non-IOMMU case: must be contiguous.
-		 * Use dma_alloc_attrs with FORCE_CONTIGUOUS.
-		 * We skip NO_KERNEL_MAPPING here to ensure we can get an sgt reliably
-		 * via dma_get_sgtable, as some implementations require a vaddr.
-		 */
-		vs_obj->dma_attrs = DMA_ATTR_WRITE_COMBINE | DMA_ATTR_FORCE_CONTIGUOUS;
-		vs_obj->cookie = dma_alloc_attrs(dma_dev, vs_obj->size, &vs_obj->dma_addr,
-						 GFP_KERNEL, vs_obj->dma_attrs);
-		if (!vs_obj->cookie) {
-			DRM_DEV_ERROR(dev->dev, "failed to allocate contiguous buffer.\n");
-			return -ENOMEM;
-		}
+	/* Non-IOMMU case: must be contiguous.
+	 * Use dma_alloc_attrs with FORCE_CONTIGUOUS.
+	 * We skip NO_KERNEL_MAPPING here to ensure we can get an sgt reliably
+	 * via dma_get_sgtable, as some implementations require a vaddr.
+	 */
+	vs_obj->dma_attrs = DMA_ATTR_WRITE_COMBINE;
+	if (!is_iommu_enabled(dev))
+		vs_obj->dma_attrs |= DMA_ATTR_FORCE_CONTIGUOUS;
 
-		vs_obj->sgt = kzalloc(sizeof(*vs_obj->sgt), GFP_KERNEL);
-		if (!vs_obj->sgt) {
-			ret = -ENOMEM;
-			goto err_free_attrs;
-		}
+	vs_obj->cookie = dma_alloc_attrs(dma_dev, vs_obj->size, &vs_obj->dma_addr, GFP_KERNEL,
+					 vs_obj->dma_attrs);
+	if (!vs_obj->cookie) {
+		DRM_DEV_ERROR(dev->dev, "failed to allocate buffer.\n");
+		return -ENOMEM;
+	}
 
-		ret = dma_get_sgtable(dma_dev, vs_obj->sgt, vs_obj->cookie,
-				      vs_obj->dma_addr, vs_obj->size);
-		if (ret) {
-			DRM_DEV_ERROR(dev->dev, "failed to get sgtable for contiguous buffer.\n");
-			goto err_free_sgt;
-		}
+	vs_obj->sgt = kzalloc(sizeof(*vs_obj->sgt), GFP_KERNEL);
+	if (!vs_obj->sgt) {
+		ret = -ENOMEM;
+		goto err_free_attrs;
+	}
+
+	ret = dma_get_sgtable(dma_dev, vs_obj->sgt, vs_obj->cookie, vs_obj->dma_addr, vs_obj->size);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "failed to get sgtable for buffer.\n");
+		goto err_free_sgt;
 	}
 
 	vs_obj->iova = (u64)vs_obj->dma_addr;
@@ -91,17 +79,15 @@ static void vs_gem_free_buf(struct vs_gem_object *vs_obj)
 		return;
 	}
 
-	if (vs_obj->cookie) {
+	if (vs_obj->sgt) {
 		sg_free_table(vs_obj->sgt);
 		kfree(vs_obj->sgt);
 		vs_obj->sgt = NULL;
+	}
+	if (vs_obj->cookie) {
 		dma_free_attrs(dma_dev, vs_obj->size, vs_obj->cookie,
 			       vs_obj->dma_addr, vs_obj->dma_attrs);
 		vs_obj->cookie = NULL;
-	} else {
-		dma_free_noncontiguous(dma_dev, vs_obj->size, vs_obj->sgt,
-				       DMA_BIDIRECTIONAL);
-		vs_obj->sgt = NULL;
 	}
 
 	vs_obj->dma_addr = 0;
@@ -211,22 +197,21 @@ static int vs_gem_mmap_obj(struct drm_gem_object *obj, struct vm_area_struct *vm
 
 	vm_flags_clear(vma, VM_PFNMAP);
 
-	return dma_mmap_noncontiguous(to_dma_dev(drm_dev), vma, vs_obj->size, vs_obj->sgt);
+	return dma_mmap_attrs(to_dma_dev(drm_dev), vma, vs_obj->cookie, vs_obj->dma_addr,
+			      vs_obj->size, vs_obj->dma_attrs);
 }
 
 static int vs_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	struct vs_gem_object *vs_obj = to_vs_gem_object(obj);
-	void *vaddr;
 
 	if (obj->import_attach)
 		return dma_buf_vmap(obj->dma_buf, map);
 
-	vaddr = dma_vmap_noncontiguous(to_dma_dev(obj->dev), vs_obj->size, vs_obj->sgt);
-	if (!vaddr)
+	if (!vs_obj->cookie)
 		return -ENOMEM;
 
-	iosys_map_set_vaddr(map, vaddr);
+	iosys_map_set_vaddr(map, vs_obj->cookie);
 
 	return 0;
 }
@@ -235,8 +220,6 @@ static void vs_gem_prime_vunmap(struct drm_gem_object *obj, struct iosys_map *ma
 {
 	if (obj->import_attach)
 		dma_buf_vunmap(obj->dma_buf, map);
-	else
-		dma_vunmap_noncontiguous(to_dma_dev(obj->dev), map->vaddr);
 }
 
 static int vs_gem_dmabuf_vmap(struct dma_buf *dma_buf, struct iosys_map *map)

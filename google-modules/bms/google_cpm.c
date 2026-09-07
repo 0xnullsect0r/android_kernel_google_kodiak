@@ -33,6 +33,8 @@
 #include <linux/platform_device.h>
 #include <linux/thermal.h>
 #include <linux/slab.h>
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
 #include "google_bms_usecase.h"
@@ -698,20 +700,6 @@ static int gcpm_chg_ping(struct gcpm_drv *gcpm, int index, bool online)
 	return 0;
 }
 
-/* use the charger one when avalaible or fallback to the generated one */
-static uint64_t gcpm_get_charger_state(const struct gcpm_drv *gcpm,
-				       struct power_supply *chg_psy)
-{
-	union gbms_charger_state chg_state;
-	int rc;
-
-	rc = gbms_read_charger_state(&chg_state, chg_psy);
-	if (rc < 0)
-		return 0;
-
-	return chg_state.v;
-}
-
 static int gcpm_init_check(struct gcpm_drv *gcpm)
 {
 	int ret = 0;
@@ -917,64 +905,78 @@ static int gcpm_chg_online(struct gcpm_drv *gcpm, int index, int fv_uv, int cc_m
 	return ret;
 }
 
+enum POWER_LIMIT_TYPE {
+	POWER_LIMIT_TYPE_NONE = 0,
+	POWER_LIMIT_TYPE_FCC,
+	POWER_LIMIT_TYPE_WLC_ICL,
+	POWER_LIMIT_TYPE_WLC_FCC,
+};
+
 /*
- * Converts MDIS lvl into a power limit, with semantics varying across generations:
- * For USB: Returns battery power limit.
- * For WLC
- *   - Returns battery power limit for CP for P21-P24
- *   - Returns input power limit otherwise.
+ * Converts MDIS level into a power limit (stored in @pwr_out) and returns its type.
+ *
+ * Returns -EOPNOTSUPP if 'google_wlc' owns active MDIS limits.
+ * Otherwise, updates @pwr_out with the calculated power limit (in uW) and returns:
+ *   * POWER_LIMIT_TYPE_FCC - wired battery charging power limit.
+ *   * POWER_LIMIT_TYPE_WLC_ICL - WLC input power limit.
+ *   * POWER_LIMIT_TYPE_WLC_FCC - WLC battery charging power limit.
  */
-static int gcpm_get_mdis_pwr_limit_uw(struct gcpm_drv *gcpm, int lvl, int index)
+static int gcpm_get_mdis_pwr_limit_uw(struct gcpm_drv *gcpm, int lvl, int index, int *pwr_out)
 {
-	const struct gcpm_chg_requirements *default_req = gcpm_chg_get_default_req(gcpm);
-	struct power_supply *wlc_psy = gcpm->wlc_pps_data.pps_psy;
 	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
-	int ret, voltage_mv, current_ma;
+	int type, voltage_mv, current_ma, ret;
+	union power_supply_propval val;
 
-	if (lvl > tdev->thermal_levels || lvl < 0)
-		return -EINVAL;
-
+	/* Determine power limit type */
 	if (index >= gcpm->chgs.chg_psy_count || index < 0)
 		return -EINVAL;
 
 	if (gcpm->chgs.chg_state.charge_disable)
 		return -ENODEV;
 
-	if (!default_req)
+	if (gcpm_is_in_wireless(gcpm) && gcpm->wlc_set)
+		return -EOPNOTSUPP;
+
+	if (!gcpm_is_in_wireless(gcpm))
+		type =  POWER_LIMIT_TYPE_FCC;
+	else if (gcpm_chg_is_cp(gcpm, index))
+		type = POWER_LIMIT_TYPE_WLC_FCC;
+	else
+		type = POWER_LIMIT_TYPE_WLC_ICL;
+	/* Determine power limit type */
+
+	if (lvl > tdev->thermal_levels || lvl < 0)
+		return -EINVAL;
+
+	if (lvl == 0) {
+		*pwr_out = -1;
+		return type;
+	}
+	if (lvl == tdev->thermal_levels) {
+		*pwr_out = 0;
+		return type;
+	}
+
+	if (!gcpm->bat_psy)
+		gcpm->bat_psy = power_supply_get_by_name("battery");
+	if (!gcpm->bat_psy)
 		return -EBUSY;
 
-	if (lvl == 0)
-		return -1;
+	switch (type) {
+	case POWER_LIMIT_TYPE_FCC:
+	case POWER_LIMIT_TYPE_WLC_FCC:
+		ret = GPSY_GET_PROP(gcpm->bat_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+		if (ret < 0)
+			return ret;
+		voltage_mv = ret / 1000;
 
-	if (lvl == tdev->thermal_levels)
-		return 0;
+		if (type == POWER_LIMIT_TYPE_WLC_FCC)
+			lvl = lvl + tdev->thermal_levels;
 
-	if (!gcpm_is_in_wireless(gcpm)) {
-		voltage_mv = (default_req->vbatt_max / 1000);
 		current_ma = (gcpm->mdis_out_limits[index][lvl] / 1000);
-		return voltage_mv * current_ma;
-	}
+		break;
 
-	if (gcpm->wlc_set) {
-		if (gcpm_chg_is_cp(gcpm, index) && gcpm->wlc_cp_fcc >= 0) {
-			if (!wlc_psy)
-				return -EBUSY;
-
-			current_ma = GPSY_SET_INT64_PROP(wlc_psy, GBMS_PROP_MDIS_CP_FCC, lvl);
-			current_ma /= 1000;
-			voltage_mv = default_req->vbatt_max / 1000;
-
-			return voltage_mv * current_ma;
-		} else {
-			return GPSY_SET_INT64_PROP(wlc_psy, GBMS_PROP_MDIS_POWER, lvl);
-		}
-	}
-
-	if (gcpm_chg_is_cp(gcpm, index)) {
-		voltage_mv = default_req->vbatt_max / 1000;
-	} else {
-		union power_supply_propval val;
-
+	case POWER_LIMIT_TYPE_WLC_ICL:
 		if (!gcpm->wlc_dc_psy)
 			return -EBUSY;
 
@@ -984,39 +986,63 @@ static int gcpm_get_mdis_pwr_limit_uw(struct gcpm_drv *gcpm, int lvl, int index)
 			return ret;
 
 		voltage_mv = val.intval / 1000;
+		current_ma = gcpm->mdis_out_limits[index][lvl + tdev->thermal_levels] / 1000;
+		break;
 	}
 
-	current_ma = gcpm->mdis_out_limits[index][lvl + tdev->thermal_levels] / 1000;
+	*pwr_out = voltage_mv * current_ma;
 
-	return voltage_mv * current_ma;
+	return type;
 }
 
 /* requires mutex_lock(&gcpm->chg_psy_lock) */
-static int gcpm_update_pri_chg_min_pwr(struct gcpm_drv *gcpm)
+static void gcpm_update_pri_chg_min_pwr(struct gcpm_drv *gcpm)
 {
+	struct power_supply *wlc_psy = gcpm->wlc_pps_data.pps_psy;
 	int lvl = gcpm->priority_charging_mdis;
-	int pwr, ret;
+	int pwr = 0, ret = 0, type;
 
 	if (WARN_ON_ONCE(!gcpm->pri_chg_min_pwr_votable))
-		return 0;
+		return;
 
-	pwr = gcpm_get_mdis_pwr_limit_uw(gcpm, lvl, gcpm->chgs.chg_state.active_index);
-	dev_info(gcpm->device, "PriC MDIS lvl=%d chg_idx=%d pwr=%d",
-		 lvl, gcpm->chgs.chg_state.active_index, pwr);
+	type = gcpm_get_mdis_pwr_limit_uw(gcpm, lvl, gcpm->chgs.chg_state.active_index, &pwr);
+	dev_info(gcpm->device, "PriC MDIS lvl=%d type=%d chg_idx=%d pwr=%d",
+		 lvl, type, gcpm->chgs.chg_state.active_index, pwr);
 
-	if (pwr == -ENODEV) {
-		gvotable_recast_ballot(gcpm->pri_chg_min_pwr_votable, "MDIS", false);
-		return 0;
+	ret = gvotable_cast_int_vote(gcpm->pri_chg_min_pwr_votable,
+				     "FCC",
+				     type == POWER_LIMIT_TYPE_FCC ? pwr : CSI_POWER_UNKNOWN,
+				     pwr != -1 && type == POWER_LIMIT_TYPE_FCC);
+	if (ret < 0)
+		dev_warn(gcpm->device, "PriC Cannot vote on FCC: %d", ret);
+
+	/* Do not update DC_* votes when not supported, `google_wlc` would do it instead */
+	if (type == -EOPNOTSUPP) {
+		if (!wlc_psy) {
+			dev_warn(gcpm->device, "PriC wlc_psy not ready");
+			return;
+		}
+
+		ret = GPSY_SET_INT64_PROP(wlc_psy, GBMS_PROP_PRI_CHG_MDIS, lvl);
+		if (ret < 0)
+			dev_warn(gcpm->device, "PriC Failed to pass pri_chg_mdis: %d", ret);
+
+		return;
 	}
 
-	if (pwr < -1)
-		return pwr;
-
-	ret = gvotable_cast_int_vote(gcpm->pri_chg_min_pwr_votable, "MDIS", pwr, true);
+	ret = gvotable_cast_int_vote(gcpm->pri_chg_min_pwr_votable,
+				     "DC_ICL",
+				     type == POWER_LIMIT_TYPE_WLC_ICL ? pwr : CSI_POWER_UNKNOWN,
+				     pwr != -1 && type == POWER_LIMIT_TYPE_WLC_ICL);
 	if (ret < 0)
-		return ret;
+		dev_warn(gcpm->device, "PriC Cannot vote on DC_ICL: %d", ret);
 
-	return 0;
+	ret = gvotable_cast_int_vote(gcpm->pri_chg_min_pwr_votable,
+				     "DC_FCC",
+				     type == POWER_LIMIT_TYPE_WLC_FCC ? pwr : CSI_POWER_UNKNOWN,
+				     pwr != -1 && type == POWER_LIMIT_TYPE_WLC_FCC);
+	if (ret < 0)
+		dev_warn(gcpm->device, "PriC Cannot vote on DC_FCC: %d", ret);
 }
 
 /*
@@ -1453,6 +1479,8 @@ static int gcpm_chg_select_by_condition(struct gcpm_drv *gcpm, bool should_log)
 		vbatt_high = req->vbatt_high ? req->vbatt_high : default_req->vbatt_high;
 		vbatt_low = req->vbatt_low ? req->vbatt_low : default_req->vbatt_low;
 
+		if (!is_chg_avail)
+			continue;
 
 		if (wlc_psy)
 			wlc_power_limit = GPSY_SET_INT64_PROP(wlc_psy,
@@ -1460,16 +1488,13 @@ static int gcpm_chg_select_by_condition(struct gcpm_drv *gcpm, bool should_log)
 							      cur_index);
 
 		if (should_log) {
-			dev_dbg(gcpm->device, "%s: i:%d avail:%d is_active:%d cp_avail:%d power_low_limit=%d power_min_limit:%d cc_max_low:%d cc_max_high:%d wlc_power_limit:%d\n",
-				 __func__, i, is_chg_avail, is_active_charger,
+			dev_dbg(gcpm->device, "%s: i:%d is_active:%d cp_avail:%d power_low_limit=%d power_min_limit:%d cc_max_low:%d cc_max_high:%d wlc_power_limit:%d\n",
+				 __func__, i, is_active_charger,
 				 gcpm->chgs.chg_avail.cp_disabled,
 				 power_low, power_min, cc_max_low, cc_max_high, wlc_power_limit);
 			dev_dbg(gcpm->device, "%s: vbatt=%d: low=%d min=%d high=%d max=%d\n",
 				__func__, vbatt, vbatt_low, vbatt_min, vbatt_high, vbatt_max);
 		}
-
-		if (!is_chg_avail)
-			continue;
 
 		/* Check battery demand */
 		if (is_active_charger && ((batt_demand < power_min) ||
@@ -3162,8 +3187,10 @@ static int gcpm_gbms_psy_get_property(struct power_supply *psy,
 	switch (psp) {
 	/* handle locally for now */
 	case GBMS_PROP_CHARGE_CHARGER_STATE:
-		chg_state.v = gcpm_get_charger_state(gcpm, chg_psy);
-		pval->int64val = chg_state.v;
+		/* use the charger one when available or fallback to the generated one */
+		ret = gbms_read_charger_state(&chg_state, chg_psy);
+		if (!ret)
+			pval->int64val = chg_state.v;
 		break;
 
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
@@ -4020,7 +4047,7 @@ priority_charging_mdis_store(struct device *dev, struct device_attribute *attr,
 
 	mutex_lock(&gcpm->chg_psy_lock);
 	gcpm->priority_charging_mdis = lvl;
-	ret = gcpm_update_pri_chg_min_pwr(gcpm);
+	gcpm_update_pri_chg_min_pwr(gcpm);
 	mutex_unlock(&gcpm->chg_psy_lock);
 
 	if (ret < 0)
@@ -4395,6 +4422,7 @@ static int gcpm_mdis_callback(struct gvotable_election *el, const char *reason,
 	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
 	const int lvl = (long)value;
 	int power_uw = CSI_POWER_UNKNOWN;
+	int type;
 	bool trigger_select;
 	bool mdis_crit_lvl = false;
 	const bool is_wireless = gcpm_is_in_wireless(gcpm);
@@ -4450,21 +4478,28 @@ static int gcpm_mdis_callback(struct gvotable_election *el, const char *reason,
 			return 0;
 	}
 
-	power_uw = gcpm_get_mdis_pwr_limit_uw(gcpm, lvl, index);
-	if (power_uw == -ENODEV) {
-		gvotable_cast_compound_vote(gcpm->csi_status_votable, "CSI_STATUS_THERM_MDIS",
-					    CSI_POWER_UNKNOWN,
+	type = gcpm_get_mdis_pwr_limit_uw(gcpm, lvl, index, &power_uw);
+
+	gvotable_cast_compound_vote(gcpm->csi_status_votable, "CSI_STATUS_THERM_FCC",
+				    type == POWER_LIMIT_TYPE_FCC ? power_uw : CSI_POWER_UNKNOWN,
+				    CSI_STATUS_System_Thermals,
+				    power_uw != -1 && type == POWER_LIMIT_TYPE_FCC);
+
+	/* Do not update DC_* votes when not supported, `google_wlc` would do it instead */
+	if (type != -EOPNOTSUPP) {
+		int vote_pwr;
+
+		vote_pwr = type == POWER_LIMIT_TYPE_WLC_ICL ? power_uw : CSI_POWER_UNKNOWN;
+		gvotable_cast_compound_vote(gcpm->csi_status_votable, "CSI_STATUS_THERM_DC_ICL",
+					    vote_pwr,
 					    CSI_STATUS_System_Thermals,
-					    false);
-	} else if (power_uw == -EINVAL) {
-		dev_warn_ratelimited(gcpm->device, "Out of bounds: MDIS lvl = %d", lvl);
-	} else if (power_uw >= -1) {
-		gvotable_cast_compound_vote(gcpm->csi_status_votable, "CSI_STATUS_THERM_MDIS",
-					    power_uw,
+					    power_uw != -1 && type == POWER_LIMIT_TYPE_WLC_ICL);
+
+		vote_pwr = type == POWER_LIMIT_TYPE_WLC_FCC ? power_uw : CSI_POWER_UNKNOWN,
+		gvotable_cast_compound_vote(gcpm->csi_status_votable, "CSI_STATUS_THERM_DC_FCC",
+					    vote_pwr,
 					    CSI_STATUS_System_Thermals,
-					    tdev->current_level != 0);
-	} else {
-		dev_warn_ratelimited(gcpm->device, "Cannot get power_uw: %d", power_uw);
+					    power_uw != -1 && type == POWER_LIMIT_TYPE_WLC_FCC);
 	}
 
 	/* will trigger a power supply change now */

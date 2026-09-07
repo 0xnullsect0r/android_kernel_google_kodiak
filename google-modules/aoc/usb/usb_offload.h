@@ -70,6 +70,8 @@ struct usb_offload_data {
 	struct gvotable_election *usb_data_role_votable;
 	bool memory_swap_enabled;
 	enum memory_swap_state mem_swap_stat;
+	int wakeup_dev_count; /* Number of devices that enable remote wakeup */
+	int total_dev_count; /* Total number of connected devices */
 };
 
 int usb_offload_helper_init(void);

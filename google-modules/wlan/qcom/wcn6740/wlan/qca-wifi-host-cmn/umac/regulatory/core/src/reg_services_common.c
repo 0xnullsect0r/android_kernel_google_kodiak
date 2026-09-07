@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -46,6 +46,16 @@
 #endif
 
 const struct chan_map *channel_map;
+
+#define DISCARD_DFS_FOR_P2P_GO_AND_SAP 3
+#define DISCARD_DFS_FOR_P2P_GO 2
+#define DISCARD_DFS_FOR_SAP 1
+
+enum discard_passive_chan_for_mode {
+	DISCARD_PASSIVE_FOR_SAP = 1,
+	DISCARD_PASSIVE_FOR_P2P_GO = 2,
+	DISCARD_PASSIVE_FOR_P2P_GO_AND_SAP = 3,
+};
 
 #ifdef CONFIG_CHAN_FREQ_API
 /* bonded_chan_40mhz_list_freq - List of 40MHz bonnded channel frequencies */
@@ -2959,6 +2969,12 @@ reg_update_usable_chan_resp(struct wlan_objmgr_pdev *pdev,
 				0, &ch_params);
 		res_msg[index].freq = (qdf_freq_t)pcl_ch[i];
 		res_msg[index].iface_mode_mask |= 1 << iface_mode_mask;
+#if defined(CONFIG_WCN_GOOGLE)
+		// 6GHz channels are only supported in station mode
+		if (reg_is_6ghz_chan_freq(res_msg[index].freq)) {
+			res_msg[index].iface_mode_mask &= (1 << IFTYPE_STATION);
+		}
+#endif
 		res_msg[index].bw = ch_params.ch_width;
 		if (ch_params.center_freq_seg0)
 			res_msg[index].seg0_freq =
@@ -3115,6 +3131,104 @@ reg_remove_freq(struct get_usable_chan_res_params *res_msg,
 		     sizeof(struct get_usable_chan_res_params));
 }
 
+static void
+reg_update_list_for_dfs_channel(struct wlan_objmgr_pdev *pdev,
+			        struct get_usable_chan_res_params *res_msg,
+				uint32_t chan_enum, uint32_t iface_mode)
+{
+	struct wlan_objmgr_psoc *psoc;
+	QDF_STATUS status = QDF_STATUS_SUCCESS;
+	bool dfs_master_capable;
+	uint8_t dfs_discard_for_mode;
+
+	psoc = wlan_pdev_get_psoc(pdev);
+	if (!psoc) {
+		reg_err("invalid psoc");
+		return;
+	}
+
+	status = ucfg_mlme_get_dfs_master_capability(psoc, &dfs_master_capable);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		reg_err("failed to get dfs master capable");
+		return;
+	}
+	status = ucfg_mlme_get_dfs_discard_mode(psoc, &dfs_discard_for_mode);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		reg_err("failed to get dfs discard mode");
+		return;
+	}
+
+	if (!wlan_reg_is_dfs_for_freq(pdev, res_msg[chan_enum].freq))
+		return;
+
+	if (!dfs_master_capable ||
+	     dfs_discard_for_mode == DISCARD_DFS_FOR_P2P_GO_AND_SAP) {
+		res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+		if (!res_msg[chan_enum].iface_mode_mask)
+			reg_remove_freq(res_msg, chan_enum);
+	} else if (dfs_discard_for_mode == DISCARD_DFS_FOR_P2P_GO &&
+		   (iface_mode & (1 << IFTYPE_P2P_GO))) {
+		res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+		if (!res_msg[chan_enum].iface_mode_mask)
+			reg_remove_freq(res_msg, chan_enum);
+	} else if (dfs_discard_for_mode == DISCARD_DFS_FOR_SAP &&
+		   (iface_mode & (1 << IFTYPE_AP))) {
+		res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+		if (!res_msg[chan_enum].iface_mode_mask)
+			reg_remove_freq(res_msg, chan_enum);
+	}
+}
+
+static void
+reg_update_list_for_passive_channel(struct wlan_objmgr_pdev *pdev,
+				    struct get_usable_chan_res_params *res_msg,
+				    uint32_t chan_enum, uint32_t iface_mode)
+{
+	struct wlan_objmgr_psoc *psoc;
+	QDF_STATUS status;
+	uint8_t passive_discard_for_mode;
+
+	psoc = wlan_pdev_get_psoc(pdev);
+	if (!psoc) {
+		reg_err("invalid psoc");
+		return;
+	}
+
+	if (!wlan_reg_is_passive_for_freq(pdev, res_msg[chan_enum].freq))
+		return;
+
+	status = ucfg_mlme_get_passive_discard_mode(psoc,
+						    &passive_discard_for_mode);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		reg_err("failed to get passive discard mode");
+		return;
+	}
+	switch (passive_discard_for_mode) {
+	case DISCARD_PASSIVE_FOR_P2P_GO_AND_SAP:
+		res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+		if (!res_msg[chan_enum].iface_mode_mask)
+			reg_remove_freq(res_msg, chan_enum);
+		break;
+	case DISCARD_PASSIVE_FOR_P2P_GO:
+		if (iface_mode & (1 << IFTYPE_P2P_GO)) {
+			res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+			if (!res_msg[chan_enum].iface_mode_mask)
+				reg_remove_freq(res_msg, chan_enum);
+		}
+		break;
+	case DISCARD_PASSIVE_FOR_SAP:
+		if (iface_mode & (1 << IFTYPE_AP)) {
+			res_msg[chan_enum].iface_mode_mask &= ~(iface_mode);
+			if (!res_msg[chan_enum].iface_mode_mask)
+				reg_remove_freq(res_msg, chan_enum);
+		}
+		break;
+	default:
+		reg_debug("mode not handled %d", passive_discard_for_mode);
+		break;
+	}
+}
+
 /**
  * reg_skip_invalid_chan_freq() - Remove invalid freq for SAP, P2P GO
  *				  and NAN
@@ -3203,17 +3317,21 @@ reg_skip_invalid_chan_freq(struct wlan_objmgr_pdev *pdev,
 						reg_remove_freq(res_msg,
 								chan_enum);
 				}
-
-				if (!dfs_master_capable &&
-				    wlan_reg_is_dfs_for_freq(pdev,
-				    res_msg[chan_enum].freq)) {
-					res_msg[chan_enum].iface_mode_mask &=
-						~(iface_mode);
-					if (!res_msg[chan_enum].iface_mode_mask)
-						reg_remove_freq(res_msg,
-								chan_enum);
-				}
+				reg_update_list_for_passive_channel(
+								pdev, res_msg,
+								chan_enum,
+								iface_mode);
+				reg_update_list_for_dfs_channel(pdev, res_msg,
+								chan_enum,
+								iface_mode);
 			}
+#if defined(CONFIG_WCN_GOOGLE)
+			// Clean up 6GHz channels
+			if (reg_is_6ghz_chan_freq(res_msg[chan_enum].freq)) {
+				if (!res_msg[chan_enum].iface_mode_mask)
+					reg_remove_freq(res_msg, chan_enum);
+			}
+#endif
 		}
 
 		iface_mode_mask &= ~iface_mode;
@@ -3366,6 +3484,12 @@ reg_add_usable_channel_to_resp(struct wlan_objmgr_pdev *pdev,
 			reg_err("invalid iface mask");
 			return QDF_STATUS_E_FAILURE;
 		}
+#if defined(CONFIG_WCN_GOOGLE)
+		// 6GHz channels are only supported in station mode
+		if (reg_is_6ghz_chan_freq(res_msg[chan_enum].freq)) {
+			res_msg[chan_enum].iface_mode_mask &= (1 << IFTYPE_STATION);
+		}
+#endif
 		res_msg[chan_enum].bw = ch_params.ch_width;
 		res_msg[chan_enum].state = chan_list[chan_enum].state;
 		if (ch_params.center_freq_seg0)

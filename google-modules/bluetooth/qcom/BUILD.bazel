@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -28,12 +33,10 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
     ],
@@ -50,23 +53,11 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/wcnpwrctl:wcn_pwrctl",
-    ],
-)
-
-kernel_module_group(
-    name = "bluetooth.qcom",
-    srcs = [
-        ":btpower",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

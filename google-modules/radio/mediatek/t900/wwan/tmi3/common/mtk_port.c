@@ -39,7 +39,7 @@
 #define MTK_PORT_FLOW_CTRL			BIT(2)
 #define MTK_FLOWCTRL_TIMEOUT_CNT_MAX		2
 #define PORT_DUMP_NAME_MAX_LEN			(32)
-#define PORT_TX_TRIGGER_DUMP_CNT		(2)
+#define PORT_TX_TRIGGER_ACTION_CNT		(2)
 #define LB_PORT_DL_MAX_CNT			(200000)
 
 #define MTK_PORT_SEARCH_FROM_RADIX_TREE(p, s) ({\
@@ -708,6 +708,17 @@ static int mtk_port_close_trb_complete(struct sk_buff *skb)
 	return 0;
 }
 
+static int mtk_port_check_sta_trb_complete(struct sk_buff *skb)
+{
+	struct trb *trb = (struct trb *)skb->cb;
+	struct mtk_port *port = trb->priv;
+
+	wake_up_interruptible_all(&port->trb_wq);
+	kref_put(&trb->kref, mtk_port_trb_free);
+
+	return 0;
+}
+
 static int mtk_port_trb_cfg_complete(struct sk_buff *skb)
 {
 	dev_kfree_skb_any(skb);
@@ -887,6 +898,44 @@ int mtk_port_status_check(struct mtk_port *port)
 	return 0;
 }
 
+static int mtk_port_ch_status_check(struct mtk_port *port)
+{
+	struct mtk_port_mngr *port_mngr = port->port_mngr;
+	struct sk_buff *skb;
+	struct trb *trb;
+	int ret;
+
+	skb = mtk_mem_alloc_skb(port_mngr->ctrl_blk->bm_pool, Q_MTU_3_5K, 0);
+	if (!skb) {
+		MTK_WARN(port_mngr->ctrl_blk->mdev,
+			 "Failed to alloc skb of port(%s)\n", port->info.name);
+		return -ENOMEM;
+	}
+	trb = (struct trb *)skb->cb;
+	mtk_port_trb_init(port, trb, TRB_CMD_CHECK_STA, mtk_port_check_sta_trb_complete);
+	kref_get(&trb->kref);
+
+	ret = port_mngr->ctrl_blk->ops->submit_skb(port_mngr->ctrl_blk->mdev, skb, false);
+	if (ret) {
+		kref_put(&trb->kref, mtk_port_trb_free);
+		kref_put(&trb->kref, mtk_port_trb_free);
+		return ret;
+	}
+
+start_wait:
+	ret = wait_event_interruptible_timeout(port->trb_wq, trb->status <= 0,
+					       MTK_DFLT_TRB_TIMEOUT);
+	if (ret == -ERESTARTSYS)
+		goto start_wait;
+	else if (!ret)
+		ret = -ETIMEDOUT;
+	else
+		ret = trb->status;
+
+	kref_put(&trb->kref, mtk_port_trb_free);
+	return ret;
+}
+
 /**
  * mtk_port_send_data() - send data to device through trans layer.
  * @port: pointer to channel structure for sending data.
@@ -901,6 +950,8 @@ int mtk_port_status_check(struct mtk_port *port)
 int mtk_port_send_data(struct mtk_port *port, void *data)
 {
 	struct mtk_port_mngr *port_mngr;
+	bool tx_timeout_abnormal = true;
+	struct mtk_ctrl_blk *ctrl_blk;
 	struct sk_buff *skb = data;
 	u8 tx_timeout_cnt = 0;
 	bool force_send;
@@ -908,6 +959,7 @@ int mtk_port_send_data(struct mtk_port *port, void *data)
 	int ret, len;
 
 	port_mngr = port->port_mngr;
+	ctrl_blk = port_mngr->ctrl_blk;
 
 	force_send = !!(port->info.flags & (PORT_F_BLOCKING | PORT_F_FORCE_SEND));
 	trb = (struct trb *)skb->cb;
@@ -920,8 +972,7 @@ int mtk_port_send_data(struct mtk_port *port, void *data)
 	mtk_port_add_header(skb);
 	ret = mtk_port_status_check(port);
 	if (!ret)
-		ret = port_mngr->ctrl_blk->ops->submit_skb(port_mngr->ctrl_blk->mdev,
-							   skb, force_send);
+		ret = ctrl_blk->ops->submit_skb(ctrl_blk->mdev, skb, force_send);
 	mutex_unlock(&port->write_lock);
 
 	if (ret < 0) {
@@ -948,9 +999,18 @@ start_wait:
 					       !test_bit(PORT_S_WR, &port->status),
 					       MTK_DFLT_TRB_TIMEOUT);
 	if (!ret) {
-		if (tx_timeout_cnt++ == PORT_TX_TRIGGER_DUMP_CNT)
-			mtk_fsm_evt_submit(port_mngr->ctrl_blk->mdev, FSM_EVT_DUMP,
-					   FSM_F_DFLT, NULL, 0, 0);
+		ret = mtk_port_ch_status_check(port);
+		if (ret)
+			tx_timeout_abnormal = false;
+		if (tx_timeout_cnt++ == PORT_TX_TRIGGER_ACTION_CNT) {
+			if (tx_timeout_abnormal) {
+				ret = ctrl_blk->ops->send_cmd(ctrl_blk->mdev,
+							      HIF_CTRL_CMD_TX_ABORT, NULL);
+				if (!ret)
+					goto start_wait;
+			}
+			mtk_fsm_evt_submit(ctrl_blk->mdev, FSM_EVT_DUMP, FSM_F_DFLT, NULL, 0, 0);
+		}
 		goto start_wait;
 	} else if (ret == -ERESTARTSYS) {
 		ret = -EINTR;
@@ -967,12 +1027,8 @@ out:
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 static int mtk_port_check_rx_seq(struct mtk_port *port, struct mtk_ccci_header *ccci_h,
 				 bool force_mdee)
-#else
-static int mtk_port_check_rx_seq(struct mtk_port *port, struct mtk_ccci_header *ccci_h)
-#endif
 {
 	u16 seq_num, assert_bit, channel;
 	struct mtk_md_dev *mdev;
@@ -992,10 +1048,8 @@ static int mtk_port_check_rx_seq(struct mtk_port *port, struct mtk_ccci_header *
 		MTK_WARN(mdev, "<ch: %04x> seq num out-of-order %d->%d, len(%d)\n",
 			 channel, seq_num, port->rx_seq, le32_to_cpu(ccci_h->packet_len));
 #endif
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 		if (!force_mdee)
 			return -EBADMSG;
-#endif
 		mtk_ctrl_dump(mdev);
 		if (MTK_PORT_TBL_TYPE(channel) == PORT_TBL_MD)
 #if IS_ENABLED(CONFIG_ARCH_GOOGLE)
@@ -1275,7 +1329,6 @@ static int mtk_port_miscctrl_ch_stop(struct mtk_port_mngr *port_mngr, char *name
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 int mtk_port_rx_pre_check(struct sk_buff *skb, void *priv)
 {
 	struct mtk_port_mngr *port_mngr;
@@ -1288,6 +1341,9 @@ int mtk_port_rx_pre_check(struct sk_buff *skb, void *priv)
 		return -EINVAL;
 
 	port_mngr = port->port_mngr;
+	/* If ccci header field has been loaded in skb data,
+	 * the data should be dispatched by port manager
+	 */
 	if (port->info.flags & PORT_F_RAW_DATA)
 		return 0;
 
@@ -1304,6 +1360,9 @@ int mtk_port_rx_pre_check(struct sk_buff *skb, void *priv)
 		return -EAGAIN;
 	}
 
+	if (port->info.flags & PORT_F_RAW_DATA)
+		return 0;
+
 	/* The sequence number must be continuous */
 	ret = mtk_port_check_rx_seq(port, ccci_h, false);
 	if (unlikely(ret))
@@ -1312,13 +1371,8 @@ int mtk_port_rx_pre_check(struct sk_buff *skb, void *priv)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_port_rx_pre_check);
-#endif
 
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-static int mtk_port_rx_dispatch(struct sk_buff *skb, void *priv, bool force_recv, bool force_mdee)
-#else
 static int mtk_port_rx_dispatch(struct sk_buff *skb, void *priv, bool force_recv)
-#endif
 {
 	enum mtk_skb_record_type type = RX_DROP_HEADER_ERR;
 	struct sk_buff *cmd_skb, *frag_skb, *tmp;
@@ -1351,11 +1405,7 @@ static int mtk_port_rx_dispatch(struct sk_buff *skb, void *priv, bool force_recv
 		}
 		if (!(port->info.flags & PORT_F_RAW_DATA)) {
 			/* The sequence number must be continuous */
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-			ret = mtk_port_check_rx_seq(port, ccci_h, force_mdee);
-#else
-			ret = mtk_port_check_rx_seq(port, ccci_h);
-#endif
+			ret = mtk_port_check_rx_seq(port, ccci_h, true);
 			if (unlikely(ret))
 				goto drop_data;
 		}

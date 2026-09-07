@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "drv2624",
     srcs = [
@@ -10,9 +15,6 @@ ddk_module(
     ],
     out = "drv2624.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
     ],

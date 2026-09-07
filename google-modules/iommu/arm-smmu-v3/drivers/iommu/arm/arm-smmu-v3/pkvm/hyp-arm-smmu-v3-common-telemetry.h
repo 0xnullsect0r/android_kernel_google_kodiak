@@ -8,6 +8,9 @@
 /* Make a reasonable guess for max number of domains. */
 #define MAX_SMMU_DOMAIN 100
 
+/* Based off of HYP_MEMBLOCK_REGIONS */
+#define MAX_DRAM_REGIONS 128
+
 extern struct hyp_shared_arm_smmu_telemetry *kvm_nvhe_sym(kvm_hyp_shared_arm_smmu_telemetry);
 #define kvm_hyp_shared_arm_smmu_telemetry kvm_nvhe_sym(kvm_hyp_shared_arm_smmu_telemetry)
 
@@ -73,11 +76,21 @@ struct hyp_atomic_pages_telemetry {
 	s64 max_pages_used;
 };
 
+struct smmu_dram_region {
+	u64 start;
+	u64 end;
+};
+
 /**
  * struct hyp_stage2_telemetry - Holds stage 2 telemetry data
  */
 struct hyp_stage2_telemetry {
 	u64 num_s2_tlb_invalidates;
+	u64 host_mem_usage;
+	u64 max_prot_mem_usage;
+	u64 total_dram;
+	u32 num_dram_regions;
+	struct smmu_dram_region dram_regions[MAX_DRAM_REGIONS];
 	struct map_counters_by_page_size s2_map_counters;
 	struct hyp_atomic_pages_telemetry s2_atomic_pages;
 };

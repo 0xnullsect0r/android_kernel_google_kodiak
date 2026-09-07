@@ -715,6 +715,8 @@ static void dcsdb_change_frequency(struct gs_panel *ctx, const struct gs_panel_m
 
 	notify_panel_te2_freq_changed(ctx, 0);
 
+	ctx->panel_settings_changed = true;
+
 	dev_dbg(dev, "%s: change to %dhz\n", __func__, vrefresh);
 }
 

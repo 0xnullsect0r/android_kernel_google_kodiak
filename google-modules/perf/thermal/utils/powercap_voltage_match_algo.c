@@ -15,6 +15,15 @@
 
 #define MAX_CHILD_CT 2
 
+#define GPC_CSV_PARENT_FMT \
+	"GPC_CSV_PARENT:%s,id=%llu,limit=%llu,tot_wt=0,thresh=0," \
+	"surplus=0,rec_wt=0\n"
+
+#define GPC_CSV_CHILD_FMT \
+	"GPC_CSV_CHILD:%s,id=%llu,child=%s,wt=0,base_lim=%llu," \
+	"allocated_lim=%llu,userspace_lim=%llu,cur=%llu,rec=0\n"
+
+
 struct powercap_volt_algo_platform_data {
 	const void *freq_table;
 	unsigned int num_opps;
@@ -61,10 +70,21 @@ u64 __gpc_volt_algo_set_power_limit(struct gpowercap *gpowercap, u64 power_limit
 		i = gpc_volt->num_opps - 1;
 
 	power = gpc_volt->opp_table[i].power;
+
+	if (!gpowercap->parent)
+		gpowercap->decision_id++;
+
+	pr_debug(GPC_CSV_PARENT_FMT,
+		 gpowercap->zone.name, gpowercap->decision_id, power_limit);
+
 	gpowercap_for_each_children(gpowercap, child) {
-		pr_debug("[%s] set_power_limit total:%u child idx:%d child power:%u.\n",
-			 gpowercap->zone.name, gpc_volt->opp_table[i].power, child_idx,
-			 gpc_volt->opp_table[i].children_power[child_idx]);
+		u64 child_power = gpc_volt->opp_table[i].children_power[child_idx];
+
+		pr_debug(GPC_CSV_CHILD_FMT,
+			 gpowercap->zone.name, gpowercap->decision_id, child->zone.name,
+			 child_power, child_power, child->userspace_power_limit,
+			 child->current_power_uw);
+
 		gpowercap_set_parent_power_limit(child,
 			gpc_volt->opp_table[i].children_power[child_idx++]);
 	}

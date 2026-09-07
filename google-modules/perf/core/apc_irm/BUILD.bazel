@@ -2,16 +2,23 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf/core:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "apc_irm_debug_headers",
     hdrs = ["apc_irm_debug.h"],
+    includes = ["."],
+    visibility = ["//visibility:private"],
+)
+
+ddk_headers(
+    name = "apc_irm_trace_header_self",
+    hdrs = [
+        "apc_irm_trace.h",
+    ],
     includes = ["."],
     visibility = ["//visibility:private"],
 )
@@ -48,9 +55,11 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         ":apc_irm_debug_headers",
+        ":apc_irm_trace_header_self",
         "//private/google-modules/perf/infra/mbfs",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
+        "//private/google-modules/soc/rdo/interconnect:google_irm",
     ],
 )
 

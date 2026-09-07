@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 load("@kleaf//build/kernel/kleaf:hermetic_tools.bzl", "hermetic_genrule")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@kleaf//build/kernel/kleaf/tests:hermetic_test.bzl", "hermetic_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load(
     "//private/devices/google/common/kleaf:bste.bzl",
     "bste_cc_binary",
@@ -78,12 +79,19 @@ bste_test_package(
 
 # --- Platform Verification ---
 
-sh_test(
+sh_binary(
+    name = "architecture_check_test_bin",
+    srcs = ["readelf_tester.sh"],
+    data = [":sample_cc_binary"],
+)
+
+hermetic_test(
     name = "architecture_check_test",
     size = "small",
-    srcs = ["readelf_tester.sh"],
+    actual = ":architecture_check_test_bin",
     args = ["$(location :sample_cc_binary)"],
     data = [":sample_cc_binary"],
+    use_cc_toolchain = True,
 )
 
 # --- Structural Propagation & Integrity ---
@@ -244,10 +252,16 @@ source srcs/suite_main.sh
 
 # --- Package Aggregation Tests ---
 
-sh_test(
+sh_binary(
+    name = "package_aggregation_listing_test_bin",
+    srcs = ["tar_tester.sh"],
+    data = [":sample_test_package"],
+)
+
+hermetic_test(
     name = "package_aggregation_listing_test",
     size = "small",
-    srcs = ["tar_tester.sh"],
+    actual = ":package_aggregation_listing_test_bin",
     args = [
         "$(location :sample_test_package)",
         "bste_test",
@@ -271,23 +285,81 @@ sh_test(
     data = [":sample_test_package"],
 )
 
-# TODO: Run the test with mksh instead of bash.
-sh_test(
-    name = "runtime_resilience_integration_test",
-    size = "small",
-    srcs = ["runtime_resilience_test.sh"],
-    data = [
-        "//private/devices/google/common/kleaf/impl/bste:harness/bste_test.sh",
-        "//private/devices/google/common/kleaf/impl/bste:harness/bste_test_runner.sh",
-        "//private/devices/google/common/kleaf/impl/bste:harness/common.sh",
-        "//private/devices/google/common/kleaf/impl/bste:harness/test_helpers.sh",
+bste_test_suite(
+    name = "resilience_iso_suite",
+    srcs = ["resilience_suites/iso_test.sh"],
+    suite_init = "suite_init",
+    test_cases = [
+        "test_case_1",
+        "test_case_2",
     ],
 )
 
-sh_test(
+bste_test_suite(
+    name = "resilience_crash_suite",
+    srcs = ["resilience_suites/crash_test.sh"],
+    test_cases = [
+        "sleepy_case",
+    ],
+)
+
+bste_test_suite(
+    name = "resilience_kill_suite",
+    srcs = ["resilience_suites/kill_test.sh"],
+    test_cases = [
+        "orphan_test",
+    ],
+)
+
+bste_test_suite(
+    name = "resilience_api_suite",
+    srcs = ["resilience_suites/api_test.sh"],
+    test_cases = [
+        "test_success",
+        "test_failure",
+        "test_skip",
+        "test_error",
+        "test_asserts",
+    ],
+)
+
+bste_test_package(
+    name = "resilience_test_package",
+    test_suites = [
+        ":resilience_iso_suite",
+        ":resilience_crash_suite",
+        ":resilience_kill_suite",
+        ":resilience_api_suite",
+    ],
+)
+
+sh_binary(
+    name = "runtime_resilience_integration_test_bin",
+    srcs = ["runtime_resilience_test.sh"],
+    data = [":resilience_test_package"],
+)
+
+hermetic_test(
+    name = "runtime_resilience_integration_test",
+    size = "small",
+    actual = ":runtime_resilience_integration_test_bin",
+    # TODO: Use nohup from toybox
+    append_host_path = True,  # for nohup
+    args = ["$(location :resilience_test_package)"],
+    data = [":resilience_test_package"],
+)
+
+sh_binary(
+    name = "bste_validator_test_bin",
+    srcs = ["bste_validator_test.sh"],
+    data = ["//private/devices/google/common/kleaf/impl/bste:bste_validator"],
+)
+
+hermetic_test(
     name = "bste_validator_test",
     size = "small",
-    srcs = ["bste_validator_test.sh"],
+    actual = ":bste_validator_test_bin",
+    args = ["$(location //private/devices/google/common/kleaf/impl/bste:bste_validator)"],
     data = ["//private/devices/google/common/kleaf/impl/bste:bste_validator"],
 )
 

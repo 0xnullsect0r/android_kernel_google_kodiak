@@ -2234,7 +2234,7 @@ _PMRLogicalOffsetToPhysicalOffset(const PMR *psPMR,
                                   IMG_UINT32 ui32NumOfPages,
                                   IMG_DEVMEM_OFFSET_T uiLogicalOffset,
                                   IMG_DEVMEM_OFFSET_T *puiPhysicalOffset,
-                                  IMG_UINT32 *pui32BytesRemain,
+                                  IMG_DEVMEM_SIZE_T *puiBytesRemain,
                                   IMG_BOOL *bValid)
 {
 	PMR_MAPPING_TABLE *psMappingTable = psPMR->psMappingTable;
@@ -2251,7 +2251,7 @@ _PMRLogicalOffsetToPhysicalOffset(const PMR *psPMR,
 	{
 		/* Fast path the common case, as logical and physical offsets are
 		 * equal we assume the ui32NumOfPages span is also valid */
-		*pui32BytesRemain = TRUNCATE_64BITS_TO_32BITS(psPMR->uiLogicalSize - uiOffset);
+		*puiBytesRemain = TRUNCATE_64BITS_TO_SIZE_T(psPMR->uiLogicalSize - uiOffset);
 		puiPhysicalOffset[0] = uiOffset;
 		bValid[0] = IMG_TRUE;
 
@@ -2272,7 +2272,7 @@ _PMRLogicalOffsetToPhysicalOffset(const PMR *psPMR,
 		for (idx = 0; idx < ui32NumOfPages; idx++)
 		{
 			IMG_UINT32 uiTranslation;
-			const IMG_UINT64 uiChunkSize = psMappingTable->uiChunkSize;
+			const IMG_UINT32 uiChunkSize = psMappingTable->uiChunkSize;
 
 			ui64ChunkIndex = OSDivide64By32Rem(
 					uiOffset,
@@ -2298,12 +2298,12 @@ _PMRLogicalOffsetToPhysicalOffset(const PMR *psPMR,
 			else
 			{
 				bValid[idx] = IMG_TRUE;
-				puiPhysicalOffset[idx] = uiTranslation * uiChunkSize + ui32Remain;
+				puiPhysicalOffset[idx] = (IMG_UINT64) uiTranslation * uiChunkSize + ui32Remain;
 			}
 
 			if (idx == 0)
 			{
-				*pui32BytesRemain = TRUNCATE_64BITS_TO_32BITS(uiChunkSize - ui32Remain);
+				*puiBytesRemain = TRUNCATE_64BITS_TO_SIZE_T(uiChunkSize - ui32Remain);
 				/* initial offset may not be page aligned, round down */
 				uiOffset &= ~(uiPageSize-1);
 			}
@@ -2414,7 +2414,7 @@ PMR_ReadBytes(PMR *psPMR,
 
 	while (uiBytesCopied != uiBufSz)
 	{
-		IMG_UINT32 ui32Remain;
+		IMG_DEVMEM_SIZE_T uiRemain;
 		size_t uiBytesToCopy;
 		size_t uiRead;
 		IMG_BOOL bValid;
@@ -2424,14 +2424,14 @@ PMR_ReadBytes(PMR *psPMR,
 		                                           1,
 		                                           uiLogicalOffset,
 		                                           &uiPhysicalOffset,
-		                                           &ui32Remain,
+		                                           &uiRemain,
 		                                           &bValid);
 		PVR_LOG_RETURN_IF_ERROR(eError, "_PMRLogicalOffsetToPhysicalOffset");
 
 		/* Copy till either then end of the chunk or end
 		 * of the buffer
 		 */
-		uiBytesToCopy = MIN(uiBufSz - uiBytesCopied, ui32Remain);
+		uiBytesToCopy = MIN(uiBufSz - uiBytesCopied, uiRemain);
 
 		if (bValid)
 		{
@@ -2561,7 +2561,7 @@ PMR_WriteBytes(PMR *psPMR,
 
 	if (uiLogicalOffset + uiBufSz > psPMR->uiLogicalSize)
 	{
-		uiBufSz = TRUNCATE_64BITS_TO_32BITS(psPMR->uiLogicalSize - uiLogicalOffset);
+		uiBufSz = TRUNCATE_64BITS_TO_SIZE_T(psPMR->uiLogicalSize - uiLogicalOffset);
 	}
 	PVR_ASSERT(uiBufSz > 0);
 	PVR_ASSERT(uiBufSz <= psPMR->uiLogicalSize);
@@ -2575,7 +2575,7 @@ PMR_WriteBytes(PMR *psPMR,
 
 	while (uiBytesCopied != uiBufSz)
 	{
-		IMG_UINT32 ui32Remain;
+		IMG_DEVMEM_SIZE_T uiRemain;
 		size_t uiBytesToCopy;
 		size_t uiWrite;
 		IMG_BOOL bValid;
@@ -2585,13 +2585,13 @@ PMR_WriteBytes(PMR *psPMR,
 		                                           1,
 		                                           uiLogicalOffset,
 		                                           &uiPhysicalOffset,
-		                                           &ui32Remain,
+		                                           &uiRemain,
 		                                           &bValid);
 		PVR_LOG_RETURN_IF_ERROR(eError, "_PMRLogicalOffsetToPhysicalOffset");
 
 		/* Copy till either then end of the chunk or end of the buffer
 		 */
-		uiBytesToCopy = MIN(uiBufSz - uiBytesCopied, ui32Remain);
+		uiBytesToCopy = MIN(uiBufSz - uiBytesCopied, uiRemain);
 
 		if (bValid)
 		{
@@ -2813,6 +2813,14 @@ PMR_IsGpuMultiMapped(PMR *psPMR)
 	return psPMR->iAssociatedResCount > 1;
 }
 
+IMG_INT32
+PMR_GetGpuMapCount(PMR *psPMR)
+{
+	PVR_ASSERT(psPMR != NULL);
+	PMRLockHeldAssert(psPMR);
+	return psPMR->iAssociatedResCount;
+}
+
 #if defined(SUPPORT_LINUX_OSPAGE_MIGRATION)
 void
 PMRLinkGPUMapping(PMR *psPMR, DLLIST_NODE *psMappingNode)
@@ -2919,6 +2927,7 @@ IMG_BOOL
 PMR_SetExclusiveUse(PMR *psPMR, IMG_BOOL bFlag)
 {
 	PVR_ASSERT(psPMR != NULL);
+	PMRLockHeldAssert(psPMR);
 
 	if (bFlag)
 	{
@@ -2929,6 +2938,15 @@ PMR_SetExclusiveUse(PMR *psPMR, IMG_BOOL bFlag)
 		_IntFlagClr(psPMR, PMR_FLAG_INTERNAL_IS_EXCLUSIVE);
 		return IMG_TRUE;
 	}
+}
+
+IMG_BOOL
+PMR_IsExclusiveUse(PMR *psPMR)
+{
+	PVR_ASSERT(psPMR != NULL);
+	PMRLockHeldAssert(psPMR);
+
+	return _IntFlagIsSet(psPMR, PMR_FLAG_INTERNAL_IS_EXCLUSIVE);
 }
 
 /* Function that alters the mutability property
@@ -2987,9 +3005,9 @@ PMR_IsOffsetValid(const PMR *psPMR,
                   IMG_BOOL *pbValid)
 {
 	IMG_DEVMEM_OFFSET_T auiPhysicalOffset[PMR_MAX_TRANSLATION_STACK_ALLOC];
-	IMG_UINT32 aui32BytesRemain[PMR_MAX_TRANSLATION_STACK_ALLOC];
+	IMG_DEVMEM_SIZE_T auiBytesRemain[PMR_MAX_TRANSLATION_STACK_ALLOC];
 	IMG_DEVMEM_OFFSET_T *puiPhysicalOffset = auiPhysicalOffset;
-	IMG_UINT32 *pui32BytesRemain = aui32BytesRemain;
+	IMG_DEVMEM_SIZE_T *puiBytesRemain = auiBytesRemain;
 	PVRSRV_ERROR eError = PVRSRV_OK;
 
 	PVR_ASSERT(psPMR != NULL);
@@ -3000,8 +3018,8 @@ PMR_IsOffsetValid(const PMR *psPMR,
 		puiPhysicalOffset = OSAllocMem(ui32NumOfPages * sizeof(IMG_DEVMEM_OFFSET_T));
 		PVR_GOTO_IF_NOMEM(puiPhysicalOffset, eError, e0);
 
-		pui32BytesRemain = OSAllocMem(ui32NumOfPages * sizeof(IMG_UINT32));
-		PVR_GOTO_IF_NOMEM(pui32BytesRemain, eError, e0);
+		puiBytesRemain = OSAllocMem(ui32NumOfPages * sizeof(*puiBytesRemain));
+		PVR_GOTO_IF_NOMEM(puiBytesRemain, eError, e0);
 	}
 
 	eError = _PMRLogicalOffsetToPhysicalOffset(psPMR,
@@ -3009,7 +3027,7 @@ PMR_IsOffsetValid(const PMR *psPMR,
 	                                           ui32NumOfPages,
 	                                           uiLogicalOffset,
 	                                           puiPhysicalOffset,
-	                                           pui32BytesRemain,
+	                                           puiBytesRemain,
 	                                           pbValid);
 	PVR_LOG_IF_ERROR(eError, "_PMRLogicalOffsetToPhysicalOffset");
 
@@ -3019,9 +3037,9 @@ e0:
 		OSFreeMem(puiPhysicalOffset);
 	}
 
-	if (pui32BytesRemain != aui32BytesRemain && pui32BytesRemain != NULL)
+	if (puiBytesRemain != auiBytesRemain && puiBytesRemain != NULL)
 	{
-		OSFreeMem(pui32BytesRemain);
+		OSFreeMem(puiBytesRemain);
 	}
 
 	return eError;
@@ -3251,7 +3269,7 @@ PMR_DevPhysAddr(const PMR *psPMR,
                 IMG_BOOL *pbValid,
                 PMR_PHYSADDRMODE_TYPE uiPMRUsage)
 {
-	IMG_UINT32 ui32Remain;
+	IMG_DEVMEM_SIZE_T uiRemain;
 	PVRSRV_ERROR eError = PVRSRV_OK;
 	IMG_DEVMEM_OFFSET_T auiPhysicalOffset[PMR_MAX_TRANSLATION_STACK_ALLOC];
 	IMG_DEVMEM_OFFSET_T *puiPhysicalOffset = auiPhysicalOffset;
@@ -3285,7 +3303,7 @@ PMR_DevPhysAddr(const PMR *psPMR,
 	                                           ui32NumOfPages,
 	                                           uiLogicalOffset,
 	                                           puiPhysicalOffset,
-	                                           &ui32Remain,
+	                                           &uiRemain,
 	                                           pbValid);
 	PVR_LOG_GOTO_IF_ERROR(eError, "_PMRLogicalOffsetToPhysicalOffset", FreeOffsetArray);
 
@@ -3736,7 +3754,7 @@ PMR_PDumpSymbolicAddr(PMR *psPMR,
 )
 {
 	IMG_DEVMEM_OFFSET_T uiPhysicalOffset;
-	IMG_UINT32 ui32Remain;
+	IMG_DEVMEM_SIZE_T uiRemain;
 	IMG_BOOL bValid;
 	PVRSRV_ERROR eError;
 
@@ -3755,7 +3773,7 @@ PMR_PDumpSymbolicAddr(PMR *psPMR,
 	                                           1,
 	                                           uiLogicalOffset,
 	                                           &uiPhysicalOffset,
-	                                           &ui32Remain,
+	                                           &uiRemain,
 	                                           &bValid);
 	PVR_LOG_RETURN_IF_ERROR(eError, "_PMRLogicalOffsetToPhysicalOffset");
 
@@ -4666,19 +4684,19 @@ PDumpPMRMallocPMR(PMR *psPMR,
 
 	if (PMR_IsSparse(psPMR))
 	{
-		uiNumPhysBlocks = (ui32ChunkSize * ui32NumPhysChunks) >> uiLog2Contiguity;
+		uiNumPhysBlocks = TRUNCATE_64BITS_TO_32BITS(((IMG_UINT64) ui32ChunkSize * ui32NumPhysChunks) >> uiLog2Contiguity);
 		/* Make sure we did not cut off anything */
-		PVR_ASSERT(uiNumPhysBlocks << uiLog2Contiguity == (ui32ChunkSize * ui32NumPhysChunks));
+		PVR_ASSERT(IMG_PAGES2BYTES64(uiNumPhysBlocks, uiLog2Contiguity) == (IMG_UINT64) ui32ChunkSize * ui32NumPhysChunks);
 	}
 	else
 	{
 		uiNumPhysBlocks = uiSize >> uiLog2Contiguity;
 		/* Make sure we did not cut off anything */
-		PVR_ASSERT(uiNumPhysBlocks << uiLog2Contiguity == uiSize);
+		PVR_ASSERT(IMG_PAGES2BYTES64(uiNumPhysBlocks, uiLog2Contiguity) == uiSize);
 	}
 
 	uiNumVirtBlocks = uiSize >> uiLog2Contiguity;
-	PVR_ASSERT(uiNumVirtBlocks << uiLog2Contiguity == uiSize);
+	PVR_ASSERT(IMG_PAGES2BYTES64(uiNumVirtBlocks, uiLog2Contiguity) == uiSize);
 
 	psPMR->uiNumPDumpBlocks = uiNumVirtBlocks;
 

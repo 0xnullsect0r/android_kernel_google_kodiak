@@ -203,7 +203,8 @@ int32_t NestedRingStageProcessing(void *context)
 	}
 	ret = 0;
 	stage->metrics.items_processed_count +=
-		(req.shadow_ring_addr - start_shadow_ring_addr) & shadow_ring.end_mask;
+		((req.shadow_ring_addr - start_shadow_ring_addr) & shadow_ring.end_mask) >>
+		shadow_ring.item_len_bitshift;
 
 out:
 	if (ret == -EAGAIN || stage->has_remaining_data(stage)) {
@@ -430,7 +431,8 @@ int32_t NestedRingStageAsyncProcessing(void *context)
 	stage->shadow_ring.processed_addr = req->shadow_ring_addr;
 	ret = 0;
 	stage->metrics.items_processed_count +=
-		(req->start_shadow_ring_addr - start_shadow_ring_addr) & shadow_ring.end_mask;
+		((req->shadow_ring_addr - start_shadow_ring_addr) & shadow_ring.end_mask) >>
+		shadow_ring.item_len_bitshift;
 
 out:
 	if (ret == -EAGAIN || stage->has_remaining_data(stage)) {

@@ -41,6 +41,7 @@
 #define WAIT_QUEUE_STOP		(70)
 #define REG_SIZE_8_BYTE		(8)
 #define REG_SIZE_4_BYTE		(4)
+#define DEVICE_SIDE_OFFSET	(0x1000)
 
 void mtk_cldma_drv_dump(struct cldma_drv_info *drv_info)
 {
@@ -423,5 +424,23 @@ u32 mtk_cldma_get_gpd_cnt(struct cldma_drv_info *drv_info, enum mtk_tx_rx dir, u
 		return val >> 16;
 	else
 		return val & U16_MAX;
+}
+
+u32 mtk_cldma_check_device_rx_status(struct cldma_drv_info *drv_info, u32 qno)
+{
+	struct cldma_hw_regs *hw_regs;
+	struct mtk_md_dev *mdev;
+	u32 base, addr, val;
+
+	hw_regs = drv_info->hw_regs;
+	base = drv_info->base_addr;
+	mdev = drv_info->mdev;
+
+	addr = base + DEVICE_SIDE_OFFSET + hw_regs->reg_cldma_so_status;
+	val = mtk_pci_read32(mdev, addr);
+	if (qno == ALLQ || val == LINK_ERROR_VAL)
+		return val;
+
+	return val & BIT(qno);
 }
 

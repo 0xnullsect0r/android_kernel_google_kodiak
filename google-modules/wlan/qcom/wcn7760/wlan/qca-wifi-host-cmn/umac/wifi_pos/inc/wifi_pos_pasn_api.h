@@ -26,6 +26,7 @@
 #include "wlan_objmgr_cmn.h"
 #include "wifi_pos_utils_pub.h"
 #include "wifi_pos_public_struct.h"
+#include "scheduler_api.h"
 
 #if defined(WIFI_POS_CONVERGED) && defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
 /**
@@ -190,6 +191,17 @@ wifi_pos_vdev_delete_all_ranging_peers_rsp(struct wlan_objmgr_psoc *psoc,
 					   uint8_t vdev_id);
 
 /**
+ * wifi_pos_rtt_peer_meas_report() - Handle RTT peer measurement report
+ * @psoc: Psoc pointer
+ * @report: Pointer to RTT peer measurement report
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS
+wifi_pos_rtt_peer_meas_report(struct wlan_objmgr_psoc *psoc,
+			      struct wifi_pos_peer_meas_report *report);
+
+/**
  * wifi_pos_is_delete_all_peer_in_progress() - Check if delete all pasn peers
  *                                             command is already in progress
  *                                             for a given vdev
@@ -216,7 +228,41 @@ wifi_pos_get_pasn_peer_max_num_per_vdev(void)
 	return WLAN_MAX_11AZ_PEERS;
 }
 
+/**
+ * wlan_wifi_pos_pasn_flush_callback() - Callback to flush the Wi-Fi POS
+ * scheduler message.
+ * @msg: Pointer to the scheduler message
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS wlan_wifi_pos_pasn_flush_callback(struct scheduler_msg *msg);
+
+/**
+ * wlan_wifi_pos_process_msg() - Callback to process the Wi-Fi POS
+ * scheduler message.
+ * @msg: Pointer to the scheduler message
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS wlan_wifi_pos_process_msg(struct scheduler_msg *msg);
+
+/**
+ * wifi_pos_set_pasn_keys_ctx() - Set PASN keys context
+ * @psoc: pointer to psoc object
+ * @ctx: PASN keys context
+ *
+ * Return: none
+ */
+void wifi_pos_set_pasn_keys_ctx(struct wlan_objmgr_psoc *psoc, void *ctx);
+
 #else
+static inline QDF_STATUS
+wifi_pos_set_peer_ltf_keyseed_required(struct wlan_objmgr_peer *peer,
+				       bool value)
+{
+	return QDF_STATUS_SUCCESS;
+}
+
 static inline
 QDF_STATUS wifi_pos_handle_ranging_peer_create(struct wlan_objmgr_psoc *psoc,
 					       struct wlan_pasn_request *req,
@@ -301,6 +347,23 @@ static inline uint8_t
 wifi_pos_get_pasn_peer_max_num_per_vdev(void)
 {
 	return 0;
+}
+
+static inline
+QDF_STATUS wlan_wifi_pos_pasn_flush_callback(struct scheduler_msg *msg)
+{
+	return QDF_STATUS_SUCCESS;
+}
+
+static inline
+QDF_STATUS wlan_wifi_pos_process_msg(struct scheduler_msg *msg)
+{
+	return QDF_STATUS_SUCCESS;
+}
+
+static inline void
+wifi_pos_set_pasn_keys_ctx(struct wlan_objmgr_psoc *psoc, void *ctx)
+{
 }
 #endif /* WIFI_POS_CONVERGED && WLAN_FEATURE_RTT_11AZ_SUPPORT */
 #endif /* _WIFI_POS_PASN_API_H_ */

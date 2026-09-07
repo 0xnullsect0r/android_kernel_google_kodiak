@@ -19,7 +19,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/crc8.h>
-#include <misc/gvotable.h>
 #include "gbms_power_supply.h"
 #include "google_bms_usecase.h"
 
@@ -67,6 +66,11 @@
 #define P9412_VOUT_SET_MIN_MV			3520
 #define P9412_VOUT_SET_MAX_MV			20000
 #define P9412_RX_ILIM_MAX_MA			1900
+
+#define P9221_READING_MAX_IOUT_MA		10000
+#define P9221_READING_MAX_VOLT_MV		25000
+#define P9221_READING_MAX_FREQ_KHZ		1000
+#define P9221_READING_MAX_TEMP_C		1000
 
 #define P9221_TX_TIMEOUT_MS			(20 * 1000)
 #define P9221_DCIN_TIMEOUT_MS			(1 * 1000)

@@ -801,6 +801,7 @@ static void iyida_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mod
 		}
 	}
 
+	ctx->panel_settings_changed = true;
 	snprintf(trace_msg, sizeof(trace_msg),
 		 "feat: hbm=%u irc=%u ns=%u h_pwm=%u fi=%u@a,%u@m ee=%u rr=%3u-%3u@%3u",
 		 test_bit(FEAT_HBM, feat), irc_mode, test_bit(FEAT_OP_NS, feat),
@@ -1586,6 +1587,7 @@ static int iyida_panel_probe(struct mipi_dsi_device *dsi)
 		dev_warn(ctx->dev,
 			"failed to register inner display tz: %ld",
 			PTR_ERR(ctx->thermal->tz));
+		ctx->thermal->tz = NULL;
 		return 0;
 	}
 

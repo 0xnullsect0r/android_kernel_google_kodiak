@@ -166,21 +166,41 @@ PVRSRV_ERROR PVRSRVRGXDestroyKickSyncContextKM(RGX_SERVER_KICKSYNC_CONTEXT * psK
 	PVRSRV_RGXDEV_INFO * psDevInfo = psKickSyncContext->psDeviceNode->pvDevice;
 	PVRSRV_ERROR         eError;
 
+	/* remove node from list before calling destroy - as destroy, if successful
+	 * will invalidate the node
+	 * must be re-added if destroy fails
+	 */
+	OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
+	dllist_remove_node(&(psKickSyncContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
+
 	/* Check if the FW has finished with this resource ... */
 	eError = RGXFWRequestCommonContextCleanUp(psKickSyncContext->psDeviceNode,
 	                                          psKickSyncContext->psServerCommonContext,
 	                                          RGXFWIF_DM_GP,
 	                                          PDUMP_FLAGS_NONE);
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psKickSyncContext->psDeviceNode,
-						   eError,
-						   RGXFWRequestCommonContextCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psKickSyncContext->psDeviceNode, &eError))
+	{
+		OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
+		dllist_add_to_tail(&(psDevInfo->sKickSyncCtxtListHead), &(psKickSyncContext->sListNode));
+		OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
+
+		return eError;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestCommonContextCleanUp(%s)",
+				__func__,
+				PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 	/* ... it has so we can free its resources */
-
-	OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
-	dllist_remove_node(&(psKickSyncContext->sListNode));
-	OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
 
 	FWCommonContextFree(psKickSyncContext->psServerCommonContext);
 	psKickSyncContext->psServerCommonContext = NULL;

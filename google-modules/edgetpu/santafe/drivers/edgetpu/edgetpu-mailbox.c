@@ -16,6 +16,8 @@
 
 #include <gcip/gcip-memory.h>
 
+#include "edgetpu-client.h"
+#include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-dt-mailbox-adapter.h"
 #include "edgetpu-iremap-pool.h"
@@ -38,8 +40,7 @@ void edgetpu_mailbox_set_resp_queue_head(struct edgetpu_mailbox *mailbox, u32 va
 	EDGETPU_MAILBOX_RESP_QUEUE_WRITE(mailbox, head, value);
 }
 
-void edgetpu_mailbox_inc_cmd_queue_tail(struct edgetpu_mailbox *mailbox,
-					u32 inc)
+void edgetpu_mailbox_inc_cmd_queue_tail(struct edgetpu_mailbox *mailbox, u32 inc)
 {
 	u32 new_tail;
 
@@ -48,8 +49,7 @@ void edgetpu_mailbox_inc_cmd_queue_tail(struct edgetpu_mailbox *mailbox,
 	edgetpu_mailbox_set_cmd_queue_tail(mailbox, new_tail);
 }
 
-void edgetpu_mailbox_inc_resp_queue_head(struct edgetpu_mailbox *mailbox,
-					 u32 inc)
+void edgetpu_mailbox_inc_resp_queue_head(struct edgetpu_mailbox *mailbox, u32 inc)
 {
 	u32 new_head;
 
@@ -90,12 +90,10 @@ int edgetpu_mailbox_validate_attr(const struct edgetpu_mailbox_attr *attr)
 {
 	int size;
 
-	size = convert_runtime_queue_size_to_fw(attr->cmd_queue_size,
-						attr->sizeof_cmd);
+	size = convert_runtime_queue_size_to_fw(attr->cmd_queue_size, attr->sizeof_cmd);
 	if (size < 0)
 		return size;
-	size = convert_runtime_queue_size_to_fw(attr->resp_queue_size,
-						attr->sizeof_resp);
+	size = convert_runtime_queue_size_to_fw(attr->resp_queue_size, attr->sizeof_resp);
 	if (size < 0)
 		return size;
 	return 0;
@@ -225,7 +223,6 @@ void edgetpu_mailbox_reinit_external_mailbox(struct edgetpu_device_group *group)
 
 void edgetpu_mailbox_restore_active_ext_mailbox_queues(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_list_group *l;
 	struct edgetpu_device_group *group;
 	struct edgetpu_device_group **groups;
 	size_t i, n = 0;
@@ -247,7 +244,7 @@ void edgetpu_mailbox_restore_active_ext_mailbox_queues(struct edgetpu_dev *etdev
 	 * etdev->groups_lock. To prevent the potential deadlock that
 	 * edgetpu_device_group_add() holds group->lock then etdev->groups_lock.
 	 */
-	etdev_for_each_group(etdev, l, group) {
+	list_for_each_entry(group, &etdev->groups, group_list_node) {
 		/*
 		 * Quick skip without holding group->lock.
 		 * Disbanded groups can never go back to the normal state.
@@ -313,7 +310,6 @@ static int edgetpu_mailbox_activate_bulk(struct edgetpu_dev *etdev, u32 mailbox_
 	if (ret == -ETIMEDOUT)
 		edgetpu_watchdog_bite(etdev);
 	return ret;
-
 }
 
 static int edgetpu_mailbox_deactivate_bulk(struct edgetpu_dev *etdev, u32 mailbox_map)
@@ -408,7 +404,9 @@ static int edgetpu_mailbox_external_alloc(struct edgetpu_device_group *group,
 {
 	u32 i, j = 0, bmap, start, end;
 	struct edgetpu_mailbox_manager *mgr = group->etdev->mailbox_manager;
+#if !EDGETPU_USE_CMF
 	void __iomem *csr_base;
+#endif
 	struct edgetpu_mailbox *mailbox;
 	int ret = 0, count;
 	struct edgetpu_external_mailbox *ext_mailbox;
@@ -472,10 +470,15 @@ static int edgetpu_mailbox_external_alloc(struct edgetpu_device_group *group,
 	bmap = ext_mailbox_req->mbox_map;
 	while (bmap) {
 		i = ffs(bmap) + start - 1;
-		/* TODO(b/510560407): Update to get DRAM base */
+#if EDGETPU_USE_CMF
+		/* TODO(b/517784282): Update once we determine where external metadata should be */
+		mailbox = ERR_PTR(-ENOMEM);
+#else
 		csr_base = edgetpu_mailbox_get_ext_csr_base(mgr->etdev, i);
 		/* External mailboxes do not have doorbells to the AP. */
-		mailbox = edgetpu_mailbox_alloc(mgr->etdev, csr_base, /*irq=*/0, i);
+		mailbox = edgetpu_mailbox_alloc(mgr->etdev, csr_base, /*irq=*/0, i,
+						/*msi_enabled=*/false);
+#endif /* EDGETPU_USE_CMF */
 		if (!IS_ERR(mailbox)) {
 			mgr->ext_mailboxes[i - mgr->ext_index_from] = mailbox;
 			ext_mailbox->descriptors[j++].mailbox = mailbox;
@@ -528,7 +531,7 @@ static void edgetpu_mailbox_external_free(struct edgetpu_device_group *group)
 
 	edgetpu_mailbox_external_free_queue_batch(ext_mailbox);
 
-	for (i = 0; i < ext_mailbox->count; i++)  {
+	for (i = 0; i < ext_mailbox->count; i++) {
 		mailbox = ext_mailbox->descriptors[i].mailbox;
 		edgetpu_device_group_put(mailbox->internal.group);
 		mgr->ext_mailboxes[mailbox->mailbox_id - mgr->ext_index_from] = NULL;
@@ -635,8 +638,8 @@ static int edgetpu_mailbox_external_enable_by_id(struct edgetpu_client *client, 
 
 	ret = edgetpu_mailbox_activate_bulk(client->etdev, BIT(mailbox_id), client_priv, -1, false);
 	if (ret)
-		etdev_err(client->etdev, "client %s activate mailbox %d failed: %d",
-			  client->name, mailbox_id, ret);
+		etdev_err(client->etdev, "client %s activate mailbox %d failed: %d", client->name,
+			  mailbox_id, ret);
 	else
 		edgetpu_wakelock_inc_event_locked(client, EDGETPU_WAKELOCK_EVENT_EXT_MAILBOX);
 	edgetpu_wakelock_unlock(client);
@@ -702,7 +705,6 @@ void edgetpu_mailbox_disable_external_mailbox(struct edgetpu_device_group *group
 
 	for (i = 0; i < ext_mailbox->count; i++)
 		edgetpu_mailbox_disable(ext_mailbox->descriptors[i].mailbox);
-
 }
 
 int edgetpu_mailbox_deactivate_external_mailbox(struct edgetpu_device_group *group)
@@ -720,8 +722,8 @@ int edgetpu_mailbox_deactivate_external_mailbox(struct edgetpu_device_group *gro
 	ret = edgetpu_mailbox_deactivate_bulk(ext_mailbox->etdev, mbox_map);
 	if (ret)
 		etdev_err(ext_mailbox->etdev,
-			"client %s deactivate external mailbox map %#x failed: %d",
-			group->client->name, mbox_map, ret);
+			  "client %s deactivate external mailbox map %#x failed: %d",
+			  group->client->name, mbox_map, ret);
 	return ret;
 }
 

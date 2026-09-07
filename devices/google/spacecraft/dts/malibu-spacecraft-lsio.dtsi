@@ -14,9 +14,7 @@
  * DISP0 PMIC
  */
 &lsioe_i2c4 {
-	clock-frequency = <1000000>;
-	i2c-sda-falling-time-ns = <100>;
-	i2c-scl-falling-time-ns = <100>;
+	clock-frequency = <400000>;
 
 	pinctrl-0 = <&xlsioe_i23c9_scl>, <&xlsioe_i23c9_sda>;
 	pinctrl-1 = <&xlsioe_i23c9_scl_sleep>, <&xlsioe_i23c9_sda_sleep>;

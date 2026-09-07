@@ -21,6 +21,7 @@
 #include <linux/mutex.h>
 
 #include "google_odpm.h"
+#include "google_powercap.h"
 #include "google_thermal_odpm_helper.h"
 
 const struct odpm_rail_energy *godpm_get_rail_energy(void)
@@ -74,21 +75,20 @@ bool godpm_schedule_delayed_work(struct delayed_work *dwork,
 					unsigned long delay)
 {
 	KUNIT_STATIC_STUB_REDIRECT(godpm_schedule_delayed_work, dwork, delay);
-	return schedule_delayed_work(dwork, delay);
+	return queue_delayed_work(gpowercap_wq ? : system_unbound_wq, dwork, delay);
 }
 
-bool godpm_mod_delayed_work(struct workqueue_struct *wq,
-				   struct delayed_work *dwork,
+bool godpm_mod_delayed_work(struct delayed_work *dwork,
 				   unsigned long delay)
 {
-	KUNIT_STATIC_STUB_REDIRECT(godpm_mod_delayed_work, wq, dwork, delay);
-	return mod_delayed_work(wq, dwork, delay);
+	KUNIT_STATIC_STUB_REDIRECT(godpm_mod_delayed_work, dwork, delay);
+	return mod_delayed_work(gpowercap_wq ? : system_unbound_wq, dwork, delay);
 }
 
-bool godpm_cancel_delayed_work_sync(struct delayed_work *dwork)
+bool godpm_cancel_delayed_work(struct delayed_work *dwork)
 {
-	KUNIT_STATIC_STUB_REDIRECT(godpm_cancel_delayed_work_sync, dwork);
-	return cancel_delayed_work_sync(dwork);
+	KUNIT_STATIC_STUB_REDIRECT(godpm_cancel_delayed_work, dwork);
+	return cancel_delayed_work(dwork);
 }
 
 ktime_t godpm_ktime_get(void)
@@ -326,8 +326,8 @@ int google_thermal_odpm_register_client(const char *regulator_name,
 				      msecs_to_jiffies(min_polling_interval_ms));
 	} else if (polling_interval_ms < min_polling_interval_ms) {
 		min_polling_interval_ms = polling_interval_ms;
-		godpm_mod_delayed_work(system_wq, &odpm_global_work,
-				 msecs_to_jiffies(min_polling_interval_ms));
+		godpm_mod_delayed_work(&odpm_global_work,
+					msecs_to_jiffies(min_polling_interval_ms));
 	}
 
 	ret = 0;
@@ -440,12 +440,12 @@ int google_thermal_odpm_unregister_client(const char *regulator_name,
 	}
 
 	if (list_empty(&odpm_regulator_groups)) {
-		godpm_cancel_delayed_work_sync(&odpm_global_work);
+		godpm_cancel_delayed_work(&odpm_global_work);
 		min_polling_interval_ms = UINT_MAX;
 	} else if (min_interval_changed) {
 		odpm_recalculate_min_interval();
-		godpm_mod_delayed_work(system_wq, &odpm_global_work,
-				 msecs_to_jiffies(min_polling_interval_ms));
+		godpm_mod_delayed_work(&odpm_global_work,
+				       msecs_to_jiffies(min_polling_interval_ms));
 	}
 
 	ret = 0;

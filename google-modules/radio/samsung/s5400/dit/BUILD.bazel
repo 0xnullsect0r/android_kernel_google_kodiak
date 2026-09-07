@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "exynos_dit",
     srcs = glob([
@@ -19,11 +24,7 @@ ddk_module(
         "-Wno-missing-prototypes",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/radio/samsung/s5400:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
     ],
 )

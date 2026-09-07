@@ -171,7 +171,7 @@ enum lwis_dma_alloc_flags {
 
 struct lwis_alloc_buffer_info {
 	// IOCTL input for BUFFER_ALLOC
-	size_t size;
+	uint64_t size;
 	uint32_t flags; // lwis_dma_alloc_flags
 	// IOCTL output for BUFFER_ALLOC
 	int32_t dma_fd;
@@ -198,7 +198,7 @@ struct lwis_buffer_cpu_access_op {
 	bool read;
 	bool write;
 	uint32_t offset;
-	size_t len;
+	uint64_t len;
 };
 
 enum lwis_io_entry_types {
@@ -236,7 +236,7 @@ struct lwis_io_entry_rw_v2 {
 struct lwis_io_entry_rw_batch {
 	int32_t bid;
 	uint64_t offset;
-	size_t size_in_bytes;
+	uint64_t size_in_bytes;
 	uint8_t *buf;
 	bool is_offset_fixed;
 };
@@ -244,7 +244,7 @@ struct lwis_io_entry_rw_batch {
 struct lwis_io_entry_rw_batch_v2 {
 	int32_t bid;
 	uint64_t offset;
-	size_t size_in_bytes;
+	uint64_t size_in_bytes;
 	uint8_t *buf;
 	bool is_offset_fixed;
 	uint32_t speed_hz;
@@ -274,7 +274,7 @@ struct lwis_io_entry_write_to_buffer {
 		void *buffer;
 	};
 	uint64_t offset;
-	size_t size_in_bytes;
+	uint64_t size_in_bytes;
 	uint8_t *bytes;
 };
 
@@ -304,7 +304,7 @@ struct lwis_device_io_entries {
 };
 
 struct lwis_echo {
-	size_t size;
+	uint64_t size;
 	const char *msg;
 	bool kernel_log;
 };
@@ -366,13 +366,13 @@ enum lwis_fence_status {
 
 struct lwis_event_info {
 	// IOCTL Inputs
-	size_t payload_buffer_size;
+	uint64_t payload_buffer_size;
 	void *payload_buffer;
 	// IOCTL Outputs
 	int64_t event_id;
 	int64_t event_counter;
 	int64_t timestamp_ns;
-	size_t payload_size;
+	uint64_t payload_size;
 };
 
 #define LWIS_EVENT_CONTROL_FLAG_IRQ_ENABLE (1ULL << 0)
@@ -387,7 +387,7 @@ struct lwis_event_control {
 };
 
 struct lwis_event_control_list {
-	size_t num_event_controls;
+	uint64_t num_event_controls;
 	struct lwis_event_control *event_controls;
 };
 
@@ -424,7 +424,7 @@ enum lwis_transaction_trigger_node_operator {
 #define LWIS_NESTED_TRANSACTION_MAX 8
 #define LWIS_TRIGGER_NODES_MAX_NUM 16
 struct lwis_transaction_trigger_condition {
-	size_t num_nodes;
+	uint64_t num_nodes;
 	int32_t operator_type; //lwis_transaction_trigger_node_operator
 	struct lwis_transaction_trigger_node trigger_nodes[LWIS_TRIGGER_NODES_MAX_NUM];
 };
@@ -453,7 +453,7 @@ struct lwis_transaction_info_v6 {
 	// The created completion fence file descriptor is returned in this variable.
 	int32_t create_completion_fence_fd;
 	int32_t create_completion_fence_signal_fd;
-	size_t num_io_entries;
+	uint64_t num_io_entries;
 	struct lwis_io_entry *io_entries;
 	bool run_in_event_context;
 	// Use reserved to keep the original interface
@@ -463,9 +463,9 @@ struct lwis_transaction_info_v6 {
 	bool is_level_triggered;
 	bool is_high_priority_transaction;
 	char transaction_name[LWIS_MAX_NAME_STRING_LEN];
-	size_t num_nested_transactions;
+	uint64_t num_nested_transactions;
 	int64_t nested_transaction_ids[LWIS_NESTED_TRANSACTION_MAX];
-	size_t num_completion_fences;
+	uint64_t num_completion_fences;
 	int32_t completion_fence_fds[LWIS_COMPLETION_FENCE_MAX];
 	// Output
 	int64_t id;
@@ -484,7 +484,7 @@ struct lwis_transaction_info_v7 {
 	// The created completion fence file descriptor is returned in this variable.
 	int32_t create_completion_fence_fd;
 	int32_t create_completion_fence_signal_fd;
-	size_t num_io_entries;
+	uint64_t num_io_entries;
 	struct lwis_io_entry *io_entries;
 	bool run_in_event_context;
 	// Use reserved to keep the original interface
@@ -494,9 +494,9 @@ struct lwis_transaction_info_v7 {
 	bool is_level_triggered;
 	bool is_high_priority_transaction;
 	char transaction_name[LWIS_MAX_NAME_STRING_LEN];
-	size_t num_nested_transactions;
+	uint64_t num_nested_transactions;
 	int64_t nested_transaction_ids[LWIS_NESTED_TRANSACTION_MAX];
-	size_t num_completion_fences;
+	uint64_t num_completion_fences;
 	int32_t completion_fence_fds[LWIS_COMPLETION_FENCE_MAX];
 	// Used to delay the transaction execution by a given duration relative to the submission
 	// timestamp.
@@ -518,9 +518,9 @@ struct lwis_transaction_info {
 	// The created completion fence file descriptor is returned in this variable.
 	int32_t create_completion_fence_fd;
 	int32_t create_completion_fence_signal_fd;
-	size_t num_io_entries;
+	uint64_t num_io_entries;
 	struct lwis_io_entry *io_entries;
-	size_t num_device_io_entries;
+	uint64_t num_device_io_entries;
 	// Device specific IO entries, these IO entries do not run on the device which owns the
 	// transaction. Only the Top device can have device specific IO entries, and the top
 	// device cannot be included in any of the device specific IO entries.
@@ -536,9 +536,9 @@ struct lwis_transaction_info {
 	bool is_level_triggered;
 	bool is_high_priority_transaction;
 	char transaction_name[LWIS_MAX_NAME_STRING_LEN];
-	size_t num_nested_transactions;
+	uint64_t num_nested_transactions;
 	int64_t nested_transaction_ids[LWIS_NESTED_TRANSACTION_MAX];
-	size_t num_completion_fences;
+	uint64_t num_completion_fences;
 	int32_t completion_fence_fds[LWIS_COMPLETION_FENCE_MAX];
 	// Used to delay the transaction execution by a given duration relative to the submission
 	// timestamp.
@@ -555,14 +555,14 @@ struct lwis_transaction_response_header {
 	int64_t id;
 	int32_t error_code;
 	int32_t completion_index;
-	size_t num_entries;
-	size_t results_size_bytes;
+	uint64_t num_entries;
+	uint64_t results_size_bytes;
 };
 
 struct lwis_io_result {
 	int32_t bid;
 	uint64_t offset;
-	size_t num_value_bytes;
+	uint64_t num_value_bytes;
 	uint8_t values[];
 };
 
@@ -570,7 +570,7 @@ struct lwis_periodic_io_info {
 	// Input
 	int32_t batch_size;
 	int64_t period_ns;
-	size_t num_io_entries;
+	uint64_t num_io_entries;
 	struct lwis_io_entry *io_entries;
 	int64_t emit_success_event_id;
 	int64_t emit_error_event_id;
@@ -584,8 +584,8 @@ struct lwis_periodic_io_response_header {
 	int64_t id;
 	int32_t error_code;
 	int32_t batch_size;
-	size_t num_entries_per_period;
-	size_t results_size_bytes;
+	uint64_t num_entries_per_period;
+	uint64_t results_size_bytes;
 };
 
 struct lwis_periodic_io_result {
@@ -595,7 +595,7 @@ struct lwis_periodic_io_result {
 
 struct lwis_dpm_clk_settings {
 	struct lwis_clk_setting *settings;
-	size_t num_settings;
+	uint64_t num_settings;
 };
 
 struct lwis_qos_setting_v3 {
@@ -721,21 +721,21 @@ struct lwis_dpm_qos_requirements_v3 {
 	// qos entities from user.
 	struct lwis_qos_setting_v3 *qos_settings;
 	// number of qos_settings.
-	size_t num_settings;
+	uint64_t num_settings;
 };
 
 struct lwis_dpm_qos_requirements_v4 {
 	// qos entities from user.
 	struct lwis_qos_setting_v4 *qos_settings;
 	// number of qos_settings.
-	size_t num_settings;
+	uint64_t num_settings;
 };
 
 struct lwis_dpm_qos_requirements {
 	// qos entities from user.
 	struct lwis_qos_setting *qos_settings;
 	// number of qos_settings.
-	size_t num_settings;
+	uint64_t num_settings;
 };
 
 struct lwis_dpm_op_level {

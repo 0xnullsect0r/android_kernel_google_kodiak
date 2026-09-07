@@ -61,6 +61,9 @@ struct edgetpu_wakelock {
 
 	/* Wakeup source held when non-suspendable wakelock held, created on first acquire. */
 	struct edgetpu_wakeup_source *etws;
+
+	/* True if wakelock was force released for a zombie client. */
+	bool force_released;
 };
 
 /* Initialize the wakelock object for @client. */

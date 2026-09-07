@@ -164,13 +164,11 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	struct aoc_service_dev *dev = NULL;
 	int idx;
 	int err;
-	bool mutex_locked = true;
 
 	dev_dbg(component->dev, "stream (%d)\n", substream->number); /* Playback or capture */
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		dev_err(component->dev, "ERR: interrupted whilst waiting for lock\n");
-		mutex_locked = false;
-		/* b/480740542 don't return to cleanup the resource */
+		return -EINTR;
 	}
 
 	idx = substream->pcm->device;
@@ -244,26 +242,24 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	/* TODO: refactor needed on mapping between device number and entrypoint */
 	alsa_stream->entry_point_idx = (idx == 7) ? HAPTICS : idx;
 	update_google_cdd_audio_stat_ext(chip, CCD_AUDIO_VOIP, true);
-	if (mutex_locked)
-		mutex_unlock(&chip->audio_mutex);
+	mutex_unlock(&chip->audio_mutex);
 
 	return 0;
 out:
-	if (alsa_stream) {
-		if (alsa_stream->voip_period_wq) {
-			flush_workqueue(alsa_stream->voip_period_wq);
-			destroy_workqueue(alsa_stream->voip_period_wq);
-			alsa_stream->voip_period_wq = NULL;
-		}
-		kfree(alsa_stream);
+	if (dev) {
+		aoc_cancel_service_work_sync(dev);
+		free_aoc_audio_service(rtd->dai_link->name, dev);
 	}
 
-	if (dev) {
-		free_aoc_audio_service(rtd->dai_link->name, dev);
-		dev = NULL;
+	if (alsa_stream) {
+		if (alsa_stream->voip_period_wq)
+			destroy_workqueue(alsa_stream->voip_period_wq);
+
+		kfree(alsa_stream);
 	}
-	if (mutex_locked)
-		mutex_unlock(&chip->audio_mutex);
+	runtime->private_data = NULL;
+	runtime->private_free = NULL;
+	mutex_unlock(&chip->audio_mutex);
 
 	dev_dbg(component->dev, "pcm open err=%d\n", err);
 	return err;
@@ -276,25 +272,40 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
-	struct aoc_chip *chip = alsa_stream->chip;
+	struct aoc_chip *chip;
 	int err;
+	bool mutex_locked = true;
 
 	dev_dbg(component->dev, "name %s substream %pK", rtd->dai_link->name, substream);
-	// Wait for any active ISR to finish
-	synchronize_irq(alsa_stream->dev->irq);
+
+	if (!alsa_stream)
+		return 0;
+
+	chip = alsa_stream->chip;
+
+	/* Wait for any active ISR to finish */
+	if (alsa_stream->dev)
+		synchronize_irq(alsa_stream->dev->irq);
+
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
-	audio_free_isr(alsa_stream->dev);
+
+	if (alsa_stream->dev) {
+		audio_free_isr(alsa_stream->dev);
+		aoc_cancel_service_work_sync(alsa_stream->dev);
+	}
+
 	if (alsa_stream->voip_period_wq) {
-		flush_workqueue(alsa_stream->voip_period_wq);
 		destroy_workqueue(alsa_stream->voip_period_wq);
 		alsa_stream->voip_period_wq = NULL;
 	}
+
 	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		dev_err(component->dev, "ERR: interrupted while waiting for lock\n");
-		return -EINTR;
+		mutex_locked = false;
+		/* b/480740542 don't return to cleanup the resource */
 	}
 
 	/* Stop voip call (Refactor needed) */
@@ -335,7 +346,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	chip->opened &= ~(1 << alsa_stream->idx);
 
 	update_google_cdd_audio_stat_ext(chip, CCD_AUDIO_VOIP, false);
-	mutex_unlock(&chip->audio_mutex);
+	if (mutex_locked)
+		mutex_unlock(&chip->audio_mutex);
 	return 0;
 }
 

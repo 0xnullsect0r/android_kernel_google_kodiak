@@ -44,6 +44,7 @@ struct noa_wlan_fw_ops {
 	int (*update_flowid_lkup_entry)(struct noa_wlan_client *client, const void *entry);
 	void (*sync_pci_link_state)(struct noa_wlan_client *client, int32_t state, bool is_to_shm);
 	void (*notify_station_state)(struct noa_wlan_client *client, u8 state, int iif);
+	int (*rx_handover_sync)(struct noa_wlan_client *client, u64 handover_addr, u32 count);
 };
 
 /* NOA WiFi firmware send event to WiFi driver */
@@ -59,6 +60,7 @@ struct noa_wlan_client_ops {
 	int (*vote_device_power)(void *bus, bool active);
 	int (*sync_back_pci_dev_state)(void *bus, void *state);
 	int (*manage_power)(void *bus, bool acquire);
+	int (*rx_handover)(void *bus);
 };
 
 struct noa_wlan_hw {
@@ -146,6 +148,7 @@ struct noa_wlan_client {
 	u32 tx_pkt_max;
 	u32 tx_flow_max;
 	u32 tx_bm_sz;
+	u32 rx_pkt_tlv_size;
 	u32 rx_flow_max;
 	u32 tx_cpl_flow_max;
 	u32 rx_post_max;
@@ -200,6 +203,7 @@ struct buffer_repln_data {
 typedef enum noa_wlan_intr_type {
 	NOA_WLAN_INTR_TYPE_START = 0,
 	NOA_WLAN_INTR_TYPE_RX = NOA_WLAN_INTR_TYPE_START,
+	NOA_WLAN_INTR_TYPE_TX,
 	NOA_WLAN_INTR_TYPE_MAX,
 } noa_wlan_intr_type_t;
 
@@ -218,6 +222,10 @@ static struct wlan_irq_mapping_entry brcm4390_irq_table[MAX_IRQ_NUM] = {
 	},
 };
 
+static struct wlan_irq_mapping_entry wcn7760_irq_table[MAX_IRQ_NUM] = {
+	[NOA_WLAN_INTR_TYPE_RX] = {.noa_wlan_irq = 19},
+	[NOA_WLAN_INTR_TYPE_TX] = {.noa_wlan_irq = 14},
+};
 static inline struct wlan_irq_mapping_entry *get_irq_table(struct noa_wlan_client *client)
 {
 	switch (client->type) {
@@ -228,6 +236,7 @@ static inline struct wlan_irq_mapping_entry *get_irq_table(struct noa_wlan_clien
 	case WLAN_FW_TYPE_FAKE_BRCM_4390:
 		return fake_brcm4390_irq_table;
 	case WLAN_FW_TYPE_QCA:
+		return wcn7760_irq_table;
 	default:
 		return NULL;
 	}
@@ -277,6 +286,22 @@ static inline int noa_wlan_fw_rxbm_sync(struct noa_wlan_client *client, void *bu
 	}
 
 	return client->fw_ops->rxbm_sync(client, bufs, cnt, to_dev);
+}
+
+static inline int noa_wlan_fw_rx_handover_sync(struct noa_wlan_client *client, u64 handover_addr,
+					       u32 count)
+{
+	if (!client) {
+		noa_wlan_err("%s(): invalid NOA WLAN client.", __func__);
+		return -EINVAL;
+	}
+
+	if (!client->fw_ops || !client->fw_ops->rx_handover_sync) {
+		noa_wlan_err("%s(): FW operation is not registered.", __func__);
+		return -ENODEV;
+	}
+
+	return client->fw_ops->rx_handover_sync(client, handover_addr, count);
 }
 
 static inline int noa_wlan_fw_txq_active(struct noa_wlan_client *client, u16 flowid, bool enable)

@@ -348,7 +348,7 @@ PVRSRV_ERROR PhysMemValidateParams(PVRSRV_DEVICE_NODE *psDevNode,
                                    IMG_DEVMEM_SIZE_T *puiSize)
 {
 	IMG_UINT32 uiLog2AllocPageSize = *puiLog2AllocPageSize;
-	IMG_UINT32 ui32PageSize = IMG_PAGE2BYTES32(uiLog2AllocPageSize);
+	IMG_UINT32 ui32PageSize;
 	IMG_DEVMEM_SIZE_T uiSize = *puiSize;
 	/* Sparse if we have different number of virtual and physical chunks plus
 	 * in general all allocations with more than one virtual chunk */
@@ -393,6 +393,18 @@ PVRSRV_ERROR PhysMemValidateParams(PVRSRV_DEVICE_NODE *psDevNode,
 
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
+
+	/* Protect against invalid log2 alloc page sizes */
+	if (uiLog2AllocPageSize > IMG_PAGE_SHIFT_2MB)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Log2 of allocation page size %u is too large",
+		         __func__,
+		         uiLog2AllocPageSize));
+
+		return PVRSRV_ERROR_INVALID_PARAMS;
+	}
+
+	ui32PageSize = IMG_PAGE2BYTES32(uiLog2AllocPageSize);
 
 	/* Protect against invalid page sizes */
 	if ((ui32PageSize & psDevNode->psMMUDevAttrs->ui32ValidPageSizeMask) == 0)

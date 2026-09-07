@@ -114,7 +114,7 @@ static void dma_iif_fence_signal_work(struct work_struct *work)
 		return;
 
 	if (iif_fence->signal_error)
-		dma_fence_set_error(dma_fence, iif_fence->signal_error);
+		dma_fence_set_error(dma_fence, iif_dma_fence->poll_cb.iif_cb.status.error);
 	dma_fence_signal(dma_fence);
 }
 
@@ -430,7 +430,13 @@ struct dma_fence *dma_iif_fence_bridge(struct iif_fence *iif_fence)
 
 	ret = iif_fence_add_poll_callback(iif_fence, &iif_dma_fence->poll_cb.iif_cb,
 					  dma_iif_fence_poll_cb);
-	/* If @ret is non-zero, @iif_fence is already signaled. */
+	if (ret && ret != -EPERM) {
+		iif_fence_put(iif_fence);
+		kfree(iif_dma_fence);
+		return ERR_PTR(ret);
+	}
+
+	/* If @ret is -EPERM, @iif_fence is already signaled. */
 	if (ret) {
 		if (iif_fence->signal_error)
 			dma_fence_set_error(dma_fence, iif_fence->signal_error);

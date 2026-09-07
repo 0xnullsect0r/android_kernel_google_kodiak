@@ -76,6 +76,7 @@
 #include "wlan_p2p_api.h"
 #endif
 #include <wlan_cp_stats_utils_api.h>
+#include "target_if.h"
 
 /*
  * If FW supports WMI_SERVICE_SCAN_CONFIG_PER_CHANNEL,
@@ -10667,6 +10668,10 @@ void wmi_copy_resource_config(wmi_unified_t wmi_handle,
 	if (tgt_res_cfg->enable_bcn_rssi_history_report)
 		WMI_RSRC_CFG_FLAGS2_RECV_BCN_STATS_ENABLED_SET(
 						resource_cfg->flags2, 1);
+
+	if (tgt_res_cfg->iot_temporal_mode_enabled)
+		WMI_RSRC_CFG_NAN_CONFIG_ENABLE_NAN_TEMPORAL_IOT_MODE_SET(
+				resource_cfg->nan_config_word, 1);
 }
 
 #ifdef FEATURE_SET
@@ -16047,6 +16052,60 @@ static QDF_STATUS extract_sar_cap_service_ready_ext2_tlv(
 	return QDF_STATUS_SUCCESS;
 }
 
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+/**
+ * extract_rtt_peer_meas_caps_service_ready_ext2_tlv() - extract RTT/FTM
+ *       peer measurement capabilities from service ready ext2 event
+ * @wmi_handle: wmi handle
+ * @event: pointer to event buffer
+ * @caps: pointer to wifi_pos_pmsr_fw_caps to fill
+ *
+ * Return: QDF_STATUS_SUCCESS for success or error code
+ */
+static QDF_STATUS
+extract_rtt_peer_meas_caps_service_ready_ext2_tlv(
+				wmi_unified_t wmi_handle,
+				uint8_t *event,
+				struct wifi_pos_pmsr_fw_caps *caps)
+{
+	WMI_SERVICE_READY_EXT2_EVENTID_param_tlvs *param_buf;
+	wmi_rtt_peer_meas_capabilities *fw_caps;
+
+	param_buf = (WMI_SERVICE_READY_EXT2_EVENTID_param_tlvs *)event;
+	if (!param_buf) {
+		wmi_err("Invalid event buffer");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	fw_caps = param_buf->rtt_peer_meas_caps;
+	if (!fw_caps) {
+		wmi_err("peer meas caps TLV not present in service ready ext2");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	caps->support_flag              = fw_caps->support_flag;
+	caps->max_peers                 = fw_caps->max_peers;
+	caps->pd_max_peers              = fw_caps->pd_max_peers;
+	caps->ftm_support_flag          = fw_caps->ftm_support_flag;
+	caps->supported_bw_bitmap       = fw_caps->supported_bw_bitmap;
+	caps->supported_preamble_bitmap = fw_caps->supported_preamble_bitmap;
+	caps->capabilities              = fw_caps->capabilities;
+	caps->ranging_11az_parameters   = fw_caps->ranging_11az_parameters;
+	caps->min_interval_edca_ms      = fw_caps->min_interval_edca_ms;
+	caps->min_interval_ntb_ms       = fw_caps->min_interval_ntb_ms;
+	caps->valid                     = true;
+
+	wmi_debug("RTT peer meas caps: support_flag=0x%x max_peers=%u pd_max_peers=0x%x ftm_flag=0x%x bw=0x%x preamble=0x%x caps=0x%x az_params=0x%x edca_ms=%u ntb_ms=%u",
+		  caps->support_flag, caps->max_peers, caps->pd_max_peers,
+		  caps->ftm_support_flag, caps->supported_bw_bitmap,
+		  caps->supported_preamble_bitmap, caps->capabilities,
+		  caps->ranging_11az_parameters,
+		  caps->min_interval_edca_ms, caps->min_interval_ntb_ms);
+
+	return QDF_STATUS_SUCCESS;
+}
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
+
 /**
  * extract_hw_mode_cap_service_ready_ext_tlv() -
  *       extract HW mode cap from service ready event
@@ -20494,6 +20553,205 @@ extract_pasn_peer_delete_req_event_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 }
 
 static QDF_STATUS
+extract_rtt_peer_meas_report_ev_tlv(wmi_unified_t wmi_handle, void *evt_buf,
+				    struct wifi_pos_peer_meas_report *dst)
+{
+	WMI_RTT_PEER_MEAS_REPORT_EVENTID_param_tlvs *param_buf;
+	wmi_rtt_peer_meas_report_event_fixed_param *fixed_param;
+	wmi_rtt_peer_meas_report_peer_meas_result_info *buf;
+	struct wifi_pos_peer_meas_result *res;
+	uint32_t i, flags, wmi_ch_width;
+
+	param_buf =
+		(WMI_RTT_PEER_MEAS_REPORT_EVENTID_param_tlvs *)evt_buf;
+	if (!param_buf) {
+		wmi_err("Invalid RTT peer meas report evt buffer");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	fixed_param = param_buf->fixed_param;
+	if (!fixed_param) {
+		wmi_err("NULL fixed param in RTT peer meas report");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	if (param_buf->num_peer_meas_result_info >
+	    ((WMI_SVC_MSG_MAX_SIZE - sizeof(*fixed_param)) /
+	     sizeof(wmi_rtt_peer_meas_report_peer_meas_result_info))) {
+		wmi_err("Invalid TLV size for peer_meas_result_info");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	if (param_buf->num_peer_meas_result_info > WLAN_MAX_11AZ_PEERS) {
+		wmi_err("Too many peer meas results: %u",
+			param_buf->num_peer_meas_result_info);
+		return QDF_STATUS_E_INVAL;
+	}
+
+	dst->req_id = fixed_param->req_id;
+	dst->vdev_id = (uint8_t)fixed_param->vdev_id;
+	dst->num_peers = (uint8_t)param_buf->num_peer_meas_result_info;
+
+	buf = param_buf->peer_meas_result_info;
+	if (!buf && dst->num_peers) {
+		wmi_err("NULL peer_meas_result_info TLV");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	for (i = 0; i < dst->num_peers; i++, buf++) {
+		res = &dst->peer_result[i];
+
+		WMI_MAC_ADDR_TO_CHAR_ARRAY(&buf->dest_mac,
+					   res->peer_mac.bytes);
+
+		if (buf->status == WMI_RTT_PEER_MEAS_STATUS_SUCCESS)
+			res->status = WIFI_POS_RTT_PEER_MEAS_STATUS_OK;
+		else
+			res->status = WIFI_POS_RTT_PEER_MEAS_STATUS_FAIL;
+
+		flags = buf->result_flag;
+		res->final =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_FINAL_GET(flags);
+		res->tb_ranging =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_TB_RANGING_GET(flags);
+		res->ntb_ranging =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_NTB_RANGING_GET(flags);
+		res->ap_tsf_valid =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_AP_TSF_VALID_GET(flags);
+		res->is_delayed_lmr =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_IS_DELAYED_LMR_GET(flags);
+		res->meas_type =
+			WMI_RTT_PEER_MEAS_REPORT_RESULT_FLAG_MEAS_TYPE_GET(flags);
+
+		res->burst_idx =
+			WMI_RTT_PEER_MEAS_REPORT_BURST_INFO_BURST_INDEX_GET(
+							buf->burst_info);
+		res->burst_count =
+			WMI_RTT_PEER_MEAS_REPORT_BURST_INFO_NUM_BURSTS_EXP_GET(
+							buf->burst_info);
+		res->burst_duration =
+			WMI_RTT_PEER_MEAS_REPORT_BURST_PARAMS_BURST_DURATION_GET(
+							buf->burst_params);
+		res->burst_period =
+			WMI_RTT_PEER_MEAS_REPORT_BURST_PARAMS_BURST_PERIOD_GET(
+							buf->burst_params);
+		res->ftms_per_burst =
+			WMI_RTT_PEER_MEAS_REPORT_BURST_PARAMS_FTMS_PER_BURST_GET(
+							buf->burst_params);
+
+		res->rssi_avg = (uint32_t)buf->rssi.rssi_avg_dbm;
+		res->rssi_spread = (uint32_t)buf->rssi.rssi_spread_db;
+
+		res->rtt_avg =
+			((uint64_t)buf->rtt.rtt_avg_ps.part.value_h32 << 32) |
+			buf->rtt.rtt_avg_ps.part.value_l32;
+		res->rtt_variance =
+			((uint64_t)buf->rtt.rtt_variance_ps.part.value_h32 << 32) |
+			buf->rtt.rtt_variance_ps.part.value_l32;
+		res->rtt_spread =
+			((uint64_t)buf->rtt.rtt_spread_ps.part.value_h32 << 32) |
+			buf->rtt.rtt_spread_ps.part.value_l32;
+
+		res->dist_avg_mm =
+			((uint64_t)buf->dist.dist_avg_mm.part.value_h32 << 32) |
+			buf->dist.dist_avg_mm.part.value_l32;
+		res->dist_variance_mm =
+			((uint64_t)buf->dist.dist_variance_mm.part.value_h32 << 32) |
+			buf->dist.dist_variance_mm.part.value_l32;
+		res->dist_spread_mm =
+			((uint64_t)buf->dist.dist_spread_mm.part.value_h32 << 32) |
+			buf->dist.dist_spread_mm.part.value_l32;
+
+		res->min_time_between_meas =
+				buf->min_time_between_measurements;
+		res->max_time_between_meas =
+				buf->max_time_between_measurements;
+		res->num_tx_sts =
+			WMI_RTT_PEER_MEAS_REPORT_11AZ_PARAMS_MAX_I2R_STS_GET(buf->ftm_11az_params);
+		res->num_rx_sts =
+			WMI_RTT_PEER_MEAS_REPORT_11AZ_PARAMS_MAX_R2I_STS_GET(buf->ftm_11az_params);
+		res->tx_ltf_repetition_count =
+			WMI_RTT_PEER_MEAS_REPORT_11AZ_PARAMS_MAX_I2R_REP_GET(buf->ftm_11az_params);
+		res->rx_ltf_repetition_count =
+			WMI_RTT_PEER_MEAS_REPORT_11AZ_PARAMS_MAX_R2I_REP_GET(buf->ftm_11az_params);
+
+		res->availability_window_duration =
+			WMI_RTT_PEER_MEAS_REPORT_AW_PARAMS_AW_DURATION_GET(
+						buf->avail_window_params);
+		res->nominal_time =
+			WMI_RTT_PEER_MEAS_REPORT_AW_PARAMS_NOMINAL_TIME_MS_GET(
+						buf->avail_window_params);
+		res->meas_per_aw =
+			WMI_RTT_PEER_MEAS_REPORT_AW_PARAMS_MEAS_PER_AW_GET(
+						buf->avail_window_params);
+
+		wmi_ch_width = WMI_RTT_PEER_MEAS_REPORT_CHAN_CODE_BW_GET(
+						buf->ftm_ie_channel_code);
+		res->channel_bw =
+			target_if_wmi_chan_width_to_phy_ch_width(wmi_ch_width);
+		res->preamble =
+			WMI_RTT_PEER_MEAS_REPORT_CHAN_CODE_PREAMBLE_GET(
+						buf->ftm_ie_channel_code);
+
+		res->tx_mcs = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_MCS_IDX_GET(
+							buf->tx_rate_info_1);
+		res->tx_nss = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_NSS_GET(
+							buf->tx_rate_info_1);
+		res->tx_bw = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_BW_GET(
+							buf->tx_rate_info_1);
+		res->tx_gi = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_GI_GET(
+							buf->tx_rate_info_1);
+
+		res->rx_mcs = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_MCS_IDX_GET(
+							buf->rx_rate_info_1);
+		res->rx_nss = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_NSS_GET(
+							buf->rx_rate_info_1);
+		res->rx_bw = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_BW_GET(
+							buf->rx_rate_info_1);
+		res->rx_gi = WMI_RTT_PEER_MEAS_REPORT_RATE_INFO1_GI_GET(
+							buf->rx_rate_info_1);
+
+		res->num_ftmr_successes = buf->num_ftmr_successes;
+		res->num_ftmr_attempts = buf->num_ftmr_attempts;
+
+		wmi_debug("res[%u]: peer_mac=" QDF_MAC_ADDR_FMT, i,
+			  QDF_MAC_ADDR_REF(res->peer_mac.bytes));
+		wmi_debug("status:%d final:%d tb_ranging:%d ntb_ranging:%d ap_tsf_valid:%d",
+			  res->status, res->final, res->tb_ranging,
+			  res->ntb_ranging, res->ap_tsf_valid);
+		wmi_debug("is_delayed_lmr:%d meas_type:%d burst_idx:%u burst_count:%u",
+			  res->is_delayed_lmr, res->meas_type, res->burst_idx,
+			  res->burst_count);
+		wmi_debug("burst_duration:%u burst_period:%u ftms_per_burst:%u rssi_avg:%u",
+			  res->burst_duration, res->burst_period,
+			  res->ftms_per_burst, res->rssi_avg);
+		wmi_debug("rssi_spread:%u rtt_avg:%llu rtt_variance:%llu rtt_spread:%llu",
+			  res->rssi_spread, res->rtt_avg, res->rtt_variance,
+			  res->rtt_spread);
+		wmi_debug("dist_avg_mm:%llu dist_variance_mm:%llu dist_spread_mm:%llu",
+			  res->dist_avg_mm, res->dist_variance_mm,
+			  res->dist_spread_mm);
+		wmi_debug("min_time_between_meas:%u max_time_between_meas:%u num_tx_sts:%u",
+			  res->min_time_between_meas,
+			  res->max_time_between_meas, res->num_tx_sts);
+		wmi_debug("num_rx_sts:%u tx_ltf_repetition_count:%u rx_ltf_repetition_count:%u",
+			  res->num_rx_sts, res->tx_ltf_repetition_count,
+			  res->rx_ltf_repetition_count);
+		wmi_debug("availability_window_duration:%u nominal_time:%u meas_per_aw:%u",
+			  res->availability_window_duration, res->nominal_time,
+			  res->meas_per_aw);
+		wmi_debug("channel_bw:%u preamble:%u tx_mcs:%u tx_nss:%u tx_bw:%u tx_gi:%u rx_mcs:%u rx_nss:%u rx_bw:%u rx_gi:%u",
+			  res->channel_bw, res->preamble, res->tx_mcs,
+			  res->tx_nss, res->tx_bw, res->tx_gi, res->rx_mcs,
+			  res->rx_nss, res->rx_bw, res->rx_gi);
+		wmi_debug("num_ftmr_successes:%u num_ftmr_attempts:%u",
+			  res->num_ftmr_successes, res->num_ftmr_attempts);
+	}
+
+	return QDF_STATUS_SUCCESS;
+}
+
+static QDF_STATUS
 send_rtt_pasn_auth_status_cmd_tlv(wmi_unified_t wmi_handle,
 				  struct wlan_pasn_auth_status *data)
 {
@@ -20667,6 +20925,188 @@ send_rtt_pasn_deauth_cmd_tlv(wmi_unified_t wmi_handle,
 				      WMI_RTT_PASN_DEAUTH_CMD);
 	if (QDF_IS_STATUS_ERROR(status)) {
 		wmi_err("Failed to send pasn deauth command ret = %d", status);
+		wmi_buf_free(buf);
+	}
+
+	return status;
+}
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
+
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+static QDF_STATUS
+send_rtt_peer_meas_cancel_cmd_tlv(wmi_unified_t wmi_handle, uint32_t req_id)
+{
+	QDF_STATUS status;
+	wmi_buf_t buf;
+	wmi_rtt_peer_meas_cancel_meas_cmd_fix_param *fixed_param;
+	size_t len = sizeof(*fixed_param);
+
+	buf = wmi_buf_alloc(wmi_handle, len);
+	if (!buf) {
+		wmi_err("wmi_buf_alloc failed");
+		return QDF_STATUS_E_NOMEM;
+	}
+
+	fixed_param =
+		(wmi_rtt_peer_meas_cancel_meas_cmd_fix_param *)
+		wmi_buf_data(buf);
+	WMITLV_SET_HDR(&fixed_param->tlv_header,
+		       WMITLV_TAG_STRUC_wmi_rtt_peer_meas_cancel_meas_cmd_fix_param,
+		       WMITLV_GET_STRUCT_TLVLEN(
+		       wmi_rtt_peer_meas_cancel_meas_cmd_fix_param));
+	fixed_param->req_id = req_id;
+
+	wmi_mtrace(WMI_RTT_PEER_MEAS_CANCEL_CMDID, 0, req_id);
+	status = wmi_unified_cmd_send(wmi_handle, buf, len,
+				      WMI_RTT_PEER_MEAS_CANCEL_CMDID);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		wmi_err("Failed to send RTT peer measurement cancel command ret = %d",
+			status);
+		wmi_buf_free(buf);
+	}
+
+	return status;
+}
+
+static QDF_STATUS
+send_rtt_peer_meas_req_cmd_tlv(wmi_unified_t wmi_handle,
+			       struct wmi_rtt_peer_meas_req_cmd_params *params)
+{
+	QDF_STATUS status;
+	wmi_buf_t buf;
+	uint8_t *buf_ptr;
+	wmi_rtt_peer_meas_req_cmd_fixed_param *fixed_param;
+	wmi_rtt_peer_meas_req_peer_info *peer_info;
+	uint32_t n_peers = params->n_peers;
+	uint32_t i;
+	size_t len = sizeof(*fixed_param) +
+		     WMI_TLV_HDR_SIZE +
+		     n_peers * sizeof(*peer_info);
+
+	buf = wmi_buf_alloc(wmi_handle, len);
+	if (!buf) {
+		wmi_err("wmi_buf_alloc failed");
+		return QDF_STATUS_E_NOMEM;
+	}
+
+	buf_ptr = wmi_buf_data(buf);
+	fixed_param = (wmi_rtt_peer_meas_req_cmd_fixed_param *)buf_ptr;
+	WMITLV_SET_HDR(&fixed_param->tlv_header,
+		       WMITLV_TAG_STRUC_wmi_rtt_peer_meas_req_cmd_fixed_param,
+		       WMITLV_GET_STRUCT_TLVLEN(
+		       wmi_rtt_peer_meas_req_cmd_fixed_param));
+	fixed_param->req_id  = params->req_id;
+	fixed_param->vdev_id = params->vdev_id;
+	fixed_param->timeout = params->timeout;
+	WMI_CHAR_ARRAY_TO_MAC_ADDR(params->random_mac_addr,
+				   &fixed_param->random_mac_addr);
+	wmi_debug("rtt_peer_meas_req_cmd: req_id=%u vdev_id=%u timeout=%u random_mac=" QDF_MAC_ADDR_FMT " mac_addr_rand=%d n_peers=%u",
+		  params->req_id, params->vdev_id, params->timeout,
+		  QDF_MAC_ADDR_REF(params->random_mac_addr),
+		  params->mac_addr_randomization, params->n_peers);
+
+	buf_ptr += sizeof(*fixed_param);
+	WMITLV_SET_HDR(buf_ptr, WMITLV_TAG_ARRAY_STRUC,
+		       n_peers * sizeof(*peer_info));
+	buf_ptr += WMI_TLV_HDR_SIZE;
+
+	peer_info = (wmi_rtt_peer_meas_req_peer_info *)buf_ptr;
+	for (i = 0; i < n_peers; i++) {
+		WMI_HOST_WLAN_PHY_MODE fw_phy_mode;
+
+		WMITLV_SET_HDR(&peer_info[i].tlv_header,
+			       WMITLV_TAG_STRUC_wmi_rtt_peer_meas_req_peer_info,
+			       WMITLV_GET_STRUCT_TLVLEN(
+			       wmi_rtt_peer_meas_req_peer_info));
+		WMI_CHAR_ARRAY_TO_MAC_ADDR(params->peers[i].dest_mac,
+					   &peer_info[i].dest_mac);
+
+		peer_info[i].channel.mhz = params->peers[i].ch_freq;
+		peer_info[i].channel.band_center_freq1 =
+				params->peers[i].ch_freq_seg1;
+		peer_info[i].channel.band_center_freq2 =
+				params->peers[i].ch_freq_seg2;
+		fw_phy_mode =
+			wmi_host_to_fw_phymode(params->peers[i].ch_phymode);
+		WMI_SET_CHANNEL_MODE(&peer_info[i].channel, fw_phy_mode);
+
+		/* Request Flags */
+		peer_info[i].request_flag = 0;
+		WMI_RTT_PEER_MEAS_REQ_FLAG_REPORT_AP_TSF_SET(peer_info[i].request_flag,
+							     params->peers[i].report_ap_tsf);
+		WMI_RTT_PEER_MEAS_REQ_FLAG_PD_REQUEST_SET(peer_info[i].request_flag,
+							  params->peers[i].pd_request);
+
+		peer_info[i].preamble = params->peers[i].preamble;
+
+		/* Control flags */
+		peer_info[i].control_flag = 0;
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_FTM_REQUESTED_SET(peer_info[i].control_flag,
+								  params->peers[i].ftm_requested);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_ASAP_MODE_SET(peer_info[i].control_flag,
+							      params->peers[i].asap_mode);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_LCI_REQ_SET(peer_info[i].control_flag,
+							    params->peers[i].lci_req);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_LOC_CIVIC_REQ_SET(peer_info[i].control_flag,
+								  params->peers[i].loc_civic_req);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_TB_RANGING_SET(peer_info[i].control_flag,
+							       params->peers[i].tb_ranging);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_NTB_RANGING_SET(peer_info[i].control_flag,
+								params->peers[i].ntb_ranging);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_I2R_LMR_FEEDBACK_SET(peer_info[i].control_flag,
+								     params->peers[i].i2r_lmr_feedback);
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_RSTA_ROLE_SET(peer_info[i].control_flag,
+							      params->peers[i].rsta_role);
+		/* TODO: Set range report once its supported */
+		WMI_RTT_PEER_MEAS_REQ_CTRL_FLAG_SUPPRESS_PD_RESULT_SET(peer_info[i].control_flag,
+								       params->peers[i].suppress_range_results);
+
+		peer_info[i].burst_period = params->peers[i].burst_period;
+
+		peer_info[i].burst_info = 0;
+		WMI_RTT_PEER_MEAS_REQ_BURST_INFO_FTMR_RETRIES_SET(peer_info[i].burst_info,
+								  params->peers[i].ftmr_retries);
+		WMI_RTT_PEER_MEAS_REQ_BURST_INFO_FTMS_PER_BURST_SET(peer_info[i].burst_info,
+								    params->peers[i].ftms_per_burst);
+		WMI_RTT_PEER_MEAS_REQ_BURST_INFO_BURST_DURATION_SET(peer_info[i].burst_info,
+								    params->peers[i].burst_duration);
+		WMI_RTT_PEER_MEAS_REQ_BURST_INFO_NUM_BURST_EXP_SET(peer_info[i].burst_info,
+								   params->peers[i].num_burst_exp);
+
+		peer_info[i].min_time_between_measurements =
+			params->peers[i].min_time_between_measurements;
+		peer_info[i].max_time_between_measurements =
+			params->peers[i].max_time_between_measurements;
+
+		peer_info[i].availibility_sub_elem = 0;
+		WMI_RTT_PEER_MEAS_REQ_AW_SUB_ELEM_NOMINAL_TIME_SET(peer_info[i].availibility_sub_elem,
+								   params->peers[i].nominal_time);
+		WMI_RTT_PEER_MEAS_REQ_AW_SUB_ELEM_MEAS_PER_AW_SET(peer_info[i].availibility_sub_elem,
+								  params->peers[i].measurements_per_aw);
+		WMI_RTT_PEER_MEAS_REQ_AW_SUB_ELEM_AW_DURATION_SET(peer_info[i].availibility_sub_elem,
+								  params->peers[i].aw_duration);
+		wmi_err("peer[%u]: dest_mac="QDF_MAC_ADDR_FMT" mhz=%u freq1=%u freq2=%u phymode:%d req_flag=0x%x preamble=0x%x ctrl_flag=0x%x burst_per=%u burst_info=0x%x min_time=%u max_time=%u avail_sub_elem=0x%x",
+			i, QDF_MAC_ADDR_REF(params->peers[i].dest_mac),
+			params->peers[i].ch_freq,
+			params->peers[i].ch_freq_seg1,
+			params->peers[i].ch_freq_seg2,
+			fw_phy_mode, peer_info[i].request_flag,
+			params->peers[i].preamble,
+			peer_info[i].control_flag,
+			params->peers[i].burst_period,
+			peer_info[i].burst_info,
+			params->peers[i].min_time_between_measurements,
+			params->peers[i].max_time_between_measurements,
+			peer_info[i].availibility_sub_elem);
+	}
+
+	wmi_mtrace(WMI_RTT_PEER_MEAS_REQ_CMDID, params->vdev_id,
+		   params->req_id);
+	status = wmi_unified_cmd_send(wmi_handle, buf, len,
+				      WMI_RTT_PEER_MEAS_REQ_CMDID);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		wmi_err("Failed to send RTT peer measurement request command ret = %d",
+			status);
 		wmi_buf_free(buf);
 	}
 
@@ -21332,7 +21772,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		trig->common_roam = false;
 	}
 
-	if (param_buf->roam_trigger_rssi)
+	if (param_buf->roam_trigger_rssi &&
+	    idx < param_buf->num_roam_trigger_rssi)
 		rssi_data = &param_buf->roam_trigger_rssi[idx];
 
 	if (param_buf->roam_result) {
@@ -21366,7 +21807,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 
 	switch (trig_reason) {
 	case WMI_ROAM_TRIGGER_REASON_PER:
-		if (param_buf->roam_trigger_per)
+		if (param_buf->roam_trigger_per &&
+		    idx < param_buf->num_roam_trigger_per)
 			per_data = &param_buf->roam_trigger_per[idx];
 		if (per_data) {
 			trig->per_trig_data.tx_rate_thresh_percent =
@@ -21379,7 +21821,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_BMISS:
-		if (param_buf->roam_trigger_bmiss)
+		if (param_buf->roam_trigger_bmiss &&
+		    idx < param_buf->num_roam_trigger_bmiss)
 			bmiss_data = &param_buf->roam_trigger_bmiss[idx];
 		if (bmiss_data) {
 			trig->bmiss_trig_data.final_bmiss_cnt =
@@ -21396,7 +21839,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_HIGH_RSSI:
-		if (param_buf->roam_trigger_hi_rssi)
+		if (param_buf->roam_trigger_hi_rssi &&
+		    idx < param_buf->num_roam_trigger_hi_rssi)
 			hi_rssi_data = &param_buf->roam_trigger_hi_rssi[idx];
 
 		if (hi_rssi_data && cmn_data) {
@@ -21409,7 +21853,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 
 	case WMI_ROAM_TRIGGER_REASON_MAWC:
 	case WMI_ROAM_TRIGGER_REASON_DENSE:
-		if (param_buf->roam_trigger_dense)
+		if (param_buf->roam_trigger_dense &&
+		    idx < param_buf->num_roam_trigger_dense)
 			dense_data = &param_buf->roam_trigger_dense[idx];
 		if (dense_data) {
 			trig->congestion_trig_data.rx_tput =
@@ -21436,7 +21881,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 
 	case WMI_ROAM_TRIGGER_REASON_IDLE:
 	case WMI_ROAM_TRIGGER_REASON_FORCED:
-		if (param_buf->roam_trigger_force)
+		if (param_buf->roam_trigger_force &&
+		    idx < param_buf->num_roam_trigger_force)
 			force_data = &param_buf->roam_trigger_force[idx];
 		if (force_data) {
 			invoke = force_data->invoke_reason;
@@ -21450,7 +21896,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_BTM:
-		if (param_buf->roam_trigger_btm)
+		if (param_buf->roam_trigger_btm &&
+		    idx < param_buf->num_roam_trigger_btm)
 			btm_data = &param_buf->roam_trigger_btm[idx];
 		if (btm_data) {
 			trig->btm_trig_data.btm_request_mode =
@@ -21513,7 +21960,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_BSS_LOAD:
-		if (param_buf->roam_trigger_bss_load)
+		if (param_buf->roam_trigger_bss_load &&
+		    idx < param_buf->num_roam_trigger_bss_load)
 			bss_load_data = &param_buf->roam_trigger_bss_load[idx];
 		if (bss_load_data)
 			trig->cu_trig_data.cu_load = bss_load_data->cu_load;
@@ -21522,7 +21970,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_DEAUTH:
-		if (param_buf->roam_trigger_deauth)
+		if (param_buf->roam_trigger_deauth &&
+		    idx < param_buf->num_roam_trigger_deauth)
 			deauth_data = &param_buf->roam_trigger_deauth[idx];
 		if (deauth_data) {
 			trig->deauth_trig_data.type = deauth_data->deauth_type;
@@ -21535,7 +21984,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_PERIODIC:
-		if (param_buf->roam_trigger_periodic)
+		if (param_buf->roam_trigger_periodic &&
+		    idx < param_buf->num_roam_trigger_periodic)
 			periodic_data = &param_buf->roam_trigger_periodic[idx];
 		if (periodic_data) {
 			trig->periodic_trig_data.periodic_timer_ms =
@@ -21560,7 +22010,8 @@ extract_roam_trigger_stats_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 		return QDF_STATUS_SUCCESS;
 
 	case WMI_ROAM_TRIGGER_REASON_STA_KICKOUT:
-		if (param_buf->roam_trigger_kickout)
+		if (param_buf->roam_trigger_kickout &&
+		    idx < param_buf->num_roam_trigger_kickout)
 			kickout_data = &param_buf->roam_trigger_kickout[idx];
 		if (kickout_data) {
 			tx_fail = kickout_data->kickout_reason;
@@ -23747,6 +24198,138 @@ send_vdev_ch_hop_sched_cmd_tlv(wmi_unified_t wmi_handle,
 
 	return ret;
 }
+
+/**
+ * send_vdev_get_chan_hop_status_cmd_tlv() - Send channel hop status command
+ * @wmi_handle: WMI handle
+ * @vdev_id: vdev identifier
+ *
+ * Builds and sends WMI command to request channel hopping status.
+ *
+ * Return: QDF_STATUS_SUCCESS on success, error code on failure
+ */
+static QDF_STATUS
+send_vdev_get_chan_hop_status_cmd_tlv(wmi_unified_t wmi_handle,
+				      uint8_t vdev_id)
+{
+	wmi_vdev_get_chan_hop_status_report_cmd_fixed_param *cmd;
+	wmi_buf_t buf;
+	uint8_t *buf_ptr;
+	int32_t len;
+	QDF_STATUS ret;
+
+	len = sizeof(*cmd);
+	buf = wmi_buf_alloc(wmi_handle, len);
+	if (!buf) {
+		wmi_err("Failed to allocate buffer");
+		return QDF_STATUS_E_NOMEM;
+	}
+
+	buf_ptr = (uint8_t *)wmi_buf_data(buf);
+	cmd = (wmi_vdev_get_chan_hop_status_report_cmd_fixed_param *)buf_ptr;
+
+	qdf_mem_zero(cmd, len);
+	WMITLV_SET_HDR(&cmd->tlv_header,
+		       WMITLV_TAG_STRUC_wmi_vdev_get_chan_hop_status_report_cmd_fixed_param,
+		       WMITLV_GET_STRUCT_TLVLEN(wmi_vdev_get_chan_hop_status_report_cmd_fixed_param));
+
+	cmd->vdev_id = vdev_id;
+
+	wmi_mtrace(WMI_VDEV_GET_CHAN_HOP_STATUS_REPORT_CMDID, vdev_id, 0);
+	ret = wmi_unified_cmd_send(wmi_handle, buf, len,
+				   WMI_VDEV_GET_CHAN_HOP_STATUS_REPORT_CMDID);
+
+	if (QDF_IS_STATUS_ERROR(ret)) {
+		wmi_err("Failed to send channel hop status cmd: %d", ret);
+		wmi_buf_free(buf);
+	}
+
+	return ret;
+}
+
+/**
+ * extract_vdev_chan_hop_status_tlv() - Extract channel hop status event
+ * @wmi_handle: WMI handle
+ * @evt_buf: Event buffer
+ * @resp: Response structure to fill
+ *
+ * Extracts channel hopping status data from WMI event.
+ *
+ * Return: QDF_STATUS_SUCCESS on success, error code on failure
+ */
+static QDF_STATUS
+extract_vdev_chan_hop_status_tlv(wmi_unified_t wmi_handle,
+				 void *evt_buf,
+				 struct vdev_chan_hop_status_response *resp)
+{
+	WMI_VDEV_CHAN_HOP_STATUS_REPORT_EVENTID_param_tlvs *param_tlvs;
+	wmi_vdev_chan_hop_status_report_event_fixed_param *fixed_param;
+	wmi_vdev_chan_hop_slot_status *slot_status;
+	uint32_t i;
+
+	param_tlvs =
+	(WMI_VDEV_CHAN_HOP_STATUS_REPORT_EVENTID_param_tlvs *)evt_buf;
+
+	if (!param_tlvs) {
+		wmi_err("Invalid event buffer");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	fixed_param = param_tlvs->fixed_param;
+	slot_status = param_tlvs->slot_status;
+
+	if (!fixed_param) {
+		wmi_err("Invalid fixed_param");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	/* Extract fixed parameters */
+	resp->vdev_id = fixed_param->vdev_id;
+	resp->hopping_request_tsf = fixed_param->hopping_request_tsf;
+	resp->current_channel_index = fixed_param->current_channel_index;
+	resp->num_slots = param_tlvs->num_slot_status;
+
+	wmi_debug("vdev_id: %d, num_slots: %d, current_idx: %d",
+		  resp->vdev_id, resp->num_slots,
+		  resp->current_channel_index);
+
+	/* Validate and truncate if necessary */
+	if (resp->num_slots > WLAN_MAX_CHAN_HOP_SLOTS) {
+		wmi_warn("Too many slots: %d, truncating to %d",
+			 resp->num_slots, WLAN_MAX_CHAN_HOP_SLOTS);
+		resp->num_slots = WLAN_MAX_CHAN_HOP_SLOTS;
+	}
+
+	/* Extract slot status array */
+	if (slot_status && resp->num_slots > 0) {
+		for (i = 0; i < resp->num_slots; i++) {
+			resp->slot_info[i].role = slot_status[i].role;
+			resp->slot_info[i].freq = slot_status[i].chan_mhz;
+			resp->slot_info[i].channel_switch_tsf =
+				slot_status[i].channel_switch_tsf;
+			resp->slot_info[i].channel_start_tsf =
+				slot_status[i].channel_start_tsf;
+			resp->slot_info[i].channel_end_tsf =
+				slot_status[i].channel_end_tsf;
+			resp->slot_info[i].tx_traffic_index =
+				slot_status[i].tx_traffic_index;
+			resp->slot_info[i].rx_traffic_index =
+				slot_status[i].rx_traffic_index;
+
+			wmi_debug("Slot %d: freq=%d, role=%d, tx_idx=%d, rx_idx=%d",
+				  i, resp->slot_info[i].freq,
+				  resp->slot_info[i].role,
+				  resp->slot_info[i].tx_traffic_index,
+				  resp->slot_info[i].rx_traffic_index);
+		}
+	} else if (resp->num_slots > 0) {
+		wmi_err("slot_status is NULL but num_slots=%d",
+			resp->num_slots);
+		return QDF_STATUS_E_INVAL;
+	}
+
+	return QDF_STATUS_SUCCESS;
+}
 #endif
 
 #if defined(DRIVER_PASSTHRU_MODE) || defined(WLAN_FEATURE_DSRC)
@@ -24042,6 +24625,10 @@ struct wmi_ops tlv_ops =  {
 				extract_sar_cap_service_ready_ext_tlv,
 	.extract_sar_cap_service_ready_ext2 =
 				extract_sar_cap_service_ready_ext2_tlv,
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+	.extract_rtt_peer_meas_caps_service_ready_ext2 =
+			extract_rtt_peer_meas_caps_service_ready_ext2_tlv,
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
 	.extract_pdev_utf_event = extract_pdev_utf_event_tlv,
 	.wmi_set_htc_tx_tag = wmi_set_htc_tx_tag_tlv,
 	.extract_fips_event_data = extract_fips_event_data_tlv,
@@ -24191,6 +24778,14 @@ struct wmi_ops tlv_ops =  {
 		send_rtt_pasn_auth_status_cmd_tlv,
 	.send_rtt_pasn_deauth_cmd =
 		send_rtt_pasn_deauth_cmd_tlv,
+#endif
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+	.send_rtt_peer_meas_cancel_cmd =
+		send_rtt_peer_meas_cancel_cmd_tlv,
+	.send_rtt_peer_meas_req_cmd =
+		send_rtt_peer_meas_req_cmd_tlv,
+	.extract_rtt_peer_meas_report_ev =
+		extract_rtt_peer_meas_report_ev_tlv,
 #endif
 #ifdef WLAN_MWS_INFO_DEBUGFS
 	.send_mws_coex_status_req_cmd = send_mws_coex_status_req_cmd_tlv,
@@ -24344,6 +24939,9 @@ struct wmi_ops tlv_ops =  {
 #endif
 #ifdef DRIVER_PASSTHRU_MODE
 	.send_vdev_ch_hop_sched_cmd = send_vdev_ch_hop_sched_cmd_tlv,
+	.send_vdev_get_chan_hop_status_cmd =
+		send_vdev_get_chan_hop_status_cmd_tlv,
+	.extract_vdev_chan_hop_status = extract_vdev_chan_hop_status_tlv,
 #endif
 #if defined(DRIVER_PASSTHRU_MODE) || defined(WLAN_FEATURE_DSRC)
 	.send_ocb_get_tsf_timer_cmd = send_ocb_get_tsf_timer_cmd_tlv,
@@ -24603,7 +25201,9 @@ static void populate_tlv_events_id(WMI_EVT_ID *event_ids)
 	event_ids[wmi_ocb_set_config_resp_event_id] =
 				WMI_OCB_SET_CONFIG_RESP_EVENTID;
 	event_ids[wmi_ocb_get_tsf_timer_resp_event_id] =
-				WMI_OCB_GET_TSF_TIMER_RESP_EVENTID;
+					WMI_OCB_GET_TSF_TIMER_RESP_EVENTID;
+	event_ids[wmi_vdev_chan_hop_status_report_event_id] =
+					WMI_VDEV_CHAN_HOP_STATUS_REPORT_EVENTID;
 	event_ids[wmi_dcc_get_stats_resp_event_id] =
 				WMI_DCC_GET_STATS_RESP_EVENTID;
 	event_ids[wmi_dcc_update_ndl_resp_event_id] =
@@ -24857,6 +25457,8 @@ static void populate_tlv_events_id(WMI_EVT_ID *event_ids)
 			WMI_RTT_PASN_PEER_CREATE_REQ_EVENTID;
 	event_ids[wmi_rtt_pasn_peer_delete_eventid] =
 			WMI_RTT_PASN_PEER_DELETE_EVENTID;
+	event_ids[wmi_rtt_peer_meas_report_eventid] =
+			WMI_RTT_PEER_MEAS_REPORT_EVENTID;
 #endif
 #ifdef WLAN_VENDOR_HANDOFF_CONTROL
 	event_ids[wmi_get_roam_vendor_control_param_event_id] =
@@ -25655,6 +26257,10 @@ static void populate_tlv_service(uint32_t *wmi_service)
 				WMI_SERVICE_SUPPORT_WOW_OLE_DAL;
 	wmi_service[wmi_service_passthru_vdev_chan_hop_schedule_support] =
 				WMI_SERVICE_PASSTHRU_VDEV_CHAN_HOP_SCHEDULE_SUPPORT;
+	wmi_service[wmi_service_vdev_chan_hop_status_report] =
+				WMI_SERVICE_VDEV_CHAN_HOP_STATUS_REPORT;
+	wmi_service[wmi_service_passthru_vdev_ampdu_ra_support] =
+				WMI_SERVICE_PASSTHRU_VDEV_AMPDU_RA_SUPPORT;
 }
 
 /**

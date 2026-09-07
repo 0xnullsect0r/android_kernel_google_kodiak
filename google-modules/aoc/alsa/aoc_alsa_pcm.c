@@ -27,20 +27,35 @@ static void free_aoc_service_work_handler(struct work_struct *work)
 {
 	struct aoc_alsa_stream *alsa_stream =
 		container_of(work, struct aoc_alsa_stream, free_aoc_service_work);
-	struct snd_soc_pcm_runtime *rtd = alsa_stream->substream->private_data;
-	struct aoc_chip *chip = alsa_stream->chip;
+	struct snd_soc_pcm_runtime *rtd;
+	struct aoc_chip *chip;
+
+	if (!alsa_stream || !alsa_stream->substream)
+		return;
+
+	rtd = alsa_stream->substream->private_data;
+	chip = alsa_stream->chip;
 
 	if (!is_aaudio_mmaped_service(rtd->dai_link->name))
 		return;
 
+	/* Wait for any active ISR to finish */
+	if (alsa_stream->dev)
+		synchronize_irq(alsa_stream->dev->irq);
+
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
-	audio_free_isr(alsa_stream->dev);
+
+	if (alsa_stream->dev) {
+		audio_free_isr(alsa_stream->dev);
+		aoc_cancel_service_work_sync(alsa_stream->dev);
+	}
+
 	if (alsa_stream->pcm_period_wq) {
-		flush_workqueue(alsa_stream->pcm_period_wq);
 		destroy_workqueue(alsa_stream->pcm_period_wq);
 		alsa_stream->pcm_period_wq = NULL;
 	}
+
 	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
@@ -428,21 +443,23 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	return 0;
 out:
 	if (dev) {
-		free_aoc_audio_service(rtd->dai_link->name, dev);
+		aoc_cancel_service_work_sync(dev);
+		/* To avoid UAF in free_aoc_service_work_handler if queued */
 		if (alsa_stream)
-		    alsa_stream->dev = NULL;
+			alsa_stream->dev = NULL;
+		free_aoc_audio_service(rtd->dai_link->name, dev);
 	}
 	mutex_unlock(&chip->audio_mutex);
 
 	if (alsa_stream) {
 		cancel_work_sync(&alsa_stream->free_aoc_service_work);
-		if (alsa_stream->pcm_period_wq) {
-			flush_workqueue(alsa_stream->pcm_period_wq);
+		if (alsa_stream->pcm_period_wq)
 			destroy_workqueue(alsa_stream->pcm_period_wq);
-			alsa_stream->pcm_period_wq = NULL;
-		}
+
 		kfree(alsa_stream);
 	}
+	runtime->private_data = NULL;
+	runtime->private_free = NULL;
 
 	pr_debug("pcm open err=%d\n", err);
 	return err;
@@ -455,21 +472,34 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
-	struct aoc_chip *chip = alsa_stream->chip;
+	struct aoc_chip *chip;
 	int err;
 	bool mutex_locked = true;
 
 	pr_debug("%s: name %s substream %p", __func__, rtd->dai_link->name, substream);
-	// Wait for any active ISR to finish
-	synchronize_irq(alsa_stream->dev->irq);
+
+	if (!alsa_stream)
+		return 0;
+
+	chip = alsa_stream->chip;
+
+	/* Wait for any active ISR to finish */
+	if (alsa_stream->dev)
+		synchronize_irq(alsa_stream->dev->irq);
+
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
-	audio_free_isr(alsa_stream->dev);
+
+	if (alsa_stream->dev) {
+		audio_free_isr(alsa_stream->dev);
+		aoc_cancel_service_work_sync(alsa_stream->dev);
+	}
+
 	if (alsa_stream->pcm_period_wq) {
-		flush_workqueue(alsa_stream->pcm_period_wq);
 		destroy_workqueue(alsa_stream->pcm_period_wq);
 		alsa_stream->pcm_period_wq = NULL;
 	}
+
 	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {

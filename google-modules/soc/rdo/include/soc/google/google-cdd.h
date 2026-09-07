@@ -86,6 +86,7 @@ static inline void google_cdd_set_item_enable(const char *name, int en) {}
 static inline int google_cdd_get_enable(void) { return 0; }
 static inline void google_cdd_output(void) {}
 static inline unsigned int google_cdd_get_max_core_num(void) { return 0; }
+static inline void google_cdd_set_powerkey_status(bool val) {}
 
 /* google-cdd-dpm functions */
 static inline void google_cdd_do_dpm_policy(unsigned int policy, const char *str) {}

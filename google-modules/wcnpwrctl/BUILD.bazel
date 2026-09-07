@@ -8,6 +8,11 @@
 #
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "wcn_pwrctl",
     srcs = [
@@ -21,7 +26,6 @@ ddk_module(
     ]),
     includes = ["include"],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//visibility:public"],
     deps = [
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/ap-pmic:da9188-core",

@@ -1876,9 +1876,14 @@ static inline void RGXWriteCmdHeader(void *pvCCB, IMG_UINT32 eCmdType, IMG_UINT3
 	}
 	else
 	{
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 		sCmdHeader.sWorkEstKickData.ui16ReturnDataIndex = 0;
+#endif
 		sCmdHeader.sWorkEstKickData.ui64Deadline = 0;
 		sCmdHeader.sWorkEstKickData.ui32CyclesPrediction = 0;
+#if defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
+		sCmdHeader.sWorkEstKickData.ui64WorkloadID = 0;
+#endif
 	}
 #else
 	PVR_UNREFERENCED_PARAMETER(psWorkEstKickData);
@@ -2819,6 +2824,7 @@ void DumpStalledContextInfo(PVRSRV_RGXDEV_INFO *psDevInfo)
 			IMG_UINT32 jj;
 			IMG_UINT32 ui32NumUnsignalledUFOs = 0;
 			IMG_UINT32 ui32UnsignalledUFOVaddrs[PVRSRV_MAX_SYNCS];
+			IMG_BOOL bUnsignalledUFOsWereTruncated = IMG_FALSE;
 
 #if defined(PVRSRV_STALLED_CCB_ACTION)
 			RGXFwSharedMemCacheOpPtr(psDevInfo->psRGXFWIfFwOsData,
@@ -2868,8 +2874,18 @@ void DumpStalledContextInfo(PVRSRV_RGXDEV_INFO *psDevInfo)
 					if (ui32ReadValue != psUFOPtr[jj].ui32Value)
 					{
 						/* Add to our list to pass to pvr_sync */
-						ui32UnsignalledUFOVaddrs[ui32NumUnsignalledUFOs] = psUFOPtr[jj].puiAddrUFO.ui32Addr;
-						ui32NumUnsignalledUFOs++;
+						if (ui32NumUnsignalledUFOs < PVRSRV_MAX_SYNCS)
+						{
+							ui32UnsignalledUFOVaddrs[ui32NumUnsignalledUFOs] = psUFOPtr[jj].puiAddrUFO.ui32Addr;
+							ui32NumUnsignalledUFOs++;
+						}
+						else if (!bUnsignalledUFOsWereTruncated)
+						{
+							bUnsignalledUFOsWereTruncated = IMG_TRUE;
+							PVR_DPF((PVR_DBG_WARNING,
+							         "%s: Too many unsignalled UFOs, truncating to %d",
+							         __func__, PVRSRV_MAX_SYNCS));
+						}
 					}
 
 #if defined(PVRSRV_STALLED_CCB_ACTION) && defined(SUPPORT_FASTPATH_FENCE)

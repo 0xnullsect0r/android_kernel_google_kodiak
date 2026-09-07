@@ -10,6 +10,26 @@
 #include "goog-mba-ctrl.h"
 
 TRACE_EVENT(
+	goog_mba_ctrl_handle_doorbell_isr,
+
+	TP_PROTO(struct goog_mba_ctrl_info *mbox_info, u32 irq_status),
+
+	TP_ARGS(mbox_info, irq_status),
+
+	TP_STRUCT__entry(
+		__array(char, dev_name, MAX_MBOX_CTRL_NAME)
+		__field(u32, irq_status)
+	),
+
+	TP_fast_assign(
+		scnprintf(__entry->dev_name, MAX_MBOX_CTRL_NAME, "%s", dev_name(mbox_info->dev));
+		__entry->irq_status = irq_status;
+	),
+
+	TP_printk("%s irq_status=0x%x", __entry->dev_name, __entry->irq_status)
+);
+
+TRACE_EVENT(
 	goog_mba_ctrl_process_nq_txdone,
 
 	TP_PROTO(struct goog_mba_ctrl_info *mbox_info),

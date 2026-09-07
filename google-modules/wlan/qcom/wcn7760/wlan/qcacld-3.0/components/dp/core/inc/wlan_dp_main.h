@@ -237,6 +237,9 @@ bool wlan_dp_cfg_is_affn_override_enabled(struct wlan_dp_psoc_cfg *dp_cfg)
  * Return: None
  */
 void dp_affn_override_init(struct wlan_objmgr_psoc *psoc);
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+void dp_affn_override_deinit(struct wlan_objmgr_psoc *psoc);
+#endif
 #else
 static inline
 bool wlan_dp_cfg_is_affn_override_enabled(struct wlan_dp_psoc_cfg *dp_cfg)
@@ -251,6 +254,11 @@ static inline void wlan_dp_affn_override_handler(
 
 static inline void dp_affn_override_init(struct wlan_objmgr_psoc *psoc)
 {}
+
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+static inline void dp_affn_override_deinit(struct wlan_objmgr_psoc *psoc)
+{}
+#endif
 #endif /*WLAN_DP_AFFINITY_OVERRIDE_FEATURE*/
 
 #ifdef WLAN_FEATURE_FILS_SK_SAP

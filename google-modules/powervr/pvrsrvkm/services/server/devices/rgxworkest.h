@@ -69,14 +69,18 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
                             IMG_UINT64                ui64DeadlineInus,
                             RGXFWIF_WORKEST_KICK_DATA *psWorkEstKickData);
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 PVRSRV_ERROR WorkEstRetire(PVRSRV_RGXDEV_INFO *psDevInfo,
 						   RGXFWIF_WORKEST_FWCCB_CMD *psReturnCmd);
+#endif
 
 void WorkEstHashLockCreate(POS_LOCK *ppsHashLock);
 
 void WorkEstHashLockDestroy(POS_LOCK psHashLock);
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 void WorkEstCheckFirmwareCCB(PVRSRV_RGXDEV_INFO *psDevInfo);
+#endif
 
 void _WorkEstInit(PVRSRV_RGXDEV_INFO *psDevInfo,
 						 WORKLOAD_MATCHING_DATA *psWorkloadMatchingData,

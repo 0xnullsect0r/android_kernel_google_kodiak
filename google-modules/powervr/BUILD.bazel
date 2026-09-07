@@ -4,6 +4,11 @@ load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_
 load(":build_variants.bzl", "define_build_variants")
 load(":sources_copts.bzl", "CONDITIONAL_SRCS", "PIXEL_SRCS", "POWERVR_COMMON_SRCS", "POWERVR_VOLCANIC_SRCS", "SOC_SPECIFIC_COPTS")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 define_build_variants()
 
 checkpatch(
@@ -150,14 +155,7 @@ ddk_module(
         "$(location :config_kernel_header)",
         "-DPVR_ARCH_VOLCANIC",
     ] + SOC_SPECIFIC_COPTS,
-    kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        ":__subpackages__",
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/soc/rdo:__pkg__",
-    ],
     deps = [
         "//private/google-modules/iif",
         "//private/google-modules/iif:iif_headers",
@@ -170,7 +168,7 @@ ddk_module(
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/drivers/soc/google:google_gtc",
         "//private/google-modules/soc/rdo/drivers/soc/google/dvfs-helper:dvfs_helper",
-        "//private/google-modules/trusty",
+        "//private/google-modules/trusty:trusty-ipc",
         "//private/google-modules/trusty:trusty_headers",
     ] + select({
         "//private/devices/google/common:soc_is_laguna": [

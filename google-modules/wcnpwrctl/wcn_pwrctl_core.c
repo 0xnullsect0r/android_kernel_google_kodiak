@@ -79,6 +79,12 @@ static int wcn_pm_reboot_notify(struct notifier_block *nb, unsigned long action,
 		case SYS_DOWN:
 		case SYS_HALT:
 			pr_info("System going shutdown/reboot, triggering WCN power off\n");
+			/*
+			 * Cancel any pending or running power-on work to prevent it from
+			 * racing with the system shutdown/reboot sequence and inadvertently
+			 * turning the device back on.
+			 */
+			cancel_work_sync(&data->power_on_work);
 			mutex_lock(&wcn_power_mutex);
 
 			if (data->ops && data->ops->power_off)
@@ -125,6 +131,28 @@ static const struct component_ops wcn_pm_component_ops = {
 	.unbind = wcn_pm_component_unbind,
 };
 
+static void wcn_pm_power_on_worker(struct work_struct *work)
+{
+	struct wcn_pwrctl_data *data = container_of(work, struct wcn_pwrctl_data, power_on_work);
+	int ret = 0;
+
+	/* Execute hardware power-on sequence */
+	mutex_lock(&wcn_power_mutex);
+	if (data->ops->power_on)
+		ret = data->ops->power_on(data);
+	mutex_unlock(&wcn_power_mutex);
+
+	if (ret) {
+		dev_err(data->dev, "Power on sequence failed: %d\n", ret);
+		return;
+	}
+
+	ret = component_add(data->dev, &wcn_pm_component_ops);
+	if (ret)
+		dev_err(data->dev, "Failed to add component: %d\n", ret);
+}
+
+
 static int wcn_pm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -167,26 +195,17 @@ static int wcn_pm_probe(struct platform_device *pdev)
 		goto err_mbox;
 	}
 
-	/* Execute hardware power-on sequence */
-	mutex_lock(&wcn_power_mutex);
-	if (data->ops->power_on)
-		ret = data->ops->power_on(data);
-	mutex_unlock(&wcn_power_mutex);
-
-	if (ret) {
-		pr_err("Power on sequence failed: %d\n", ret);
-		unregister_reboot_notifier(&data->reboot_nb);
-		goto err_mbox;
-	}
-
-	/* Initialize singleton pointer only after sequence successfully completes */
+	/* Initialize singleton pointer */
 	platform_set_drvdata(pdev, data);
 
 	mutex_lock(&wcn_power_mutex);
 	g_wcn_data = data;
 	mutex_unlock(&wcn_power_mutex);
 
-	return component_add(dev, &wcn_pm_component_ops);
+	INIT_WORK(&data->power_on_work, wcn_pm_power_on_worker);
+	schedule_work(&data->power_on_work);
+
+	return 0;
 err_mbox:
 	data->ops->mbox_release(data->cpm_mbox);
 	return ret;
@@ -195,6 +214,14 @@ err_mbox:
 static void wcn_pm_remove(struct platform_device *pdev)
 {
 	struct wcn_pwrctl_data *data = platform_get_drvdata(pdev);
+
+	if (data) {
+		/*
+		 * Ensure any asynchronous power-on sequence completes or is canceled
+		 * before removing the component and releasing devm_* resources.
+		 */
+		cancel_work_sync(&data->power_on_work);
+	}
 
 	component_del(&pdev->dev, &wcn_pm_component_ops);
 

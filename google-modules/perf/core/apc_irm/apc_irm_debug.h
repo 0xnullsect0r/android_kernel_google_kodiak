@@ -3,6 +3,7 @@
 #ifndef _PERF_CORE_APC_IRM_DEBUG_H
 #define _PERF_CORE_APC_IRM_DEBUG_H
 
+#include <linux/kconfig.h>
 #include <linux/types.h>
 #include <perf/core/apc_irm.h>
 
@@ -13,8 +14,13 @@
 #define CPM_IRM_FREQ_CLAMP_INT_ANCESTOR_FAB_SHIFT (8)
 #define CPM_IRM_FREQ_CLAMP_INT_ANCESTOR_FAB_MASK (0xF)
 #define CPM_IRM_FREQ_CLAMP_INT_DESCENDANT_FAB_SHIFT (12)
+
+#if (IS_ENABLED(CONFIG_SOC_MBU) || IS_ENABLED(CONFIG_SOC_LGA))
 #define CPM_IRM_FREQ_CLAMP_INT_DESCENDANT_FAB_MASK (0x7)
 #define CPM_IRM_FREQ_CLAMP_VALID_BIT (1 << 15)
+#else
+#define CPM_IRM_FREQ_CLAMP_INT_DESCENDANT_FAB_MASK (0xF)
+#endif
 
 struct irm_client_t;
 

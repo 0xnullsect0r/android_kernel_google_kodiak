@@ -1,8 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Edge TPU ML accelerator telemetry: logging and tracing.
  *
- * Copyright (C) 2019-2020 Google, Inc.
+ * Copyright (C) 2019-2026 Google LLC
  */
 #ifndef __EDGETPU_TELEMETRY_H__
 #define __EDGETPU_TELEMETRY_H__
@@ -19,19 +19,6 @@
 /* Buffer size must be a power of 2 */
 #define EDGETPU_TELEMETRY_LOG_BUFFER_SIZE (16 * 4096)
 #define EDGETPU_TELEMETRY_TRACE_BUFFER_SIZE (64 * 4096)
-#define EDGETPU_TELEMETRY_HWTRACE_BUFFER_DEFAULT_SIZE (SZ_1M * 64)
-
-/*
- * HWTRACE (and other optional debug features) use the 32-bit IOVA space above the FW carveout
- * remap region.
- */
-#define EDGETPU_TELEMETRY_HWTRACE_IOVA	0x18000000
-
-/* Return true if the telemetry entry has a TPU mapping established, else false. */
-static inline bool edgetpu_telemetry_mapped(struct gcip_telemetry *tel)
-{
-	return tel->memory.dma_addr;
-}
 
 /*
  * Allocates resources needed for @etdev->telemetry LOG and TRACE.
@@ -41,36 +28,18 @@ static inline bool edgetpu_telemetry_mapped(struct gcip_telemetry *tel)
 int edgetpu_telemetry_init(struct edgetpu_dev *etdev);
 
 /*
- * Allocates resources needed for @etdev->telemetry HWTRACE.
- * @buffer_size: Size in bytes of buffer, must be a power of 2 and >= telemetry header size (128)
- *
- * Returns 0 on success, or a negative errno on error.
- */
-int edgetpu_telemetry_hwtrace_init(struct edgetpu_dev *etdev, size_t buffer_size);
-
-/*
- * Disable the telemetry if enabled, release resources, including LOG, TRACE, and HWTRACE.
+ * Disable the telemetry if enabled, release resources, including LOG and TRACE.
  */
 void edgetpu_telemetry_exit(struct edgetpu_dev *etdev);
 
 /*
- * Sends the KCI commands mapping LOG and TRACE (and HWTRACE if enabled) telemetry buffers to
- * firmware.
+ * Sends the KCI commands mapping LOG and TRACE telemetry buffers to firmware.
  *
  * Returns the code of KCI response, or a negative errno on error.
  */
 int edgetpu_telemetry_kci(struct edgetpu_dev *etdev);
 
-/*
- * Sets the eventfd to notify the runtime when LOG/TRACE/HWTRACE telemetry data is available.
- *
- * Returns 0 on success, or a negative errno on error.
- */
-int edgetpu_telemetry_set_event(struct edgetpu_dev *etdev, struct gcip_telemetry *tel, u32 eventfd);
-/* Removes previously set event. */
-void edgetpu_telemetry_unset_event(struct edgetpu_dev *etdev, struct gcip_telemetry *tel);
-
-/* Checks LOG/TRACE/HWTRACE telemetries and signals associated eventfds if needed. */
+/* Checks LOG/TRACE telemetries and signals associated eventfds if needed. */
 void edgetpu_telemetry_irq_handler(struct edgetpu_dev *etdev);
 
 /* debugfs mappings dump */

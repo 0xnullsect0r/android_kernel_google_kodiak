@@ -6,6 +6,10 @@
 #ifndef __GOOG_MBA_NQ_XPORT_H
 #define __GOOG_MBA_NQ_XPORT_H
 
+#include <linux/bitfield.h>
+#include <linux/bits.h>
+#include <linux/types.h>
+
 /*
  * Header of message defines the service ID and a field for additional data
  *

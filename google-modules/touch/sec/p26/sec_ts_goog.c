@@ -889,6 +889,53 @@ exit:
 	return ret;
 }
 
+static int gti_set_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
+{
+	struct sec_ts_data *ts = private_data;
+	u8 val;
+	int ret;
+
+	if (cmd->setting == 120) {
+		val = 0;
+	} else if (cmd->setting == 240) {
+		val = 1;
+	} else {
+		LOGE("Unsupported report rate: %u\n", cmd->setting);
+		return -EINVAL;
+	}
+
+	ret = ts->sec_ts_write(ts, SEC_TS_CMD_GAME_MODE, &val, sizeof(val));
+	if (ret) {
+		LOGE("Failed to write SEC_TS_CMD_GAME_MODE, ret = %d\n", ret);
+		return ret;
+	}
+
+	ts->report_rate = cmd->setting;
+	return 0;
+}
+
+static int gti_get_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
+{
+	struct sec_ts_data *ts = private_data;
+	u8 buffer[2] = {0};
+	int ret = 0;
+	u16 rate;
+
+	ret = ts->sec_ts_read(ts, SET_TS_CMD_GET_REPORT_RATE, buffer, sizeof(buffer));
+	if (ret) {
+		LOGE("Failed to read report rate, ret = %d\n", ret);
+		return ret;
+	}
+
+	rate = (buffer[0] << 8) | buffer[1];
+	LOGI("report rate: %u Hz\n", rate);
+
+	cmd->setting = rate;
+	ts->report_rate = cmd->setting;
+
+	return 0;
+}
+
 void goog_gti_probe(struct sec_ts_data *ts)
 {
 	int retval = 0;
@@ -901,6 +948,8 @@ void goog_gti_probe(struct sec_ts_data *ts)
 		return;
 	}
 
+	options->get_report_rate = gti_get_report_rate;
+	options->set_report_rate = gti_set_report_rate;
 	options->get_coord_filter_enabled = gti_get_coord_filter_enabled;
 	options->set_coord_filter_enabled = gti_set_coord_filter_enabled;
 	options->get_palm_mode = gti_get_palm_mode;

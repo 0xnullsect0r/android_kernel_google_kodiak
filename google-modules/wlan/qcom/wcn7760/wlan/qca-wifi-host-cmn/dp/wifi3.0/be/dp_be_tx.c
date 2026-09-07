@@ -1830,8 +1830,17 @@ dp_tx_gen_hw_desc_be(struct dp_soc *soc, struct dp_vdev *vdev,
 	hal_tx_desc_set_lmac_id_be(soc->hal_soc, hal_tx_desc_cached,
 				   vdev->lmac_id);
 
-	hal_tx_desc_set_search_index_be(soc->hal_soc, hal_tx_desc_cached,
-					ast_idx);
+	/*
+	 * PEER_SEARCH_IDX or ast_idx will be valid only for packets on
+	 * PASSTHRU interface
+	 */
+	if (qdf_unlikely(QDF_NBUF_CB_PEER_SEARCH_IDX_VALID(tx_desc->nbuf)))
+		hal_tx_desc_set_search_index_be(soc->hal_soc,
+						hal_tx_desc_cached,
+						QDF_NBUF_CB_PEER_SEARCH_IDX_VALUE(tx_desc->nbuf));
+	else
+		hal_tx_desc_set_search_index_be(soc->hal_soc,
+						hal_tx_desc_cached, ast_idx);
 	/*
 	 * Bank_ID is used as DSCP_TABLE number in beryllium
 	 * So there is no explicit field used for DSCP_TID_TABLE_NUM.

@@ -1,43 +1,36 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Implements utilities for virtual device group of EdgeTPU.
  *
- * Copyright (C) 2019 Google, Inc.
+ * Copyright (C) 2019-2026 Google LLC
  */
 #ifndef __EDGETPU_DEVICE_GROUP_H__
 #define __EDGETPU_DEVICE_GROUP_H__
 
-#include <linux/atomic.h>
-#include <linux/eventfd.h>
-#include <linux/list.h>
+#include <linux/bug.h>
+#include <linux/compiler_types.h>
+#include <linux/errno.h>
 #include <linux/mutex.h>
-#include <linux/rbtree.h>
-#include <linux/rwsem.h>
 #include <linux/refcount.h>
+#include <linux/rwsem.h>
+#include <linux/sched.h>
 #include <linux/seq_file.h>
-#include <linux/spinlock.h>
+#include <linux/spinlock_types.h>
 #include <linux/types.h>
 
-#include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-fence-array.h>
+
 #include <iif/iif-fence.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-ikv-additional-info.h"
 #include "edgetpu-internal.h"
-#include "edgetpu-mailbox.h"
 #include "edgetpu-mapping.h"
-#include "edgetpu-mmu.h"
 #include "edgetpu.h"
 
 /* Reserved VCID that uses the extra partition. */
 #define EDGETPU_VCID_EXTRA_PARTITION 0
 #define EDGETPU_VCID_EXTRA_PARTITION_HIGH 1
-
-/* entry of edgetpu_device_group#clients */
-struct edgetpu_list_group_client {
-	struct list_head list;
-	struct edgetpu_client *client;
-};
 
 enum edgetpu_device_group_status {
 	/* Temporary status while a group is being created but not yet READY. */
@@ -56,12 +49,6 @@ enum edgetpu_device_group_status {
 
 #define EDGETPU_EVENT_COUNT 2
 
-/* eventfds registered for event notifications from kernel for a device group */
-struct edgetpu_events {
-	rwlock_t lock;
-	struct eventfd_ctx *eventfds[EDGETPU_EVENT_COUNT];
-};
-
 struct edgetpu_device_group {
 	/*
 	 * Reference count.
@@ -70,7 +57,7 @@ struct edgetpu_device_group {
 	 * when ref_count becomes zero.
 	 */
 	refcount_t ref_count;
-	struct edgetpu_dev *etdev;	/* the device opened by the client */
+	struct edgetpu_dev *etdev; /* the device opened by the client */
 	/*
 	 * Whether mailbox attaching and detaching have effects on this group.
 	 * This field is configured according to the priority field when
@@ -80,9 +67,6 @@ struct edgetpu_device_group {
 	bool mailbox_attached;
 	/* Virtual context ID to be sent to the firmware. */
 	u16 vcid;
-
-	/* Number of additional VII commands this client is allowed to enqueue. */
-	atomic_t available_vii_credits;
 
 	/* TODO(b/409706886) Increase parallelism of group->lock holder using down_read. */
 	/*
@@ -124,12 +108,6 @@ struct edgetpu_device_group {
 	/* The DMA fence manager for this group. */
 	struct gcip_dma_fence_manager *gfence_mgr;
 
-	/*
-	 * Used to synchronize any mapping operations for this device group.
-	 * @lock must be held for reading or writing whenever @mapping_lock is held.
-	 */
-	struct mutex mapping_lock;
-
 	/* Used to serialize pin_user_pages. */
 	struct mutex pin_user_pages_lock;
 
@@ -139,14 +117,8 @@ struct edgetpu_device_group {
 	 */
 	struct mutex vii_lock;
 
-	/* Lists of `struct edgetpu_ikv_response`s for consuming/cleanup respectively */
-	struct list_head ready_ikv_resps;
-	struct list_head pending_ikv_resps;
-	/*
-	 * Protects access to @ready_ikv_resps, @pending_ikv_resps, and the "processed" field of any
-	 * responses currently enqueued in @pending_ikv_resps.
-	 */
-	spinlock_t ikv_resp_lock;
+	/* The IKV response manager for this device group. */
+	struct edgetpu_ikv_rsp_mgr *rsp_mgr;
 
 	/* TPU IOVA mapped to host DRAM space */
 	struct edgetpu_mapping_root host_mappings;
@@ -154,7 +126,8 @@ struct edgetpu_device_group {
 	struct edgetpu_mapping_root dmabuf_mappings;
 	/* If true at least one IOMMU fault has been reported for this group, for debugging. */
 	bool iommu_fault;
-	struct edgetpu_events events;
+	/* Group-level event manager to manage the eventfds. */
+	struct gcip_event_mgr *event_mgr;
 	/* Mailbox attributes used to create this group */
 	struct edgetpu_mailbox_attr mbox_attr;
 
@@ -164,37 +137,16 @@ struct edgetpu_device_group {
 	bool is_clearing_pending_commands;
 	/* Protects `pending_cmd_tasks` and `is_clearing_pending_commands`. */
 	spinlock_t pending_cmd_tasks_lock;
+	/* Node for list of groups under `edgetpu_dev`. Protected by `etdev->groups_lock`. */
+	struct list_head group_list_node;
 };
-
-/*
- * Entry of edgetpu_dev#groups.
- *
- * Files other than edgetpu-device-group.c shouldn't need to access this
- * structure. Use macro etdev_for_each_group to access the groups under an
- * etdev.
- */
-struct edgetpu_list_group {
-	struct list_head list;
-	struct edgetpu_device_group *grp;
-};
-
-/* Macro to loop through etdev->groups. */
-#define etdev_for_each_group(etdev, l, g)                                      \
-	for (l = list_entry(etdev->groups.next, typeof(*l), list), g = l->grp; \
-	     &l->list != &etdev->groups;                                       \
-	     l = list_entry(l->list.next, typeof(*l), list), g = l->grp)
-
-/* Loop through group->clients (hold group->lock prior). */
-#define for_each_list_group_client(c, group) \
-	list_for_each_entry(c, &group->clients, list)
 
 /*
  * Returns if the group is ready.
  *
  * Caller holds @group->lock.
  */
-static inline bool
-edgetpu_device_group_is_ready(const struct edgetpu_device_group *group)
+static inline bool edgetpu_device_group_is_ready(const struct edgetpu_device_group *group)
 {
 	return group->status == EDGETPU_DEVICE_GROUP_READY;
 }
@@ -204,8 +156,7 @@ edgetpu_device_group_is_ready(const struct edgetpu_device_group *group)
  *
  * Caller holds @group->lock.
  */
-static inline bool
-edgetpu_device_group_is_errored(const struct edgetpu_device_group *group)
+static inline bool edgetpu_device_group_is_errored(const struct edgetpu_device_group *group)
 {
 	return group->status == EDGETPU_DEVICE_GROUP_ERRORED;
 }
@@ -215,8 +166,7 @@ edgetpu_device_group_is_errored(const struct edgetpu_device_group *group)
  *
  * Caller holds @group->lock.
  */
-static inline bool
-edgetpu_device_group_is_disbanded(const struct edgetpu_device_group *group)
+static inline bool edgetpu_device_group_is_disbanded(const struct edgetpu_device_group *group)
 {
 	return group->status == EDGETPU_DEVICE_GROUP_DISBANDED;
 }
@@ -261,31 +211,40 @@ edgetpu_device_group_get(struct edgetpu_device_group *group)
  */
 void edgetpu_device_group_put(struct edgetpu_device_group *group);
 
-/*
- * Creates a device group for @client.
+/**
+ * edgetpu_device_group_create() - Creates a device group.
+ * @client: Client for which the group is created.
+ * @attr: Mailbox attributes.
  *
- * @client must not already have created a group.
- * @client->group will be set as the returned group with status EDGETPU_DEVICE_GROUP_READY on
- * success. If creation fails at edgetpu_device_group_finish_setup(), @client->group will be set as
- * the returned group with status EDGETPU_DEVICE_GROUP_DISBANDED and will be properly cleaned up
- * when the client is removed.
- *
- * Call edgetpu_device_group_put() when the returned group is not needed.
- *
- * Returns a pointer to the new group, or a negative errno on error.
- * Returns -EINVAL if the client already created a group.
+ * Return: The pointer to the device group object, or the pointer to a negative errno otherwise.
  */
-struct edgetpu_device_group *
-edgetpu_device_group_create(struct edgetpu_client *client, const struct edgetpu_mailbox_attr *attr);
+struct edgetpu_device_group *edgetpu_device_group_create(struct edgetpu_client *client,
+							 const struct edgetpu_mailbox_attr *attr);
+
+/**
+ * edgetpu_dev_register_group() - Registers a group to the device's group list.
+ * @etdev: The EdgeTPU device.
+ * @group: The device group to register.
+ *
+ * Return: 0 on success, or a negative errno otherwise.
+ */
+int edgetpu_dev_register_group(struct edgetpu_dev *etdev, struct edgetpu_device_group *group);
+
+/**
+ * edgetpu_dev_unregister_group() - Unregisters a group from the device's group list.
+ * @etdev: The EdgeTPU device.
+ * @group: The device group to unregister.
+ */
+void edgetpu_dev_unregister_group(struct edgetpu_dev *etdev, struct edgetpu_device_group *group);
 
 /*
- * Disband the device group @client created.
- * The group will be marked as "disbanded". The client will hold a reference to the disbanded group
- * until the client is removed.
+ * Disband device group @group.
+ * The group will be marked as "disbanded". The client will still hold a reference to the disbanded
+ * group until the client is removed.
  *
- * @client->group will be removed from @client->etdev->groups.
+ * @>group will be removed from @group->etdev->groups.
  */
-void edgetpu_device_group_disband(struct edgetpu_client *client);
+void edgetpu_device_group_disband(struct edgetpu_device_group *group);
 
 /*
  * Maps buffer to a device group.
@@ -340,8 +299,7 @@ edgetpu_group_domain_locked(struct edgetpu_device_group *group)
 }
 
 /* dump mappings in @group */
-void edgetpu_group_mappings_show(struct edgetpu_device_group *group,
-				 struct seq_file *s);
+void edgetpu_group_mappings_show(struct edgetpu_device_group *group, struct seq_file *s);
 
 /*
  * Sends a VII command on behalf of `group`.
@@ -370,12 +328,10 @@ int edgetpu_device_group_send_vii_command(struct edgetpu_device_group *group, vo
 int edgetpu_device_group_get_vii_response(struct edgetpu_device_group *group, void *resp);
 
 /* Set group eventfd for event notification */
-int edgetpu_group_set_eventfd(struct edgetpu_device_group *group, uint event_id,
-			      int eventfd);
+int edgetpu_group_set_eventfd(struct edgetpu_device_group *group, uint event_id, int eventfd);
 
 /* Unset previously-set group eventfd */
-void edgetpu_group_unset_eventfd(struct edgetpu_device_group *group,
-				 uint event_id);
+void edgetpu_group_unset_eventfd(struct edgetpu_device_group *group, uint event_id);
 
 /* Notify group of event */
 void edgetpu_group_notify(struct edgetpu_device_group *group, uint event_id);
@@ -391,8 +347,7 @@ bool edgetpu_in_any_group(struct edgetpu_dev *etdev);
 bool edgetpu_set_group_create_lockout(struct edgetpu_dev *etdev, bool lockout);
 
 /* Notify @group about a fatal error for that group. */
-void edgetpu_group_fatal_error_notify(struct edgetpu_device_group *group,
-				      uint error_mask);
+void edgetpu_group_fatal_error_notify(struct edgetpu_device_group *group, uint error_mask);
 /* Notify all device groups of @etdev about a failure on the die */
 void edgetpu_fatal_error_notify(struct edgetpu_dev *etdev, uint error_mask);
 
@@ -435,8 +390,7 @@ int edgetpu_group_attach_and_open_mailbox(struct edgetpu_device_group *group);
  *
  * Caller holds @group->lock.
  */
-static inline bool
-edgetpu_group_mailbox_detached_locked(const struct edgetpu_device_group *group)
+static inline bool edgetpu_group_mailbox_detached_locked(const struct edgetpu_device_group *group)
 {
 	return !group->mailbox_attached;
 }
@@ -446,8 +400,7 @@ edgetpu_group_mailbox_detached_locked(const struct edgetpu_device_group *group)
  *
  * Caller holds @group->lock.
  */
-static inline bool
-edgetpu_group_ready_and_attached(const struct edgetpu_device_group *group)
+static inline bool edgetpu_group_ready_and_attached(const struct edgetpu_device_group *group)
 {
 	return edgetpu_device_group_is_ready(group) &&
 	       !edgetpu_group_mailbox_detached_locked(group);

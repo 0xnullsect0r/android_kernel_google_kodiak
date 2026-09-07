@@ -14,6 +14,7 @@
 #include <linux/mm_types.h>
 #include <linux/platform_device.h>
 #include <linux/pm_qos.h>
+#include <linux/workqueue.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_color_mgmt.h>
 
@@ -122,6 +123,12 @@ struct vs_dc {
 	struct device *fe_dev[DC_FE_NUM];
 	struct device *be_dev;
 	struct device *wb_dev;
+	/** @be_handoff_vote: Track if BE driver holds a power vote for boot handoff */
+	bool be_handoff_vote;
+	/** @fe_handoff_vote: Track if FE drivers hold power votes for boot handoff */
+	bool fe_handoff_vote[DC_FE_NUM];
+	/** @handoff_work: Delayed work to check and release boot handoff votes */
+	struct delayed_work handoff_work;
 
 	struct devfreq *core_devfreq;
 	struct devfreq *fab_devfreq;
@@ -147,7 +154,12 @@ struct vs_dc {
 
 	struct vs_writeback_connector *writeback[DC_WB_NUM];
 
+	/** @debugfs: Root debugfs directory for the display controller. */
 	struct dentry *debugfs;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	/** @display_debugfs: Tracked child debugfs directories for each display. */
+	struct dentry *display_debugfs[DC_DISPLAY_NUM];
+#endif
 	struct google_icc_path *path;
 	struct platform_device *tzprot_pdev;
 	struct vs_qos_config min_qos_config;
@@ -197,5 +209,8 @@ void vs_dc_handle_interrupts(struct vs_dc *dc);
 int vs_dc_coredump(struct vs_dc *dc, const char *reason);
 bool is_display_cmd_sw_trigger(struct dc_hw_display *display);
 int vs_dc_sw_reset(struct drm_device *drm_dev);
+bool dc_device_has_power_during_handoff(struct device *dev);
+int dc_component_grab_handoff_vote(struct device *dev, bool *handoff_vote_flag);
+void dc_component_release_handoff_vote(struct device *dev, bool *handoff_vote_flag);
 
 #endif /* __VS_DC_H__ */

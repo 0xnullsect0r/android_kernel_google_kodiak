@@ -376,10 +376,11 @@ int goog_process_vendor_cmd(struct goog_touch_interface *gti, enum gti_cmd_type 
 		GOOG_INFO(gti, "Set touch report rate as %d Hz", gti->cmd.report_rate_cmd.setting);
 		ret = gti->options.set_report_rate(private_data, &gti->cmd.report_rate_cmd);
 		if (ret == 0) {
-			if (gti->timestamp_correction_enabled) {
-				gti->report_rate = gti->cmd.report_rate_cmd.setting;
-				gti->frame_time = ktime_set(0, NSEC_PER_SEC / gti->report_rate);
-			}
+			gti->report_rate_active = gti->cmd.report_rate_cmd.setting;
+			ATRACE_INT("gti_report_rate", gti->report_rate_active);
+			if (gti->timestamp_correction_enabled)
+				gti->frame_time =
+					ktime_set(0, NSEC_PER_SEC / gti->report_rate_active);
 		}
 		break;
 	case GTI_CMD_SET_SCAN_MODE:
@@ -447,10 +448,12 @@ static void goog_v4l2_read(struct goog_touch_interface *gti, ktime_t timestamp, 
 static int goog_get_driver_status(struct goog_touch_interface *gti,
 				  struct gti_context_driver_cmd *driver_cmd)
 {
+	gti->context_changed.touch_report_rate = 1;
 	gti->context_changed.offload_timestamp = 1;
 
 	driver_cmd->context_changed.value = gti->context_changed.value;
 	driver_cmd->screen_state = gti->display_state;
+	driver_cmd->touch_report_rate = gti->report_rate_active;
 	driver_cmd->noise_state = gti->fw_status.noise_level;
 	driver_cmd->water_mode = gti->fw_status.water_mode;
 	driver_cmd->charger_state = gti->charger_state;
@@ -557,9 +560,6 @@ static void goog_offload_populate_driver_status_channel(
 
 	ds->contents.screen_state = driver_cmd->context_changed.screen_state;
 	ds->screen_state = driver_cmd->screen_state;
-
-	ds->contents.display_refresh_rate = driver_cmd->context_changed.display_refresh_rate;
-	ds->display_refresh_rate = driver_cmd->display_refresh_rate;
 
 	ds->contents.touch_report_rate = driver_cmd->context_changed.touch_report_rate;
 	ds->touch_report_rate = driver_cmd->touch_report_rate;
@@ -762,6 +762,23 @@ static void goog_offload_populate_frame(struct goog_touch_interface *gti,
 	ATRACE_END();
 }
 
+static void gti_send_report_rate_request(struct goog_touch_interface *gti)
+{
+	int err;
+
+	/* Ensure report_rate_request is visible before processing deferred switch */
+	smp_rmb();
+	gti->cmd.report_rate_cmd.setting = gti->report_rate_request;
+	err = goog_process_vendor_cmd(gti, GTI_CMD_SET_REPORT_RATE);
+	if (err != 0) {
+		GOOG_WARN(gti, "Failed report rate switch to %u(ret: %d)!\n",
+			  gti->report_rate_request, err);
+		gti->report_rate_update_deferred = true;
+	} else {
+		gti->report_rate_update_deferred = false;
+	}
+}
+
 static void gti_update_fw_settings(struct goog_touch_interface *gti, bool force_update)
 {
 	int error;
@@ -773,6 +790,12 @@ static void gti_update_fw_settings(struct goog_touch_interface *gti, bool force_
 		GOOG_DBG(gti, "Error while obtaining FW_SETTINGS wakelock: %d!\n", error);
 		return;
 	}
+
+	/*
+	 * FW report rate control
+	 */
+	if (gti->vrr_enabled && gti->report_rate_changed)
+		gti_send_report_rate_request(gti);
 
 	/*
 	 * FW grip control
@@ -1515,6 +1538,10 @@ int goog_input_process(struct goog_touch_interface *gti, bool reset_data)
 		goog_v4l2_read(gti, gti->input_timestamp, gti->frame_index);
 	}
 
+	if (gti->vrr_enabled && unlikely(gti->report_rate_update_deferred) && !reset_data &&
+	    gti->slot_bit_active == 0)
+		gti_send_report_rate_request(gti);
+
 	gti_debug_input_update(gti);
 	gti->input_timestamp_changed = false;
 	gti->slot_bit_in_use = 0;
@@ -1627,10 +1654,12 @@ void goog_input_set_timestamp(
 	}
 
 	if (ktime_to_ns(ktime_sub(timestamp, gti->input_timestamp)) <= 0) {
-		GOOG_ERR(gti, "TS jump back! input: %llu(%llu), sensing %llu(%llu)",
-			 ktime_to_ns(timestamp), ktime_to_ns(gti->input_timestamp),
-			 gti->sensing_timestamp, gti->last_sensing_timestamp);
-
+		GOOG_WARN(
+			gti,
+			"Input timestamp jumped backward! cur_input: %lld (prev: %lld), cur_sensing: %llu (prev: %llu)",
+			(long long)ktime_to_ns(timestamp),
+			(long long)ktime_to_ns(gti->input_timestamp), gti->sensing_timestamp,
+			gti->last_sensing_timestamp);
 		gti->input_timestamp = ktime_add_ns(gti->input_timestamp, NSEC_PER_USEC);
 	} else {
 		gti->input_timestamp = timestamp;
@@ -1974,12 +2003,8 @@ static void gti_init_input(struct goog_touch_interface *gti, struct device_node 
 	gti->resample_latency = ns_to_ktime(RESAMPLE_LATENCY_DEFAULT);
 	gti->timestamp_correction_enabled =
 		of_property_read_bool(dn, "goog,timestamp-correction-enabled");
-	if (gti->timestamp_correction_enabled) {
+	if (gti->timestamp_correction_enabled)
 		pid_controller_init(&gti->pid, 1, 20, 1, 200);
-
-		if (of_property_read_u32(dn, "goog,default-report-rate", &gti->default_report_rate))
-			gti->default_report_rate = 240;
-	}
 
 	gti->abs_x_max = input_abs_get_max(gti->vendor_input_dev, ABS_MT_POSITION_X);
 	gti->abs_x_min = input_abs_get_min(gti->vendor_input_dev, ABS_MT_POSITION_X);
@@ -2082,6 +2107,20 @@ static void gti_init_vendor_options(struct goog_touch_interface *gti,
 	gti->manual_heatmap_from_irq = of_property_read_bool(dn, "goog,manual-heatmap-from-irq");
 	gti->late_sense_on_enabled = of_property_read_bool(dn, "goog,late-sense-on-enabled");
 	gti->reset_after_selftest = of_property_read_bool(dn, "goog,reset-after-selftest");
+	gti->vrr_enabled = of_property_read_bool(dn, "goog,vrr-enabled");
+	if (gti->vrr_enabled && goog_process_vendor_cmd(gti, GTI_CMD_GET_REPORT_RATE) == 0 &&
+	    gti->cmd.report_rate_cmd.setting != 0) {
+		gti->default_report_rate = gti->cmd.report_rate_cmd.setting;
+	} else if (of_property_read_u32(dn, "goog,default-report-rate",
+					&gti->default_report_rate) ||
+		   gti->default_report_rate == 0) {
+		gti->default_report_rate = 240;
+	}
+	gti->report_rate_request = gti->default_report_rate;
+	gti->report_rate_active = gti->default_report_rate;
+	gti->frame_time = ktime_set(0, NSEC_PER_SEC / gti->report_rate_active);
+	ATRACE_INT("gti_report_rate", gti->report_rate_active);
+	GOOG_INFO(gti, "default_report_rate: %u Hz\n", gti->default_report_rate);
 
 	gti->panel_map_from_tic = of_property_read_bool(dn, "goog,panel-map-from-tic");
 	if (gti->panel_map_from_tic)
@@ -2127,10 +2166,8 @@ void goog_notify_fw_status_changed(struct goog_touch_interface *gti,
 		goog_input_release_all_fingers(gti);
 		gti_update_fw_settings(gti, true);
 
-		if (gti->timestamp_correction_enabled) {
-			gti->report_rate = gti->default_report_rate;
-			gti->frame_time = ktime_set(0, NSEC_PER_SEC / gti->report_rate);
-		}
+		if (gti->timestamp_correction_enabled)
+			gti->frame_time = ktime_set(0, NSEC_PER_SEC / gti->report_rate_active);
 
 		break;
 	case GTI_FW_STATUS_PALM_ENTER:
@@ -2404,6 +2441,7 @@ static irqreturn_t gti_irq_thread_fn(int irq, void *data)
 
 	scnprintf(trace_tag, sizeof(trace_tag), "%s: IRQ_IDX=%lld.", __func__, gti->irq_index);
 	ATRACE_BEGIN(trace_tag);
+	ATRACE_INT("gti_report_rate", gti->report_rate_active);
 	/*
 	 * Allow vendor driver to handle wake-up gesture events by irq_thread_fn()
 	 * after pm_suspend() complete without requiring a prior request for an IRQ

@@ -4,6 +4,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "h2omg.kconfig",
     srcs = [
@@ -27,9 +32,6 @@ ddk_module(
     ],
     out = "h2omg.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",

@@ -1,211 +1,164 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2025 Google LLC.
- *
  */
 
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
-#include <soc/google/goog_gdmc_service_ids.h>
 #include <soc/google/goog-mba-gdmc-iface.h>
-#include <soc/google/goog_mba_nq_xport.h>
+#include <soc/google/goog_mba_cpm_iface.h>
 
 #include "fwmt_driver.h"
-#include "fwmt_ipc.h"
 #include "fwmt_service.h"
 
 #define DEVICE_NUMBER 2
 
-static int fwmt_cdev_open(struct inode *inodep, struct file *filep)
-{
-	struct fwmt_base *base =
-		container_of(inodep->i_cdev, struct fwmt_cdev_instance, cdev)
-			->base;
-	struct cdev_state *cdev_state;
-	enum fwmt_mba_op_type op_type;
+/**
+ * struct fwmt_driver - The core FWMT platform driver state.
+ *
+ * @dev_gdmc: GDMC FWMT device subclass.
+ * @dev_cpm: CPM FWMT device subclass.
+ * @dev_legacy: Legacy FWMT device subclass that points to GDMC.
+ * @buffer_gdmc: Memory buffer for GDMC communication.
+ * @buffer_cpm: Memory buffer for CPM communication.
+ * @fwmt_class: FWMT character device class.
+ */
+struct fwmt_driver {
+	struct fwmt_dev_gdmc dev_gdmc;
+	struct fwmt_dev_cpm dev_cpm;
+	struct fwmt_dev_gdmc dev_legacy;
 
-	op_type = MINOR(inodep->i_rdev);
-	if (op_type > DEVICE_NUMBER) {
-		dev_err(base->dev, "Invalid minor number %d\n", op_type);
-		return -EFAULT;
-	}
+	struct fwmt_mba_buffer buffer_gdmc;
+	struct fwmt_mba_buffer buffer_cpm;
 
-	cdev_state = get_cdev_state(base, op_type);
-	if (IS_ERR(cdev_state)) {
-		dev_err(base->dev, "Could not initialize device state\n");
-		return PTR_ERR(cdev_state);
-	}
-
-	filep->private_data = cdev_state;
-	return 0;
-}
-
-static ssize_t fwmt_cdev_read(struct file *filep, char __user *buffer,
-			      size_t len, loff_t *offset)
-{
-	struct cdev_state *cdev_state = filep->private_data;
-	uint32_t bytes_written;
-	ssize_t ret;
-
-	if (*offset >= cdev_state->total_size)
-		return 0;
-
-	mutex_lock(&cdev_state->base->buffer_lock);
-
-	ret = refill_mba_buffer(cdev_state, len, *offset, &bytes_written);
-	if (ret)
-		goto out;
-
-	if (copy_to_user(buffer, cdev_state->mbi.mba_buffer, bytes_written)) {
-		dev_err(cdev_state->base->dev, "Failed to copy data to user\n");
-		ret = -EFAULT;
-		goto out;
-	}
-
-	*offset += bytes_written;
-	ret = bytes_written;
-
-out:
-	mutex_unlock(&cdev_state->base->buffer_lock);
-	return ret;
-}
-
-static int fwmt_cdev_release(struct inode *inodep, struct file *filep)
-{
-	put_cdev_state(filep->private_data);
-	return 0;
-}
-
-static struct file_operations fwmt_fops = {
-	.open = fwmt_cdev_open,
-	.read = fwmt_cdev_read,
-	.release = fwmt_cdev_release,
-	.owner = THIS_MODULE,
+	struct class *fwmt_class;
 };
 
-static int create_chardev_instance(struct fwmt_base *base,
-				   struct fwmt_cdev_instance *cdevi, dev_t devt,
-				   const char *name)
+/**
+ * fwmt_dev_init - Initializes an FWMT device and its character nodes.
+ * @dev: The FWMT device to initialize.
+ * @parent: The kernel device.
+ * @class: Character device class.
+ * @name: Name of the subsystem.
+ * @send_req: Function to send the FWMT request via the MBA.
+ * @buffer: Shared DMA memory buffer.
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+static int fwmt_dev_init(struct fwmt_dev *dev, struct device *parent, struct class *class,
+			 const char *name, fwmt_send_req_t send_req, struct fwmt_mba_buffer *buffer)
 {
-	struct device *cdev_node;
 	int ret;
+	char name_buf[64];
 
-	cdev_init(&cdevi->cdev, &fwmt_fops);
-	cdevi->cdev.owner = THIS_MODULE;
-	cdevi->devt = devt;
-	cdevi->base = base;
+	dev->dev = parent;
+	dev->name = name;
+	dev->send_req = send_req;
+	dev->buffer = buffer;
 
-	ret = cdev_add(&cdevi->cdev, cdevi->devt, 1);
+	ret = alloc_chrdev_region(&dev->devt, 0, DEVICE_NUMBER, KBUILD_MODNAME);
 	if (ret) {
-		dev_err(base->dev, "Failed to add cdev for %s\n", name);
+		dev_err(dev->dev, "Failed to allocate a major number.\n");
 		return ret;
 	}
 
-	cdev_node = device_create(base->class, base->dev, cdevi->devt, NULL,
-				  "%s", name);
-	if (IS_ERR(cdev_node)) {
-		dev_err(base->dev, "Failed to create device file for %s\n",
-			name);
-		ret = PTR_ERR(cdev_node);
-		cdev_del(&cdevi->cdev);
-		return ret;
+	if (dev->name) {
+		snprintf(name_buf, sizeof(name_buf), "%s_%s_strings", KBUILD_MODNAME, dev->name);
+	} else {
+		/* Legacy node. */
+		snprintf(name_buf, sizeof(name_buf), "%s_strings", KBUILD_MODNAME);
 	}
+	ret = fwmt_cdev_create(dev, &dev->cdev_strings, class,
+			       MKDEV(MAJOR(dev->devt), kFwmtMsgTypeRetrieveString),
+			       kFwmtMsgTypeRetrieveString, name_buf);
+	if (ret)
+		return ret;
+
+	if (dev->name) {
+		snprintf(name_buf, sizeof(name_buf), "%s_%s_metrics", KBUILD_MODNAME, dev->name);
+	} else {
+		/* Legacy node. */
+		snprintf(name_buf, sizeof(name_buf), "%s_metrics", KBUILD_MODNAME);
+	}
+	ret = fwmt_cdev_create(dev, &dev->cdev_metrics, class,
+			       MKDEV(MAJOR(dev->devt), kFwmtMsgTypeRetrieveMetric),
+			       kFwmtMsgTypeRetrieveMetric, name_buf);
+	if (ret)
+		return ret;
 
 	return 0;
 }
 
-static void destroy_chardev_instance(struct fwmt_base *base,
-				     struct fwmt_cdev_instance *cdevi)
+/**
+ * fwmt_dev_remove - Cleans up an FWMT device and its character nodes.
+ * @dev: The FWMT device to remove.
+ * @class: Shared character device class.
+ */
+static void fwmt_dev_remove(struct fwmt_dev *dev, struct class *class)
 {
-	device_destroy(base->class, cdevi->devt);
-	cdev_del(&cdevi->cdev);
+	fwmt_cdev_destroy(&dev->cdev_metrics, class);
+	fwmt_cdev_destroy(&dev->cdev_strings, class);
+	if (dev->devt)
+		unregister_chrdev_region(dev->devt, DEVICE_NUMBER);
 }
 
-static int fwmt_init_chardev(struct fwmt_base *base)
-{
-	int ret;
-
-	ret = alloc_chrdev_region(&base->devt, 0, DEVICE_NUMBER,
-				  KBUILD_MODNAME);
-	if (ret) {
-		dev_err(base->dev, "Failed to allocate a major number.\n");
-		goto err_alloc_chrdev;
-	}
-
-	base->class = class_create(KBUILD_MODNAME);
-	if (IS_ERR(base->class)) {
-		dev_err(base->dev, "Failed to create device class.\n");
-		ret = PTR_ERR(base->class);
-		goto err_class_create;
-	}
-
-	ret = create_chardev_instance(base, &base->cdev_strings,
-				      MKDEV(MAJOR(base->devt),
-					    GDMC_MBA_FWMT_RETRIEVE_STRING),
-				      KBUILD_MODNAME "_strings");
-	if (ret)
-		goto err_create_strings;
-
-	ret = create_chardev_instance(base, &base->cdev_metrics,
-				      MKDEV(MAJOR(base->devt),
-					    GDMC_MBA_FWMT_RETRIEVE_METRIC),
-				      KBUILD_MODNAME "_metrics");
-	if (ret)
-		goto err_create_metrics;
-
-	return 0;
-
-err_create_metrics:
-	destroy_chardev_instance(base, &base->cdev_strings);
-err_create_strings:
-	class_destroy(base->class);
-err_class_create:
-	unregister_chrdev_region(base->devt, DEVICE_NUMBER);
-err_alloc_chrdev:
-	return ret;
-}
-
-static void fwmt_destroy_chardev(struct fwmt_base *base)
-{
-	destroy_chardev_instance(base, &base->cdev_metrics);
-	destroy_chardev_instance(base, &base->cdev_strings);
-	class_destroy(base->class);
-	unregister_chrdev_region(base->devt, 2);
-}
-
+/**
+ * fwmt_probe - Probes the FWMT platform device.
+ * @pdev: The platform device to probe.
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
 static int fwmt_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct fwmt_base *base;
+	struct fwmt_driver *drv;
 	struct device_node *rmem_node;
 	struct reserved_mem *rmem;
+	struct gdmc_iface *gdmc_iface = NULL;
+	struct cpm_iface_client *cpm_iface = NULL;
 	u32 offset = 0;
 	u32 size = 0;
+	u32 half_size;
+	void *vaddr;
 	int ret;
 
-	base = devm_kzalloc(dev, sizeof(struct fwmt_base), GFP_KERNEL);
-	if (!base)
+	drv = devm_kzalloc(dev, sizeof(*drv), GFP_KERNEL);
+	if (!drv)
 		return -ENOMEM;
 
-	mutex_init(&base->buffer_lock);
+	mutex_init(&drv->buffer_gdmc.lock);
+	mutex_init(&drv->buffer_cpm.lock);
+	platform_set_drvdata(pdev, drv);
 
-	platform_set_drvdata(pdev, base);
-	base->dev = dev;
-	base->gdmc_iface = gdmc_iface_get(dev);
+	gdmc_iface = gdmc_iface_get(dev);
+	if (IS_ERR(gdmc_iface)) {
+		ret = PTR_ERR(gdmc_iface);
+		goto err;
+	}
 
-	if (IS_ERR(base->gdmc_iface))
-		return PTR_ERR(base->gdmc_iface);
+	cpm_iface = cpm_iface_request_client(dev, 0, NULL, NULL);
+	if (IS_ERR(cpm_iface)) {
+		ret = PTR_ERR(cpm_iface);
+		goto err;
+	}
+
+	drv->fwmt_class = class_create(KBUILD_MODNAME);
+	if (IS_ERR(drv->fwmt_class)) {
+		dev_err(dev, "Failed to create device class.\n");
+		ret = PTR_ERR(drv->fwmt_class);
+		goto err;
+	}
 
 	rmem_node = of_parse_phandle(dev->of_node, "memory-region", 0);
 	if (!rmem_node) {
 		dev_err(dev, "Failed to parse memory-region phandle\n");
 		ret = -ENODEV;
-		goto err_gdmc_put;
+		goto err;
 	}
 
 	rmem = of_reserved_mem_lookup(rmem_node);
@@ -213,61 +166,105 @@ static int fwmt_probe(struct platform_device *pdev)
 	if (!rmem) {
 		dev_err(dev, "Failed to lookup reserved memory\n");
 		ret = -ENODEV;
-		goto err_gdmc_put;
+		goto err;
 	}
 
 	ret = of_property_read_u32(dev->of_node, "buffer-offset", &offset);
 	if (ret) {
 		dev_err(dev, "Failed to read buffer-offset property\n");
-		goto err_gdmc_put;
+		goto err;
 	}
 
 	ret = of_property_read_u32(dev->of_node, "buffer-size", &size);
 	if (ret) {
 		dev_err(dev, "Failed to read buffer-size property\n");
-		goto err_gdmc_put;
+		goto err;
 	}
 
 	if (offset + size > rmem->size) {
 		dev_err(dev, "Offset and size exceed reserved memory bounds\n");
 		ret = -EINVAL;
-		goto err_gdmc_put;
+		goto err;
 	}
 
-	if (size < sizeof(struct fwmt_msg_request_buffer)) {
-		dev_err(dev, "Buffer size too small\n");
-		ret = -EINVAL;
-		goto err_gdmc_put;
-	}
-
-	base->mba_buffer_size = size;
-	base->mba_buffer_paddr = rmem->base + offset;
-
-	base->mba_buffer =
-		devm_memremap(dev, base->mba_buffer_paddr, size, MEMREMAP_WC);
-	if (!base->mba_buffer) {
+	/*
+	 * MEM remap the assigned region.
+	 * Note:
+	 * This has to be the same for Modem UART driver, as it is
+	 * within the same kernel page on 16KB build.
+	 */
+	vaddr = devm_memremap(dev, rmem->base + offset, size, MEMREMAP_WC);
+	if (!vaddr) {
 		dev_err(dev, "Failed to map reserved memory\n");
 		ret = -ENOMEM;
-		goto err_gdmc_put;
+		goto err;
 	}
 
-	ret = fwmt_init_chardev(base);
+	/* The buffer is split between GDMC and CPM. */
+	half_size = size / 2;
+	if (half_size < sizeof(struct fwmt_msg_retrieve_response)) {
+		dev_err(dev, "Buffer size too small\n");
+		ret = -EINVAL;
+		goto err;
+	}
+
+	/* GDMC buffer */
+	drv->buffer_gdmc.size = min_t(u32, half_size, U16_MAX);
+	drv->buffer_gdmc.paddr = rmem->base + offset;
+	drv->buffer_gdmc.vaddr = vaddr;
+
+	/* CPM buffer */
+	drv->buffer_cpm.size = min_t(u32, half_size, U16_MAX);
+	drv->buffer_cpm.paddr = rmem->base + offset + half_size;
+	drv->buffer_cpm.vaddr = (u8 *)vaddr + half_size;
+
+	/* Initialize the character devices. */
+	drv->dev_gdmc.iface = gdmc_iface;
+	ret = fwmt_dev_init(&drv->dev_gdmc.dev, dev, drv->fwmt_class, "gdmc", fwmt_gdmc_send_req,
+			    &drv->buffer_gdmc);
 	if (ret)
-		goto err_gdmc_put;
+		goto err;
+
+	drv->dev_cpm.iface = cpm_iface;
+	ret = fwmt_dev_init(&drv->dev_cpm.dev, dev, drv->fwmt_class, "cpm", fwmt_cpm_send_req,
+			    &drv->buffer_cpm);
+	if (ret)
+		goto err;
+
+	drv->dev_legacy.iface = gdmc_iface;
+	ret = fwmt_dev_init(&drv->dev_legacy.dev, dev, drv->fwmt_class, NULL, fwmt_gdmc_send_req,
+			    &drv->buffer_gdmc);
+	if (ret)
+		goto err;
 
 	return 0;
 
-err_gdmc_put:
-	gdmc_iface_put(base->gdmc_iface);
+err:
+	fwmt_dev_remove(&drv->dev_legacy.dev, drv->fwmt_class);
+	fwmt_dev_remove(&drv->dev_cpm.dev, drv->fwmt_class);
+	fwmt_dev_remove(&drv->dev_gdmc.dev, drv->fwmt_class);
+	class_destroy(drv->fwmt_class);
+	if (!IS_ERR_OR_NULL(cpm_iface))
+		cpm_iface_free_client(cpm_iface);
+	if (!IS_ERR_OR_NULL(gdmc_iface))
+		gdmc_iface_put(gdmc_iface);
 	return ret;
 }
 
+/**
+ * fwmt_remove - Removes the FWMT platform device.
+ * @pdev: The platform device to remove.
+ */
 static void fwmt_remove(struct platform_device *pdev)
 {
-	struct fwmt_base *base = platform_get_drvdata(pdev);
+	struct fwmt_driver *drv = platform_get_drvdata(pdev);
 
-	fwmt_destroy_chardev(base);
-	gdmc_iface_put(base->gdmc_iface);
+	fwmt_dev_remove(&drv->dev_legacy.dev, drv->fwmt_class);
+	fwmt_dev_remove(&drv->dev_cpm.dev, drv->fwmt_class);
+	fwmt_dev_remove(&drv->dev_gdmc.dev, drv->fwmt_class);
+	class_destroy(drv->fwmt_class);
+	cpm_iface_free_client(drv->dev_cpm.iface);
+	gdmc_iface_put(drv->dev_gdmc.iface);
 }
 
 static const struct of_device_id fwmt_of_match[] = {
@@ -287,5 +284,5 @@ static struct platform_driver fwmt_platform_driver = {
 module_platform_driver(fwmt_platform_driver);
 
 MODULE_AUTHOR("Filip Konieczny <filipkonieczny@google.com>");
-MODULE_DESCRIPTION("GDMC Firmware Metrics");
+MODULE_DESCRIPTION("Firmware Metrics");
 MODULE_LICENSE("GPL");

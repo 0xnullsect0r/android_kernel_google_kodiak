@@ -10,6 +10,7 @@
 
 #include <drm/bridge/dw_mipi_dsi2h.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_file.h>
 #include <drm/drm_of.h>
 #include <drm/drm_mipi_dsi.h>
@@ -357,6 +358,26 @@ static bool is_primary_display(struct vs_mipi_dsi2h *dsi)
 	return (dsi->pdata.index == DISPLAY_INDEX_PRIMARY);
 }
 
+static void vs_mipi_dsi_bridge_cleanup(struct drm_device *dev, void *data)
+{
+	struct drm_bridge *bridge = data;
+
+	bridge->base.state = NULL;
+}
+
+static int vs_mipi_dsi_register_bridge_cleanup(struct drm_device *drm_dev,
+					       struct drm_encoder *encoder)
+{
+	struct drm_bridge *bridge;
+
+	list_for_each_entry(bridge, &encoder->bridge_chain, chain_node) {
+		if (is_dw_mipi_dsi2h_bridge(bridge)) {
+			return drmm_add_action_or_reset(drm_dev, vs_mipi_dsi_bridge_cleanup,
+							bridge);
+		}
+	}
+	return -ENODEV;
+}
 
 static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *data)
 {
@@ -383,6 +404,7 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 			DRM_DEV_ERROR(dev, "Failed to bind: %d\n", ret);
 			return ret;
 		}
+		vs_mipi_dsi_register_bridge_cleanup(drm_dev, &dsi->encoder);
 
 		for (i = 0; i < MAX_DSI_CNT; i++) {
 			if (dsi_drvdata[i] && (dsi_drvdata[i]->pdata.index != pdata->index) &&
@@ -394,6 +416,8 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 					DRM_DEV_ERROR(dev, "Failed to bind: %d\n", ret);
 					return ret;
 				}
+				vs_mipi_dsi_register_bridge_cleanup(drm_dev,
+								    &dsi_drvdata[i]->encoder);
 			}
 		}
 	}
@@ -403,15 +427,9 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 
 static void vs_mipi_dsi_unbind(struct device *dev, struct device *master, void *data)
 {
-	int ret;
 	struct vs_mipi_dsi2h *dsi = dev_get_drvdata(dev);
 
 	dw_mipi_dsi2h_unbind(dsi->dw_mipi_dsi_handle);
-
-	DRM_DEV_DEBUG(dsi->dev, "power OFF\n");
-	ret = pm_runtime_put_sync(dsi->dev);
-	if (ret < 0)
-		DRM_DEV_ERROR(dsi->dev, "failed to power OFF\n");
 }
 
 static const struct component_ops vs_mipi_dsi2h_component_ops = {

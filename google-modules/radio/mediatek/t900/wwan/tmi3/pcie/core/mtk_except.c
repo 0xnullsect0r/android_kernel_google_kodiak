@@ -140,9 +140,17 @@ int mtk_exception_report_evt(struct mtk_md_dev *mdev, enum mtk_except_evt evt)
 	switch (evt) {
 	case EXCEPTION_LINK_ERR:
 		if (!test_and_set_bit(MTK_EXCEPTION_LINK_ERR_IGNORE, &except->flag)) {
+#if IS_ENABLED(CONFIG_GOOGLE_B528903481_DEBUG)
+			if (mtk_pci_mmio_check(mdev)) {
+				mtk_pci_mmio_hw_check(mdev);
+				MTK_INFO(mdev, "mmio check is %d in reporting event\n",
+					 mtk_pci_mmio_check(mdev));
+			}
+#else
 			if (mtk_pci_mmio_check(mdev))
 				MTK_INFO(mdev, "mmio check is %d in reporting event\n",
 					 mtk_pci_mmio_check(mdev));
+#endif
 #if IS_ENABLED(CONFIG_DEVICE_MODULES_PCIE_MEDIATEK_GEN3) || IS_ENABLED(CONFIG_PCIE_MEDIATEK_GEN3)
 			mtk_pcie_disable_data_trans(MTK_PCIE_PORT_NUM);
 #endif
@@ -196,9 +204,17 @@ int mtk_exception_report_evt(struct mtk_md_dev *mdev, enum mtk_except_evt evt)
 		spin_unlock_bh(&except->exception_lock);
 		break;
 	case EXCEPTION_AER_DETECTED:
+#if IS_ENABLED(CONFIG_GOOGLE_B528903481_DEBUG)
+		if (mtk_pci_mmio_check(mdev)) {
+			mtk_pci_mmio_hw_check(mdev);
+			MTK_INFO(mdev, "mmio check is %d in reporting event\n",
+				 mtk_pci_mmio_check(mdev));
+		}
+#else
 		if (mtk_pci_mmio_check(mdev))
 			MTK_INFO(mdev, "mmio check is %d in reporting event\n",
 				 mtk_pci_mmio_check(mdev));
+#endif
 #if IS_ENABLED(CONFIG_DEVICE_MODULES_PCIE_MEDIATEK_GEN3) || IS_ENABLED(CONFIG_PCIE_MEDIATEK_GEN3)
 		mtk_pcie_disable_data_trans(MTK_PCIE_PORT_NUM);
 #endif
@@ -291,6 +307,8 @@ static void mtk_exception_pwrctl_handler(enum pwrctl_evt evt, void *data)
 				   EVT_MODE_BLOCKING);
 		break;
 	case PWRCTL_EVT_PRERST:
+		if (mtk_pm_allow_smart_suspend(mdev))
+			mtk_pm_set_smart_suspend_wake(mdev, true);
 		pm_runtime_resume(mdev->dev);
 		ret = mtk_exception_report_evt(mdev, EXCEPTION_REBOOTINT);
 		if (ret)

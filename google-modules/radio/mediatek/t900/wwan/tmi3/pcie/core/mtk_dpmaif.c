@@ -1976,23 +1976,34 @@ static void mtk_dpmaif_task_wakeup(struct dpmaif_task_ctlb *task_ctlb)
 static void mtk_dpmaif_task_pause(struct dpmaif_task_ctlb *task_ctlb,
 				  struct mtk_dpmaif_ctlb *dcb)
 {
+	bool need_wait = false;
+
 	mutex_lock(&dcb->task_paused_lock);
 
 	if (!test_and_set_bit(DATA_TASK_PAUSE, &task_ctlb->state)) {
 		reinit_completion(&task_ctlb->paused_comp);
 		mtk_dpmaif_task_wakeup(task_ctlb);
-		wait_for_completion(&task_ctlb->paused_comp);
+		need_wait = true;
 	}
 	task_ctlb->pause_ref++;
-
 	mutex_unlock(&dcb->task_paused_lock);
+	/* Wait for the task to acknowledge the pause outside task_paused_lock.
+	 * Holding the lock while waiting would deadlock against the doorbell
+	 * thread: it may call rpm_get_sync() which runs the resume
+	 * callback in the same context, and the resume path (trans_enable ->
+	 * mtk_dpmaif_task_resume) needs to acquire task_paused_lock.
+	 * The pause/resume bookkeeping (DATA_TASK_PAUSE, pause_ref) is already
+	 * updated under the lock above, so it is safe to wait.
+	 */
+	if (need_wait)
+		wait_for_completion(&task_ctlb->paused_comp);
 
-	MTK_INFO(DCB_TO_MDEV(dcb), "Pause thread by %ps! ref = %d\n",
-		 __builtin_return_address(0), task_ctlb->pause_ref);
+	MTK_INFO(DCB_TO_MDEV(dcb), "Pause thread by %ps! ref = %d, need_wait = %d\n",
+		 __builtin_return_address(0), task_ctlb->pause_ref, need_wait);
 }
 
 static void mtk_dpmaif_task_resume(struct dpmaif_task_ctlb *task_ctlb,
-				   struct mtk_dpmaif_ctlb *dcb)
+				   struct mtk_dpmaif_ctlb *dcb, bool need_wp)
 {
 	mutex_lock(&dcb->task_paused_lock);
 	task_ctlb->pause_ref--;
@@ -2004,13 +2015,14 @@ static void mtk_dpmaif_task_resume(struct dpmaif_task_ctlb *task_ctlb,
 
 	if (!task_ctlb->pause_ref) {
 		clear_bit(DATA_TASK_PAUSE, &task_ctlb->state);
-		mtk_dpmaif_task_wakeup(task_ctlb);
+		if (need_wp)
+			mtk_dpmaif_task_wakeup(task_ctlb);
 	}
 
 	mutex_unlock(&dcb->task_paused_lock);
 
-	MTK_INFO(DCB_TO_MDEV(dcb), "Start thread by %ps! ref = %d\n",
-		 __builtin_return_address(0), task_ctlb->pause_ref);
+	MTK_INFO(DCB_TO_MDEV(dcb), "Start thread by %ps! ref = %d, need_wp=%d\n",
+		 __builtin_return_address(0), task_ctlb->pause_ref, need_wp);
 }
 
 static enum hrtimer_restart mtk_dpmaif_doorbell_timer_func(struct hrtimer *t)
@@ -3148,7 +3160,8 @@ static int mtk_dpmaif_rxq_init(struct mtk_dpmaif_ctlb *dcb, struct dpmaif_rxq *r
 #ifdef CONFIG_DATA_CPU_LOADING_OPTIMIZE
 free_pit:
 	if (rxq->attr & DPMAIFQ_ATTR_PIT_CACHED) {
-		dma_free_noncoherent(DCB_TO_DEV(dcb), rxq->pit_cnt * sizeof(*rxq->pit_base),
+		dma_free_noncoherent(DCB_TO_DEV(dcb),
+				     rxq->pit_cnt * sizeof(*rxq->pit_base),
 				     rxq->pit_base, rxq->pit_dma_addr, DMA_FROM_DEVICE);
 	} else {
 		dma_free_coherent(DCB_TO_DEV(dcb), rxq->pit_cnt * sizeof(*rxq->pit_base),
@@ -3169,7 +3182,8 @@ static void mtk_dpmaif_rxq_exit(struct mtk_dpmaif_ctlb *dcb, struct dpmaif_rxq *
 #endif
 
 	if (rxq->attr & DPMAIFQ_ATTR_PIT_CACHED) {
-		dma_free_noncoherent(DCB_TO_DEV(dcb), rxq->pit_cnt * sizeof(*rxq->pit_base),
+		dma_free_noncoherent(DCB_TO_DEV(dcb),
+				     rxq->pit_cnt * sizeof(*rxq->pit_base),
 				     rxq->pit_base, rxq->pit_dma_addr, DMA_FROM_DEVICE);
 	} else {
 		dma_free_coherent(DCB_TO_DEV(dcb), rxq->pit_cnt * sizeof(*rxq->pit_base),
@@ -3301,6 +3315,42 @@ static void mtk_dpmaif_rx_res_exit(struct mtk_dpmaif_ctlb *dcb)
 		mtk_dpmaif_rxq_exit(dcb, &dcb->rxqs[i]);
 
 	devm_kfree(DCB_TO_DEV(dcb), dcb->rxqs);
+}
+
+static bool mtk_dpmaif_has_doorbell(struct mtk_dpmaif_ctlb *dcb)
+{
+	int bat_ring_num = dcb->drv_info->cfg->rx_cfg.bat_ring_num;
+	int txq_cnt = dcb->drv_info->cfg->tx_cfg.txq_cnt;
+	struct dpmaif_bat_ring *bat_ring;
+	int i;
+
+	/* Tx drb doorbell */
+	for (i = 0; i < txq_cnt; i++) {
+		if (atomic_read(&dcb->txqs[i].to_submit_cnt) > 0)
+			return true;
+	}
+
+	/* Rx pit doorbell */
+	for (i = 0; i < dcb->rxq_cnt; i++) {
+		if (atomic_read(&dcb->rxqs[i].pit_rel_cnt) > 0)
+			return true;
+	}
+
+	/* Rx bat/frag doorbell */
+	for (i = 0; i < bat_ring_num; i++) {
+		bat_ring = &dcb->bat_infos[i].normal_bat_ring;
+		if (atomic_read(&bat_ring->reload_cnt) > 0)
+			return true;
+
+		if (!dcb->bat_infos[i].frag_bat_enabled)
+			continue;
+
+		bat_ring = &dcb->bat_infos[i].frag_bat_ring;
+		if (atomic_read(&bat_ring->reload_cnt) > 0)
+			return true;
+	}
+
+	return false;
 }
 
 static int mtk_dpmaif_tx_doorbell(struct mtk_dpmaif_ctlb *dcb)
@@ -4479,10 +4529,10 @@ static void mtk_dpmaif_trans_enable(struct mtk_dpmaif_ctlb *dcb)
 	int i;
 
 	for (i = 0; i < drv_info->cfg->rx_cfg.bat_ring_num; i++)
-		mtk_dpmaif_task_resume(&dcb->bat_infos[i].task_ctlb, dcb);
+		mtk_dpmaif_task_resume(&dcb->bat_infos[i].task_ctlb, dcb, true);
 
 	if (dcb->db_ctlb.data_no_intf) {
-		mtk_dpmaif_task_resume(&dcb->db_ctlb.task_ctlb, dcb);
+		mtk_dpmaif_task_resume(&dcb->db_ctlb.task_ctlb, dcb, mtk_dpmaif_has_doorbell(dcb));
 		dcb->db_ctlb.data_no_intf = false;
 	}
 
@@ -5463,6 +5513,62 @@ static void mtk_dpmaif_clear(struct mtk_md_dev *mdev)
 	mtk_dpmaif_sw_reset(dcb);
 }
 
+/**
+ * mtk_dpmaif_prepare() - perform the additional part that
+ * system suspend exceeds RPM suspend.
+ * @mdev: pointer to mtk_md_dev
+ * @param: pointer to dcb
+ * @is_smart_suspend: true means is smart suspend
+ *
+ * This function called by pm when entering smart suspend. Since
+ * already in RPM suspend state, entering smart suspend only needs
+ * to perform the additional part that system suspend exceeds RPM
+ * suspend. Do not access HW register in this function because PCIe
+ * link is not ready at this time.
+ *
+ * Return:
+ * 0:	 success.
+ */
+static int mtk_dpmaif_prepare(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend)
+{
+	struct mtk_dpmaif_ctlb *dcb = param;
+
+	if (is_smart_suspend)
+		mtk_dpmaif_task_pause(&dcb->db_ctlb.task_ctlb, dcb);
+
+	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif prepare done");
+
+	return 0;
+}
+
+/**
+ * mtk_dpmaif_complete() - perform the additional part that
+ * system resume exceeds RPM resume.
+ * @mdev: pointer to mtk_md_dev
+ * @param: pointer to dcb
+ * @is_smart_suspend: true means is smart suspend
+ *
+ * This function called by pm when exiting smart suspend. Since
+ * keeping RPM suspend is need after exiting smart suspend, only
+ * needs to perform the additional part that system resume exceeds
+ * RPM resume. Do not access HW register in this function because
+ * PCIe link is not ready at this time.
+ *
+ * Return:
+ * 0:	success.
+ */
+static int mtk_dpmaif_complete(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend)
+{
+	struct mtk_dpmaif_ctlb *dcb = param;
+
+	if (is_smart_suspend)
+		mtk_dpmaif_task_resume(&dcb->db_ctlb.task_ctlb, dcb, mtk_dpmaif_has_doorbell(dcb));
+
+	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif complete done");
+
+	return 0;
+}
+
 static int mtk_dpmaif_suspend(struct mtk_md_dev *mdev, void *param, bool is_runtime)
 {
 	struct mtk_dpmaif_ctlb *dcb = param;
@@ -5472,7 +5578,7 @@ static int mtk_dpmaif_suspend(struct mtk_md_dev *mdev, void *param, bool is_runt
 	if (!is_runtime)
 		mtk_dpmaif_task_pause(&dcb->db_ctlb.task_ctlb, dcb);
 
-	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif suspend done");
+	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif suspend done, is_runtime=%d", is_runtime);
 
 	return 0;
 }
@@ -5485,7 +5591,7 @@ static int mtk_dpmaif_suspend_late(struct mtk_md_dev *mdev, void *param, bool is
 	mtk_dpmaif_trans_ctl(dcb, false);
 	mutex_unlock(&dcb->trans_ctl_lock);
 	dcb->suspend_late_called = true;
-	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif suspend late done\n");
+	MTK_INFO(DCB_TO_MDEV(dcb), "dpmaif suspend late done, is_runtime=%d\n", is_runtime);
 	return 0;
 }
 
@@ -5496,7 +5602,8 @@ static int mtk_dpmaif_resume(struct mtk_md_dev *mdev, void *param, bool is_runti
 	struct mtk_dpmaif_ctlb *dcb = param;
 
 	if (!is_runtime)
-		mtk_dpmaif_task_resume(&dcb->db_ctlb.task_ctlb, dcb);
+		mtk_dpmaif_task_resume(&dcb->db_ctlb.task_ctlb, dcb, mtk_dpmaif_has_doorbell(dcb));
+
 	/* If device resume after device power off, we don't need to enable trans.
 	 * Since host driver will run re-init flow, we will get back to normal.
 	 */
@@ -5511,7 +5618,8 @@ static int mtk_dpmaif_resume(struct mtk_md_dev *mdev, void *param, bool is_runti
 	}
 
 	MTK_INFO(DCB_TO_MDEV(dcb),
-		 "dpmaif resume done, dev_is_reset=%d", dev_is_reset);
+		 "dpmaif resume done, dev_is_reset=%d, is_runtime=%d",
+		 dev_is_reset, is_runtime);
 
 	return 0;
 }
@@ -5528,6 +5636,8 @@ static int mtk_dpmaif_pm_init(struct mtk_dpmaif_ctlb *dcb)
 	pm_entity->suspend = &mtk_dpmaif_suspend;
 	pm_entity->suspend_late = &mtk_dpmaif_suspend_late;
 	pm_entity->resume = &mtk_dpmaif_resume;
+	pm_entity->prepare = &mtk_dpmaif_prepare;
+	pm_entity->complete = &mtk_dpmaif_complete;
 
 	ret = mtk_pm_entity_register(DCB_TO_MDEV(dcb), pm_entity);
 	if (ret < 0)
@@ -6249,8 +6359,9 @@ static int mtk_dpmaif_rx_set_frag_to_skb(struct dpmaif_rxq *rxq, struct dpmaif_p
 		     (data_len + data_offset) > cur_frag->data_len ||
 		     skb_shinfo(base_skb)->nr_frags >= MAX_SKB_FRAGS)) {
 		MTK_ERR(DCB_TO_MDEV(dcb),
-			"Invalid frag(%u/%u):data_len=%u\n",
-			rxq->pit_rd_idx, rxq->rx_info->pit_pd_cur_bid, data_len);
+			"Invalid frag(%u/%u):data_len=%u, nr_frags=%u\n",
+			rxq->pit_rd_idx, rxq->rx_info->pit_pd_cur_bid,
+			data_len, skb_shinfo(base_skb)->nr_frags);
 
 		dpmaif_dump_rxq_pit_info(rxq, 2);
 		return -DATA_FLOW_CHK_ERR;
@@ -6838,9 +6949,11 @@ static int mtk_dpmaif_rx_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (work_done < budget) {
-		napi_complete_done(napi, work_done);
-		__pm_wakeup_event(rxq->ws, jiffies_to_msecs(HZ));
-		mtk_dpmaif_drv_intr_complete(dcb->drv_info, DPMAIF_INTR_DL_DONE, rxq->id, 0);
+		if (napi_complete_done(napi, work_done)) {
+			__pm_wakeup_event(rxq->ws, jiffies_to_msecs(HZ));
+			mtk_dpmaif_drv_intr_complete(dcb->drv_info,
+						     DPMAIF_INTR_DL_DONE, rxq->id, 0);
+		}
 		trace_mtk_tput_data_napi(rxq->id, NAPI_DONE,
 					 stats->dpmaif_rx.rx_done_last_cnt[rxq->id]);
 		MTK_DBG(DCB_TO_MDEV(dcb), MTK_DBG_DPMF, MTK_DATA_RX_MEMLOG_RG(rxq->id),

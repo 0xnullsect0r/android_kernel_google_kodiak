@@ -14,6 +14,7 @@
 
 #include <iif/iif-manager.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-iif.h"

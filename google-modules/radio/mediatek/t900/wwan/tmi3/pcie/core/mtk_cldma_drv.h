@@ -192,6 +192,7 @@ struct cldma_drv_ops {
 	u32 (*cldma_get_tx_start_addr)(struct cldma_drv_info *drv_info, u32 qno);
 	u64 (*cldma_get_curr_addr)(struct cldma_drv_info *drv_info, enum mtk_tx_rx dir, u32 qno);
 	u32 (*cldma_get_gpd_cnt)(struct cldma_drv_info *drv_info, enum mtk_tx_rx dir, u32 qno);
+	u32 (*cldma_check_device_rx_status)(struct cldma_drv_info *drv_info, u32 qno);
 };
 
 void mtk_cldma_drv_dump(struct cldma_drv_info *drv_info);
@@ -215,5 +216,6 @@ void mtk_cldma_get_intr_status(struct cldma_drv_info *drv_info, u32 *tx_sta, u32
 u32 mtk_cldma_get_tx_start_addr(struct cldma_drv_info *drv_info, u32 qno);
 u64 mtk_cldma_get_curr_addr(struct cldma_drv_info *drv_info, enum mtk_tx_rx dir, u32 qno);
 u32 mtk_cldma_get_gpd_cnt(struct cldma_drv_info *drv_info, enum mtk_tx_rx dir, u32 qno);
+u32 mtk_cldma_check_device_rx_status(struct cldma_drv_info *drv_info, u32 qno);
 
 #endif

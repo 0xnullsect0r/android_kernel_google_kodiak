@@ -564,6 +564,7 @@ static void __maybe_unused queue_sync_cons_out(struct arm_smmu_queue *q)
 static void __maybe_unused queue_inc_cons(struct arm_smmu_ll_queue *q)
 {
 	u32 cons = (Q_WRP(q, q->cons) | Q_IDX(q, q->cons)) + 1;
+
 	q->cons = Q_OVF(q->cons) | Q_WRP(q, cons) | Q_IDX(q, cons);
 }
 
@@ -601,6 +602,7 @@ static int __maybe_unused queue_sync_prod_in(struct arm_smmu_queue *q)
 static u32 __maybe_unused queue_inc_prod_n(struct arm_smmu_ll_queue *q, int n)
 {
 	u32 prod = (Q_WRP(q, q->prod) | Q_IDX(q, q->prod)) + n;
+
 	return Q_OVF(q->prod) | Q_WRP(q, prod) | Q_IDX(q, prod);
 }
 

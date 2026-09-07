@@ -306,6 +306,8 @@ typedef struct WlanDp {
 	uint64_t fw_trap_addr;
 	/// @brief Flag to indicate if the DP is in draining mode.
 	bool is_draining;
+	/// @brief Simulate RX packet drop for test/verification.
+	bool simulate_rx_drop;
 	/// @brief Semaphore to signal drain completion.
 	struct completion drain_completion;
 } WlanDp;
@@ -499,5 +501,11 @@ extern int32_t WlanDpDrainOutputRingAsync(WlanDp *wlan_dp, uint32_t timeout_ms);
 ///
 /// @param[in] wlan_dp Pointer to the WLAN DP instance.
 extern void WlanDpTriggerDataPathPoll(WlanDp *wlan_dp);
+
+/// @brief Dynamically enables or disables RX packet drop simulation.
+///
+/// @param[in] wlan_dp Pointer to the WLAN DP instance.
+/// @param[in] drop True to drop received packets, false to process normally.
+extern void WlanDpSetSimulateRxDrop(WlanDp *wlan_dp, bool drop);
 
 #endif /* CORE_DP_WLAN_DP_H */

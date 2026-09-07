@@ -299,6 +299,14 @@ static const struct event_entry gmc_dfi_hw_events[] = {
 	{ 0, NULL },
 };
 
+static const struct event_entry gmc_dfi_hw_events_v2[] = {
+	{ 0, "RD" },
+	{ 1, "WR" },
+	{ 2, "dfi_rddata_valid" },
+	{ 3, "dfi_wrdata_en" },
+	{ 0, NULL },
+};
+
 static const struct filter_entry gmc_dfi_hw_filters[] = {
 	{ 0, "bank" },
 	{ 1, "rank" },
@@ -484,6 +492,7 @@ static const struct eventgrp_desc gem_event_groups[] = {
 	{ "dvfs-gslc", dvfs_gslc_hw_events, NULL },
 	{ "gmc-generic", gmc_generic_hw_events, gmc_generic_hw_filters },
 	{ "gmc-dfi", gmc_dfi_hw_events, gmc_dfi_hw_filters },
+	{ "gmc-dfi-v2", gmc_dfi_hw_events_v2, gmc_dfi_hw_filters },
 	{ "gslc-core", gslc_core_hw_events, gslc_core_hw_filters },
 	{ NULL },
 };

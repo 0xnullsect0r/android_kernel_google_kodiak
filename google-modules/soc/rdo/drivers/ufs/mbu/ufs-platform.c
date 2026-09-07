@@ -1910,7 +1910,6 @@ static struct ufs_google_ops mbu_gops = {
 	.config_cpm = ufs_mbu_plat_config_cpm,
 	.config_vs = ufs_mbu_plat_config_vs,
 	.set_refclk_control = ufs_mbu_plat_set_refclk_control,
-	.rext_internal = true,
 };
 
 int ufs_google_plat_set_gops(struct ufs_google_host *host)

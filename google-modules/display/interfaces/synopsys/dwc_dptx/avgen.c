@@ -921,6 +921,9 @@ int dptx_video_ts_calculate(struct dptx *dptx, int lane_num, int rate,
 	u32 T2;
 	u32 T3;
 
+	if (lane_num <= 0)
+		return -EINVAL;
+
 	vparams = &dptx->vparams;
 	mdtd = &vparams->mdtd;
 

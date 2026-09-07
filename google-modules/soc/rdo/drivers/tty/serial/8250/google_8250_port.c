@@ -1690,22 +1690,10 @@ static void serial8250_enable_ms(struct uart_port *port)
 void google_serial8250_read_char(struct uart_8250_port *up, u16 lsr, u8 *ch_out)
 {
 	struct uart_port *port = &up->port;
-	u8 ch, flag = TTY_NORMAL;
+	u8 flag = TTY_NORMAL;
+	u8 ch = serial_in(up, UART_RX);
 
-	if (likely(lsr & UART_LSR_DR)) {
-		ch = serial_in(up, UART_RX);
-		*ch_out = ch;
-	} else {
-		/*
-		 * Intel 82571 has a Serial Over Lan device that will
-		 * set UART_LSR_BI without setting UART_LSR_DR when
-		 * it receives a break. To avoid reading from the
-		 * receive buffer without UART_LSR_DR bit set, we
-		 * just force the read character to be 0
-		 */
-		ch = 0;
-	}
-
+	*ch_out = ch;
 	port->icount.rx++;
 
 	lsr |= up->lsr_saved_flags;

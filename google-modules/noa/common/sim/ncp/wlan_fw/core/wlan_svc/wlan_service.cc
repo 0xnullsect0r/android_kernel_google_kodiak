@@ -281,6 +281,55 @@ static int32_t WlanServiceExit(WlanService *const svc, const void *UNUSED(msg),
 	return WlanServiceFsmEventHandler(&svc->fsm, kWlanServiceFsmEventExit);
 }
 
+static int32_t WlanServiceRxHandoverSync(WlanService *const svc, const void *msg,
+					 uint32_t UNUSED(resp_buf_len), void *const UNUSED(resp_buf))
+{
+	const struct noa_wlan_cmd_rx_handover_sync *cmd =
+		WLAN_REINTERPRET_CAST(const struct noa_wlan_cmd_rx_handover_sync *, msg);
+	const struct noa_wlan_rx_handover_item *items;
+	uint32_t i;
+	int32_t ret = 0;
+
+	if (!svc || !cmd) {
+		return -EINVAL;
+	}
+
+	WLAN_LOG_INFO(Cfg, "%s(): received RX_HANDOVER_SYNC: count=%" PRIu32 ", table_dpa=0x%08" PRIx32 "%08" PRIx32 "\n",
+		      __func__, cmd->count,
+		      WLAN_STATIC_CAST(uint32_t, cmd->handover_table_dpa_addr >> 32),
+		      WLAN_STATIC_CAST(uint32_t, cmd->handover_table_dpa_addr & 0xFFFFFFFF));
+
+	if (cmd->count == 0 || cmd->handover_table_dpa_addr == 0) {
+		WLAN_LOG_INFO(Cfg, "%s(): empty handover table or null DPA addr\n", __func__);
+		return 0;
+	}
+
+	items = WLAN_REINTERPRET_CAST(const struct noa_wlan_rx_handover_item *,
+				      WLAN_STATIC_CAST(uintptr_t, cmd->handover_table_dpa_addr));
+
+	SysIfInvalidDCache(WLAN_REINTERPRET_CAST(const PhyAddr, items),
+			   cmd->count * sizeof(struct noa_wlan_rx_handover_item));
+
+	for (i = 0; i < cmd->count; i++) {
+		const struct noa_wlan_rx_handover_item *src = &items[i];
+
+		WLAN_LOG_DEBUG(Cfg, "%s(): importing TKID %" PRIu32 ": size=%" PRIu32 ", host_pa=0x%08" PRIx32 "%08" PRIx32 ", dpa_addr=0x%08" PRIx32 "%08" PRIx32 "\n",
+			      __func__, WLAN_STATIC_CAST(uint32_t, src->tkid), WLAN_STATIC_CAST(uint32_t, src->buf_size),
+			      WLAN_STATIC_CAST(uint32_t, src->host_pa >> 32), WLAN_STATIC_CAST(uint32_t, src->host_pa & 0xFFFFFFFF),
+			      WLAN_STATIC_CAST(uint32_t, src->dpa_addr >> 32), WLAN_STATIC_CAST(uint32_t, src->dpa_addr & 0xFFFFFFFF));
+
+		ret = BmAcquire(kVendorRxBufferManager, src->tkid, src->buf_size, src->host_pa,
+				src->dpa_addr);
+		if (ret) {
+			WLAN_LOG_ERROR(Cfg, "%s(): Failed to acquire buffer for TKID %" PRIu32 ", err: %" PRId32 "\n",
+				       __func__, WLAN_STATIC_CAST(uint32_t, src->tkid), ret);
+		}
+	}
+
+	WLAN_LOG_INFO(Cfg, "%s(): successfully imported handover buffers\n", __func__);
+	return 0;
+}
+
 static int32_t WlanServiceStationControl(WlanService *const svc, const void *msg,
 					 uint32_t UNUSED(resp_buf_len),
 					 void *const UNUSED(resp_buf))
@@ -675,6 +724,43 @@ static int32_t WlanServiceShellSyncNepRingInfo(WlanService *const svc, uint32_t 
 	return 0;
 }
 
+static int32_t WlanServiceShellDumpWdevTxRingInfo(WlanService *const svc, uint32_t UNUSED(argv_len),
+                           const char *const UNUSED(argv))
+{
+	uint32_t num_rings = WlanRingManagerGetRingNum(&svc->ring_manager, kWdevTxPostRingGroup);
+
+	WLAN_LOG_INFO(Shell, "==== Wdev TX Post Ring Info ===");
+	WLAN_LOG_INFO(Shell, "Total rings: %" PRIu32, num_rings);
+
+	for (uint32_t i = 0; i < num_rings; i++) {
+		WlanRing *ring;
+		if (WlanRingManagerGetRing(&svc->ring_manager, kWdevTxPostRingGroup, i, &ring) == 0) {
+			bool active = WlanRingIsActive(ring);
+			WLAN_LOG_INFO(Shell, "Ring %" PRIu32 ": active=%d, hw_idx=%" PRIu32 ", flags=%" PRIu32,
+				      i, active, ring->hw_idx, ring->flags);
+			if (active) {
+				for (uint32_t j = 0; j < MAX_NUM_STA_SUPPORT; j++) {
+					const StaInfo *sta = &svc->sta_table.sta_info_list[j];
+					if (sta->enable) {
+						for (int tid = 0; tid < kWlanTidNum; tid++) {
+							if (sta->qos_txq_map[tid] == i) {
+								WLAN_LOG_INFO(Shell, "  oif: %" PRIu32 ", MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+									      sta->oif,
+									      sta->mac_addr[0], sta->mac_addr[1],
+									      sta->mac_addr[2], sta->mac_addr[3],
+									      sta->mac_addr[4], sta->mac_addr[5]);
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
 static int32_t WlanServiceShellSyncMibInfo(WlanService *const svc, uint32_t UNUSED(argv_len),
 					   const char *const UNUSED(argv))
 {
@@ -810,6 +896,27 @@ static int32_t WlanServiceShellWakeLock(WlanService *const svc, uint32_t argv_le
 	return 0;
 }
 
+static int32_t WlanServiceShellSimulateRxDrop(WlanService *const svc, uint32_t argv_len,
+					      const char *const argv)
+{
+	if (!svc) {
+		return -EINVAL;
+	}
+
+	if (strncmp(argv, "on", argv_len) == 0) {
+		WLAN_LOG_INFO(Shell, "Enable simulate RX packet drop");
+		WlanDpSetSimulateRxDrop(&svc->dp, true);
+	} else if (strncmp(argv, "off", argv_len) == 0) {
+		WLAN_LOG_INFO(Shell, "Disable simulate RX packet drop");
+		WlanDpSetSimulateRxDrop(&svc->dp, false);
+	} else {
+		WLAN_LOG_ERROR(Shell, "%s(): Unknown argument: %s, only supports on or off",
+			       __func__, argv);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int32_t WlanServiceShellRequest(WlanService *const svc, const void *msg,
 				       uint32_t UNUSED(resp_buf_len), void *const UNUSED(resp_buf))
 {
@@ -819,12 +926,14 @@ static int32_t WlanServiceShellRequest(WlanService *const svc, const void *msg,
 		{ "mib-info", WlanServiceShellSyncMibInfo },
 		{ "sta-info", WlanServiceShellDumpStaInfo },
 		{ "nep-ring-info", WlanServiceShellSyncNepRingInfo },
+		{ "wdev-tx-ring-info", WlanServiceShellDumpWdevTxRingInfo },
 		{ "memory-map-offset", WlanServiceShellDumpMemoryMapOffset },
 		{ "memory-map-section", WlanServiceShellDumpMemoryMapSection },
 		{ "start-tput-monitor", WlanServiceShellStartTputMonitor },
 		{ "stop-tput-monitor", WlanServiceShellSwitchTputMonitor },
 		{ "flow-id-table", WlanServiceShellDumpFlowIdTable },
 		{ "wake-lock", WlanServiceShellWakeLock },
+		{ "rx-drop", WlanServiceShellSimulateRxDrop },
 	};
 	static const uint32_t kRequestTableSize =
 		sizeof(kShellRequestTable) / sizeof(WlanServiceShellRequestTableEntry);
@@ -1001,6 +1110,7 @@ int32_t WlanServiceCommand(WlanService *const svc, int32_t cmd, const void *msg,
 		[kWlanCmdPacketSnifferReset] = WlanServicePacketSnifferReset,
 		[kWlanCmdUpdateUp2Flow] = WlanServiceUpdateUp2Flow,
 		[kWlanCmdUpdateFlowIdLookUpEntry] = WlanServiceUpdateFlowIdLookUpEntry,
+		[kWlanCmdRxHandoverSync] = WlanServiceRxHandoverSync,
 	};
 
 	WLAN_LOG_DEBUG(Cfg, "%s: Received command: cmd=%s(%d)", __func__,
@@ -1085,6 +1195,7 @@ static void WlanServiceStationInfoSyncTask(unsigned long context)
 		sta_info.addry_en = sta_info_list[idx].addry_en;
 		sta_info.addrx_en = sta_info_list[idx].addrx_en;
 		sta_info.enable = sta_info_list[idx].enable;
+		sta_info.fw_metadata = sta_info_list[idx].fw_metadata;
 
 		memcpy(sta_info.mac_addr, sta_info_list[idx].mac_addr, sizeof(sta_info.mac_addr));
 		memcpy(sta_info.qos_txq_map, sta_info_list[idx].qos_txq_map,
@@ -1239,6 +1350,7 @@ static int32_t WlanServiceStateExitEventInitCb(void *ctx)
 	WlanDpInitParams dp_init_params;
 	uint64_t chip_type;
 	uint32_t rx_buffer_size;
+	uint32_t rx_pkt_tlv_size;
 	void *pcie_stored_state;
 
 	if (svc->state != kWlanServiceStatePlatInit) {
@@ -1307,8 +1419,14 @@ static int32_t WlanServiceStateExitEventInitCb(void *ctx)
 		goto WDEV_IF_INIT_FAILED;
 	}
 
+	if (WlanGlobalConfigRead(&svc->memory_map_helper, kRxPktTlvSize, sizeof(rx_pkt_tlv_size),
+				 &rx_pkt_tlv_size) != 0) {
+		WLAN_LOG_ERROR(Cfg, "%s(): rx_pkt_tlv_size read failed.", __func__);
+		goto WDEV_IF_INIT_FAILED;
+	}
+
 	if (WdevIfInit(&svc->wdev_if, WLAN_STATIC_CAST(WlanDeviceChipId, chip_type),
-		       &svc->ext_svc) != 0) {
+		       rx_pkt_tlv_size, &svc->ext_svc) != 0) {
 		WLAN_LOG_ERROR(Cfg, "%s(): WdevIfInit failed.", __func__);
 		goto WDEV_IF_INIT_FAILED;
 	}
@@ -1446,6 +1564,9 @@ static int32_t WlanServiceStateStopEventStartCb(void *ctx)
 		return -ENODEV;
 	}
 	WlanDpSetFwTrapAddr(&svc->dp, WLAN_STATIC_CAST(uint64_t, fw_trap_addr));
+	if (svc->wdev_if.chip_id == kWlanDeviceChipIdWcn7760) {
+		svc->wdev_if.cookie_base_addr = (uint32_t)fw_trap_addr;
+	}
 
 	// Update Wdev rings from APC
 	WlanServiceWdevRingUpdate(svc, WLAN_STATIC_CAST(uint32_t, kTxPostRingPool));

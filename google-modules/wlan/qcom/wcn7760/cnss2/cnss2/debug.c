@@ -292,9 +292,50 @@ static ssize_t cnss_dev_boot_debug_write(struct file *fp,
 		clear_bit(CNSS_DRIVER_DEBUG, &plat_priv->driver_state);
 	} else if (sysfs_streq(cmd, "assert_host_sol")) {
 		pci_priv = plat_priv->bus_priv;
+#if !IS_ENABLED(CONFIG_WCN_GOOGLE)
 		cnss_auto_resume(&pci_priv->pci_dev->dev);
 		ret = cnss_set_host_sol_value(plat_priv, 1);
+#else
+		if (plat_priv->rc_pm_control) {
+			if (!pci_priv)
+				return -ENODEV;
+			ret = cnss_get_host_sol_value(plat_priv);
+			if (ret < 0) {
+				cnss_pr_err("Host SOL is not supported, err = %d\n", ret);
+				return ret;
+			}
+			if (ret > 0) {
+				cnss_pr_dbg("Host SOL is already asserted\n");
+				return count;
+			}
+			ret = cnss_pci_pm_runtime_get_sync(pci_priv, RTPM_ID_CNSS);
+			if (ret < 0) {
+				cnss_pr_err("Failed to resume PCI link, err = %d\n", ret);
+				return ret;
+			}
+			ret = cnss_set_host_sol_value(plat_priv, 1);
+			cnss_pci_pm_runtime_mark_last_busy(pci_priv);
+			cnss_pci_pm_runtime_put_autosuspend(pci_priv, RTPM_ID_CNSS);
+		} else {
+			cnss_auto_resume(&pci_priv->pci_dev->dev);
+			ret = cnss_set_host_sol_value(plat_priv, 1);
+		}
+#endif
 	} else if (sysfs_streq(cmd, "deassert_host_sol")) {
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+		if (plat_priv->rc_pm_control) {
+			pci_priv = plat_priv->bus_priv;
+			ret = cnss_get_host_sol_value(plat_priv);
+			if (ret < 0) {
+				cnss_pr_err("Host SOL is not supported, err = %d\n", ret);
+				return ret;
+			}
+			if (ret == 0) {
+				cnss_pr_dbg("Host SOL is already deasserted\n");
+				return count;
+			}
+		}
+#endif
 		ret = cnss_set_host_sol_value(plat_priv, 0);
 	} else if (sysfs_streq(cmd, "pdc_update")) {
 		if (!sptr)
@@ -900,6 +941,12 @@ static int cnss_show_quirks_state(struct seq_file *s,
 			continue;
 		case PREVENT_PCI_LINK_RESUME:
 			seq_puts(s, "PREVENT_PCI_LINK_RESUME");
+			continue;
+		case CNSS_INTERNAL_RESUME:
+			seq_puts(s, "CNSS_INTERNAL_RESUME");
+			continue;
+		case DISABLE_CALDB_RDDM_REUSE:
+			seq_puts(s, "DISABLE_CALDB_RDDM_REUSE");
 			continue;
 		default:
 			continue;

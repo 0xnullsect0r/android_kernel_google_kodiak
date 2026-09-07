@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "headers",
@@ -84,15 +89,5 @@ ddk_module(
         ":tracepoint_headers",  # TODO(b/375571988): This should be only applied to qm35-trace.c after the bug is resolved.
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "uwb.qm35",
-    srcs = [
-        ":qm35",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

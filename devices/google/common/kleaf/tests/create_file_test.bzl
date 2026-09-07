@@ -127,6 +127,19 @@ def create_file_test(name):
     )
     tests.append(name + "_empty_file_test")
 
+    create_file(
+        name = name + "_default_out",
+        contents = ["default", "out"],
+    )
+
+    file_content_test(
+        name = name + "_default_out_test",
+        actual = name + "_default_out",
+        expected_content = "default\nout\n",
+        size = "small",
+    )
+    tests.append(name + "_default_out_test")
+
     native.test_suite(
         name = name,
         tests = tests,

@@ -308,15 +308,24 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 		chip = uadev[card_num].chip;
 
 	if (!chip) {
-		pr_err("%s no device connected (card %u device %u, direction %u)",
-		       __func__, card_num, device, direction);
+		pr_err("%s no device connected (card %u device %u, direction %u)", __func__,
+		       card_num, device, direction);
 		return -ENODEV;
 	}
+
+	ret = snd_usb_lock_shutdown(chip);
+	if (ret < 0) {
+		pr_err("%s: setup skipped. chip is shutting down (shutdown=%d, usage_count=%d)",
+		       __func__, atomic_read(&chip->shutdown), atomic_read(&chip->usage_count));
+		return -ENODEV;
+	}
+
 	pr_debug("%s card %u device %u, direction %u ref_count %d", __func__,
 		 card_num, device, direction, reference_count);
 	if (direction > SNDRV_PCM_STREAM_CAPTURE) {
 		pr_err("%s direction is unexpected %d", __func__, direction);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto unlock_shutdown;
 	}
 
 	mutex_lock(&chip->mutex);
@@ -406,6 +415,7 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 	info->pcm_card_num = card_num;
 	info->pcm_device = device;
 	mutex_unlock(&chip->mutex);
+	snd_usb_unlock_shutdown(chip);
 	return 0;
 
 err_sync_ring:
@@ -414,13 +424,16 @@ err_sync_ep:
 err_data_ring:
 	xhci_sideband_remove_endpoint(uadev[card_num].sb, ep);
 err_data_ep:
-	aoc_set_usb_offload_state(achip, USB_OFFLOAD_STATE_DISABLED);
-	if (playback_info->reference_count + capture_info->reference_count == 1)
+	if (playback_info->reference_count + capture_info->reference_count == 1) {
+		aoc_set_usb_offload_state(achip, USB_OFFLOAD_STATE_DISABLED);
 		aoc_setup_event_ring(achip, subs->dev, 1, false);
+	}
 err_ref_count:
 	info->reference_count = old_ref_count;
 unlock:
 	mutex_unlock(&chip->mutex);
+unlock_shutdown:
+	snd_usb_unlock_shutdown(chip);
 	return ret;
 }
 
@@ -435,6 +448,7 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	struct usb_host_endpoint *fb_ep = NULL;
 	unsigned int card_num;
 	unsigned int device;
+	int ret = 0;
 
 	if (!achip)
 		return -ENODEV;
@@ -449,6 +463,13 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 		return 0;
 	}
 
+	ret = snd_usb_lock_shutdown(chip);
+	if (ret < 0) {
+		pr_info("%s: cleanup skipped. chip is shutting down (shutdown=%d, usage_count=%d)",
+			__func__, atomic_read(&chip->shutdown), atomic_read(&chip->usage_count));
+		return 0;
+	}
+
 	pr_debug("%s card %u device %u, direction %u ref_count %u", __func__,
 		card_num, device, direction, reference_count);
 
@@ -457,14 +478,12 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	info->reference_count = reference_count;
 	if (info->reference_count != 0) {
 		pr_debug("%s skip", __func__);
-		mutex_unlock(&chip->mutex);
-		return 0;
+		goto unlock_mutex;
 	}
 
 	if (!uadev[card_num].udev || !uadev[card_num].sb) {
 		pr_info("%s usb device or sideband already removed", __func__);
-		mutex_unlock(&chip->mutex);
-		return 0;
+		goto unlock_mutex;
 	}
 
 	if (info->data_ep_pipe) {
@@ -497,7 +516,9 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	if (playback_info->reference_count == 0 && capture_info->reference_count == 0)
 		aoc_setup_event_ring(achip, uadev[card_num].udev, 1, false);
 
+unlock_mutex:
 	mutex_unlock(&chip->mutex);
+	snd_usb_unlock_shutdown(chip);
 	return 0;
 }
 

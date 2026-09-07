@@ -321,6 +321,7 @@ static enum noa_md_switch_status noa_ncp_md_switch_handler(
 			noa_ncp_md_rx_activate(md_fw);
 
 			NCP_MD_INFO("Enable noa irq in commit switch mode");
+			md_fw->hif->SetPcieEndpointGrant(true);
 			if (!md_fw->hif->EnableIrq(true).ok()) {
 				payload->status = SWITCH_STATUS_FAILED;
 				break;
@@ -331,6 +332,7 @@ static enum noa_md_switch_status noa_ncp_md_switch_handler(
 				payload->status = SWITCH_STATUS_FAILED;
 				break;
 			}
+			md_fw->hif->SetPcieEndpointGrant(false);
 		}
 		break;
 

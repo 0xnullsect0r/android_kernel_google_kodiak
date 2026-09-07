@@ -9,6 +9,7 @@
 
 #include <linux/cdev.h>
 #include <linux/atomic.h>
+#include <linux/pm_wakeup.h>
 
 struct class;
 struct device;
@@ -43,6 +44,8 @@ struct gvdu_base {
 
 	const char *default_debug_vector;
 	char *default_policy_type;
+
+	struct wakeup_source *nonce_ws;
 };
 
 #if IS_ENABLED(CONFIG_KUNIT)

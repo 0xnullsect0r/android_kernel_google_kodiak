@@ -402,6 +402,16 @@ enum tcm_scan_mode {
 };
 
 /*
+ * @section: Report Rate Mode Configuration
+ *
+ * Config values for DC_REPORT_RATE_SWITCH.
+ */
+enum tcm_report_rate_mode {
+	REPORT_RATE_240HZ = 0,
+	REPORT_RATE_120HZ = 1,
+};
+
+/*
  * @section: Touch INT2 Production Configuration
  *
  * The current touch INT2.

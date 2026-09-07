@@ -349,7 +349,12 @@ int mtk_pci_setup_atr(struct mtk_md_dev *mdev, struct mtk_atr_cfg *cfg);
 void mtk_pci_dump_atr_bar23(struct mtk_md_dev *mdev);
 void mtk_pci_dump_atr(struct mtk_md_dev *mdev);
 #endif
+#if IS_ENABLED(CONFIG_GOOGLE_B528903481_DEBUG)
+void mtk_pci_mmio_hw_check(struct mtk_md_dev *mdev);
+#endif
 void mtk_pci_atr_disable(struct mtk_pci_priv *priv);
+void mtk_pci_dump_atr_doorbell(struct mtk_md_dev *mdev);
+void mtk_pci_clear_atr_doorbell(struct mtk_md_dev *mdev);
 void mtk_pci_regs_dump(struct mtk_md_dev *mdev, enum mtk_debug_mask mask,
 		       enum mtk_memlog_region_id region_id,
 		       const char *msg, unsigned long long addr, size_t len);

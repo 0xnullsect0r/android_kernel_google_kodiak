@@ -2,12 +2,13 @@
 /*
  * Structures and helpers for managing GXP MicroController Unit.
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #include <linux/delay.h>
 #include <linux/sizes.h>
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-mem-pool.h>
 #include <gcip/gcip-memory.h>
 
@@ -121,13 +122,19 @@ int gxp_mcu_init(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	ret = gxp_alloc_shared_buffer(gxp, mcu);
 	if (ret)
 		goto err_pools_exit;
+
+	mcu->event_mgr = gcip_event_mgr_create(GCIP_TELEMETRY_TYPE_COUNT);
+	if (IS_ERR(mcu->event_mgr)) {
+		ret = PTR_ERR(mcu->event_mgr);
+		goto err_free_shared_buffer;
+	}
 	/*
 	 * MCU telemetry must be initialized before UCI and KCI to match the
 	 * .log_buffer address in the firmware linker.ld.
 	 */
 	ret = gxp_mcu_telemetry_init(mcu);
 	if (ret)
-		goto err_free_shared_buffer;
+		goto err_event_mgr_destroy;
 	ret = gxp_uci_init(mcu);
 	if (ret)
 		goto err_telemetry_exit;
@@ -149,6 +156,8 @@ err_uci_exit:
 	gxp_uci_exit(&mcu->uci);
 err_telemetry_exit:
 	gxp_mcu_telemetry_exit(mcu);
+err_event_mgr_destroy:
+	gcip_event_mgr_destroy(mcu->event_mgr);
 err_free_shared_buffer:
 	gxp_free_shared_buffer(mcu);
 err_pools_exit:
@@ -164,6 +173,7 @@ void gxp_mcu_exit(struct gxp_mcu *mcu)
 	gxp_kci_exit(&mcu->kci);
 	gxp_uci_exit(&mcu->uci);
 	gxp_mcu_telemetry_exit(mcu);
+	gcip_event_mgr_destroy(mcu->event_mgr);
 	gxp_free_shared_buffer(mcu);
 	gxp_mcu_mem_pools_exit(mcu);
 	gxp_mcu_firmware_exit(&mcu->fw);

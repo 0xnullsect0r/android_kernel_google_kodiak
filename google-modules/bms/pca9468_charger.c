@@ -23,7 +23,9 @@
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
+
 #include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 
 #include "pca9468_regs.h"
 #include "pca9468_charger.h"

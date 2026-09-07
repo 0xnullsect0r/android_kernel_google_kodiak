@@ -34,6 +34,7 @@
 #include <uapi/linux/in.h>
 #include <linux/inet.h>
 #include <net/ipv6.h>
+#include <misc/logbuffer.h>
 #include <soc/google/exynos-modem-ctrl.h>
 #include <soc/google/modem_notifier.h>
 

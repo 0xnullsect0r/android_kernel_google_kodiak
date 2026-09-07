@@ -2,12 +2,13 @@
 /*
  * Structures and helpers for managing GXP MicroController Unit.
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #ifndef __GXP_MCU_H__
 #define __GXP_MCU_H__
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-mem-pool.h>
 #include <gcip/gcip-memory.h>
 
@@ -45,6 +46,7 @@ struct gxp_mcu {
 	struct gxp_kci kci;
 	struct gcip_telemetry telemetry_log;
 	struct gcip_telemetry telemetry_trace;
+	struct gcip_event_mgr *event_mgr;
 	/* To manage IIF fences. */
 	struct gxp_iif *giif;
 };

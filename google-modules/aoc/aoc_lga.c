@@ -16,6 +16,7 @@
 #include <linux/pm_wakeirq.h>
 
 #include <soc/google/goog-mba-gdmc-iface.h>
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
 
 #define SSWRP_AOC_POWER_OFF_TIMEOUT 5000
 #define AOC_CORE_POWER_OFF_TIMEOUT 1000
@@ -358,6 +359,8 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 
 	dev_dbg(dev, "restarting sswrp_aoc...\n");
 	notify_aoc_ssr(true);
+	aoss_ssr_notify(AOSS_SSR_AMBSS_DOWN);
+	aoss_ssr_notify(AOSS_SSR_PG_DOWN);
 	ret = sswrp_aoc_pd_power_off();
 	if (ret) {
 		notify_aoc_ssr(false);
@@ -373,6 +376,8 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 	}
 
 	notify_aoc_ssr(false);
+	aoss_ssr_notify(AOSS_SSR_PG_UP);
+	aoss_ssr_notify(AOSS_SSR_AMBSS_UP);
 
 	/* Set device to RPM active */
 	pm_runtime_get(dev);
@@ -526,6 +531,8 @@ int platform_specific_aoc_online(void)
 	}
 
 	device_init_wakeup(lga_prvdata->aoc_dev, true);
+
+	aoss_ssr_notify(AOSS_SSR_ONLINE);
 
 	return 0;
 }

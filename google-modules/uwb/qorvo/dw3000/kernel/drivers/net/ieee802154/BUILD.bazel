@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "headers",
     hdrs = glob([
@@ -25,9 +30,6 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/uwb/qorvo/dw3000/kernel:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/uwb/qorvo/dw3000/kernel:ddk_headers",
@@ -69,9 +71,6 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/uwb/qorvo/dw3000/kernel:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
@@ -93,9 +92,6 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/uwb/qorvo/dw3000/kernel:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/uwb/qorvo/dw3000/kernel:ddk_headers",

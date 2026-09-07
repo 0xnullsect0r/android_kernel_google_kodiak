@@ -61,6 +61,11 @@
 /* Define this to help debug power sequence */
 #undef LWIS_PWR_SEQ_DEBUG
 
+bool lwis_reg_io_debug;
+module_param(lwis_reg_io_debug, bool, 0644);
+MODULE_PARM_DESC(lwis_reg_io_debug,
+		 "Enable detailed register IO logging at runtime (default: false)");
+
 /* Global declaration for core lwis structure */
 static struct lwis_core core;
 
@@ -130,6 +135,7 @@ static int lwis_open(struct inode *node, struct file *fp)
 		return -ENOMEM;
 
 	lwis_client->lwis_dev = lwis_dev;
+	kref_init(&lwis_client->kref);
 	/* Initialize locks */
 	mutex_init(&lwis_client->lock);
 	spin_lock_init(&lwis_client->periodic_io_lock);
@@ -182,6 +188,10 @@ static int lwis_open(struct inode *node, struct file *fp)
 
 	if (lwis_bus_manager_connect_client(lwis_client)) {
 		dev_err(lwis_dev->dev, "Failed to connect lwis client to bus manager\n");
+		spin_lock_irqsave(&lwis_dev->lock, flags);
+		list_del_rcu(&lwis_client->node);
+		spin_unlock_irqrestore(&lwis_dev->lock, flags);
+		lwis_client_put(lwis_client);
 		return -EINVAL;
 	}
 
@@ -254,6 +264,26 @@ static inline bool check_client_exists(const struct lwis_device *lwis_dev,
 	return false;
 }
 
+static void lwis_client_release(struct kref *kref)
+{
+	struct lwis_client *client = container_of(kref, struct lwis_client, kref);
+
+	kfree_rcu(client, rcu);
+}
+
+struct lwis_client *lwis_client_get(struct lwis_client *client)
+{
+	if (client)
+		kref_get(&client->kref);
+	return client;
+}
+
+void lwis_client_put(struct lwis_client *client)
+{
+	if (client)
+		kref_put(&client->kref, lwis_client_release);
+}
+
 /* Release client and deletes its entry from the device's client list,
  * this assumes that LWIS device still exists and will hold LWIS device
  * and LWIS client locks.
@@ -264,6 +294,19 @@ static int release_client(struct lwis_client *lwis_client)
 	struct lwis_fence_pending_signal *pending_fence, *temp;
 	int rc = 0;
 	unsigned long flags;
+
+	/* Take this lwis_client off the list of active clients first */
+	spin_lock_irqsave(&lwis_dev->lock, flags);
+	if (check_client_exists(lwis_dev, lwis_client)) {
+		list_del_rcu(&lwis_client->node);
+	} else {
+		dev_err(lwis_dev->dev,
+			"Trying to release a client tied to this device, but the entry was not found on the clients list.");
+	}
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
+
+	/* Ensure all RCU readers (e.g. interrupt handlers) have finished accessing this client */
+	synchronize_rcu();
 
 	/* Signal release fences */
 	spin_lock_irqsave(&lwis_client->flush_lock, flags);
@@ -279,16 +322,6 @@ static int release_client(struct lwis_client *lwis_client)
 	if (rc)
 		return rc;
 
-	/* Take this lwis_client off the list of active clients */
-	spin_lock_irqsave(&lwis_dev->lock, flags);
-	if (check_client_exists(lwis_dev, lwis_client)) {
-		list_del_rcu(&lwis_client->node);
-	} else {
-		dev_err(lwis_dev->dev,
-			"Trying to release a client tied to this device, but the entry was not found on the clients list.");
-	}
-	spin_unlock_irqrestore(&lwis_dev->lock, flags);
-
 	lwis_bus_manager_disconnect_client(lwis_client);
 
 	/*
@@ -299,7 +332,7 @@ static int release_client(struct lwis_client *lwis_client)
 	if (lwis_client->lwis_dev->type == DEVICE_TYPE_TOP)
 		lwis_stop_top_device_worker(lwis_client);
 
-	kfree_rcu(lwis_client, rcu);
+	lwis_client_put(lwis_client);
 
 	return 0;
 }
@@ -396,13 +429,13 @@ static int lwis_release(struct inode *node, struct file *fp)
 			dev_err(lwis_dev->dev, "Power down failed: %d\n", rc);
 	}
 
-	mutex_unlock(&lwis_dev->client_lock);
-
 	/* Call device type specific close routines. */
 	if (is_client_enabled && lwis_dev->enabled == 0) {
 		if (lwis_dev->vops.close != NULL)
 			lwis_dev->vops.close(lwis_dev);
 	}
+
+	mutex_unlock(&lwis_dev->client_lock);
 
 	lwis_allocator_release(lwis_dev);
 
@@ -1295,16 +1328,96 @@ void lwis_device_info_dump(const char *name, void (*func)(struct lwis_device *))
 	mutex_unlock(&core.lock);
 }
 
-void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_entry *io_entry)
+void lwis_save_register_io_info_with_size(struct lwis_device *lwis_dev,
+					  struct lwis_io_entry *io_entry, int access_size)
 {
 	unsigned long flags;
 	u64 timestamp = ktime_to_ns(lwis_get_time());
-	size_t access_size = (io_entry->type == LWIS_IO_ENTRY_WRITE ||
-			      io_entry->type == LWIS_IO_ENTRY_WRITE_V2 ||
-			      io_entry->type == LWIS_IO_ENTRY_WRITE_BATCH ||
-			      io_entry->type == LWIS_IO_ENTRY_WRITE_BATCH_V2) ?
-				     lwis_dev->native_write_value_bitwidth :
-				     lwis_dev->native_read_value_bitwidth;
+
+	if (!access_size) {
+		access_size = (io_entry->type == LWIS_IO_ENTRY_WRITE ||
+			       io_entry->type == LWIS_IO_ENTRY_WRITE_V2 ||
+			       io_entry->type == LWIS_IO_ENTRY_WRITE_BATCH ||
+			       io_entry->type == LWIS_IO_ENTRY_WRITE_BATCH_V2) ?
+				      lwis_dev->native_write_value_bitwidth :
+				      lwis_dev->native_read_value_bitwidth;
+	}
+
+	if (lwis_reg_io_debug) {
+		if (lwis_dev->dev) {
+			switch (io_entry->type) {
+			case LWIS_IO_ENTRY_READ:
+			case LWIS_IO_ENTRY_READ_V2:
+				dev_info(lwis_dev->dev,
+					 "Register IO: READ device:%s bid:%d offset:0x%llx\n",
+					 lwis_dev->name, io_entry->rw.bid, io_entry->rw.offset);
+				break;
+			case LWIS_IO_ENTRY_WRITE:
+			case LWIS_IO_ENTRY_WRITE_V2:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: WRITE device:%s bid:%d offset:0x%llx val:0x%llx\n",
+					lwis_dev->name, io_entry->rw.bid, io_entry->rw.offset,
+					io_entry->rw.val);
+				break;
+			case LWIS_IO_ENTRY_READ_BATCH:
+			case LWIS_IO_ENTRY_READ_BATCH_V2:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: READ_BATCH device:%s bid:%d offset:0x%llx size:%llu\n",
+					lwis_dev->name, io_entry->rw_batch.bid,
+					io_entry->rw_batch.offset,
+					(unsigned long long)io_entry->rw_batch.size_in_bytes);
+				break;
+			case LWIS_IO_ENTRY_WRITE_BATCH:
+			case LWIS_IO_ENTRY_WRITE_BATCH_V2:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: WRITE_BATCH device:%s bid:%d offset:0x%llx size:%llu\n",
+					lwis_dev->name, io_entry->rw_batch.bid,
+					io_entry->rw_batch.offset,
+					(unsigned long long)io_entry->rw_batch.size_in_bytes);
+				break;
+			case LWIS_IO_ENTRY_MODIFY:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: MODIFY device:%s bid:%d offset:0x%llx val:0x%llx mask:0x%llx\n",
+					lwis_dev->name, io_entry->mod.bid, io_entry->mod.offset,
+					io_entry->mod.val, io_entry->mod.val_mask);
+				break;
+			case LWIS_IO_ENTRY_POLL:
+			case LWIS_IO_ENTRY_POLL_SHORT:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: POLL device:%s bid:%d offset:0x%llx val:0x%llx mask:0x%llx timeout:%llu\n",
+					lwis_dev->name, io_entry->read_assert.bid,
+					io_entry->read_assert.offset, io_entry->read_assert.val,
+					io_entry->read_assert.mask,
+					io_entry->read_assert.timeout_ms);
+				break;
+			case LWIS_IO_ENTRY_READ_ASSERT:
+				dev_info(
+					lwis_dev->dev,
+					"Register IO: READ_ASSERT device:%s bid:%d offset:0x%llx val:0x%llx mask:0x%llx\n",
+					lwis_dev->name, io_entry->read_assert.bid,
+					io_entry->read_assert.offset, io_entry->read_assert.val,
+					io_entry->read_assert.mask);
+				break;
+			case LWIS_IO_ENTRY_WAIT:
+				dev_info(lwis_dev->dev,
+					 "Register IO: WAIT device:%s duration:%lluus\n",
+					 lwis_dev->name, io_entry->wait_us);
+				break;
+			default:
+				dev_info(lwis_dev->dev, "Register IO: OTHER device:%s type:%d\n",
+					 lwis_dev->name, io_entry->type);
+				break;
+			}
+		} else {
+			pr_info("Register IO: device:%s (no dev) type:%d\n", lwis_dev->name,
+				io_entry->type);
+		}
+	}
 
 	spin_lock_irqsave(&lwis_dev->lock, flags);
 	lwis_dev->debug_info.io_entry_hist[lwis_dev->debug_info.cur_io_entry_hist_idx].io_entry =
@@ -1316,6 +1429,11 @@ void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_ent
 	lwis_dev->debug_info.cur_io_entry_hist_idx =
 		(lwis_dev->debug_info.cur_io_entry_hist_idx + 1) % IO_ENTRY_DEBUG_HISTORY_SIZE;
 	spin_unlock_irqrestore(&lwis_dev->lock, flags);
+}
+
+void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_entry *io_entry)
+{
+	lwis_save_register_io_info_with_size(lwis_dev, io_entry, 0);
 }
 
 static int ioreg_dev_update_platform_top_dev(struct lwis_device *lwis_dev)
@@ -1464,78 +1582,83 @@ error_init:
  */
 void lwis_base_unprobe(struct lwis_device *unprobe_lwis_dev)
 {
-	struct lwis_device *lwis_dev, *temp;
+	struct lwis_device *lwis_dev = NULL;
+	struct lwis_device *it, *temp;
 
 	mutex_lock(&core.lock);
-	list_for_each_entry_safe(lwis_dev, temp, &core.lwis_dev_list, dev_list) {
-		if (lwis_dev == unprobe_lwis_dev) {
-			pr_debug("Destroy device %s id %d\n", lwis_dev->name, lwis_dev->id);
-			lwis_device_debugfs_cleanup(lwis_dev);
-			/* Destroy the allocator */
-			lwis_allocator_destroy(lwis_dev);
-			/* Release device clock list */
-			if (lwis_dev->clocks) {
-				lwis_clock_list_free(lwis_dev->clocks);
-				lwis_dev->clocks = NULL;
-			}
-			/* Release device interrupt list */
-			if (lwis_dev->irqs) {
-				lwis_interrupt_list_free(lwis_dev->irqs);
-				lwis_dev->irqs = NULL;
-			}
-			/* Release device regulator list */
-			if (!list_empty(&lwis_dev->regulator_list)) {
-				lwis_regulator_put_all(&lwis_dev->regulator_list);
-				lwis_regulator_list_free(&lwis_dev->regulator_list);
-			}
-			/* Release device pwrseq list */
-			if (!list_empty(&lwis_dev->pwrseq_list))
-				lwis_pwrseq_list_free(&lwis_dev->pwrseq_list);
-			/* Release device phy list */
-			if (lwis_dev->phys) {
-				lwis_phy_list_free(lwis_dev->phys);
-				lwis_dev->phys = NULL;
-			}
-			/* Release device power sequence list */
-			if (lwis_dev->power_up_sequence) {
-				lwis_dev_power_seq_list_free(lwis_dev->power_up_sequence);
-				lwis_dev->power_up_sequence = NULL;
-			}
-			if (lwis_dev->power_down_sequence) {
-				lwis_dev_power_seq_list_free(lwis_dev->power_down_sequence);
-				lwis_dev->power_down_sequence = NULL;
-			}
-			/* Release device gpio list */
-			if (!list_empty(&lwis_dev->gpios_list))
-				lwis_gpios_list_free(&lwis_dev->gpios_list);
-
-			/* Release device gpio info irq list */
-			if (lwis_dev->irq_gpios_info.irq_list) {
-				lwis_interrupt_list_free(lwis_dev->irq_gpios_info.irq_list);
-				lwis_dev->irq_gpios_info.irq_list = NULL;
-			}
-			if (lwis_dev->irq_gpios_info.gpios) {
-				lwis_gpio_list_put(lwis_dev->irq_gpios_info.gpios, lwis_dev->k_dev);
-				lwis_dev->irq_gpios_info.gpios = NULL;
-			}
-
-			lwis_bus_manager_disconnect_device(lwis_dev);
-
-			/* Call platform-specific probe function */
-			lwis_platform_unprobe(lwis_dev);
-
-			/* Destroy device */
-			if (!IS_ERR_OR_NULL(lwis_dev->dev))
-				device_destroy(core.dev_class,
-					       MKDEV(core.device_major, lwis_dev->id));
-
-			list_del(&lwis_dev->dev_list);
-
-			if (timer_pending(&lwis_dev->heartbeat_timer))
-				del_timer(&lwis_dev->heartbeat_timer);
+	list_for_each_entry_safe(it, temp, &core.lwis_dev_list, dev_list) {
+		if (it == unprobe_lwis_dev) {
+			list_del(&it->dev_list);
+			lwis_dev = it;
+			break;
 		}
 	}
 	mutex_unlock(&core.lock);
+
+	if (!lwis_dev)
+		return;
+
+	pr_debug("Destroy device %s id %d\n", lwis_dev->name, lwis_dev->id);
+	lwis_device_debugfs_cleanup(lwis_dev);
+	/* Destroy the allocator */
+	lwis_allocator_destroy(lwis_dev);
+	/* Release device clock list */
+	if (lwis_dev->clocks) {
+		lwis_clock_list_free(lwis_dev->clocks);
+		lwis_dev->clocks = NULL;
+	}
+	/* Release device interrupt list */
+	if (lwis_dev->irqs) {
+		lwis_interrupt_list_free(lwis_dev->irqs);
+		lwis_dev->irqs = NULL;
+	}
+	/* Release device regulator list */
+	if (!list_empty(&lwis_dev->regulator_list)) {
+		lwis_regulator_put_all(&lwis_dev->regulator_list);
+		lwis_regulator_list_free(&lwis_dev->regulator_list);
+	}
+	/* Release device pwrseq list */
+	if (!list_empty(&lwis_dev->pwrseq_list))
+		lwis_pwrseq_list_free(&lwis_dev->pwrseq_list);
+	/* Release device phy list */
+	if (lwis_dev->phys) {
+		lwis_phy_list_free(lwis_dev->phys);
+		lwis_dev->phys = NULL;
+	}
+	/* Release device power sequence list */
+	if (lwis_dev->power_up_sequence) {
+		lwis_dev_power_seq_list_free(lwis_dev->power_up_sequence);
+		lwis_dev->power_up_sequence = NULL;
+	}
+	if (lwis_dev->power_down_sequence) {
+		lwis_dev_power_seq_list_free(lwis_dev->power_down_sequence);
+		lwis_dev->power_down_sequence = NULL;
+	}
+	/* Release device gpio list */
+	if (!list_empty(&lwis_dev->gpios_list))
+		lwis_gpios_list_free(&lwis_dev->gpios_list);
+
+	/* Release device gpio info irq list */
+	if (lwis_dev->irq_gpios_info.irq_list) {
+		lwis_interrupt_list_free(lwis_dev->irq_gpios_info.irq_list);
+		lwis_dev->irq_gpios_info.irq_list = NULL;
+	}
+	if (lwis_dev->irq_gpios_info.gpios) {
+		lwis_gpio_list_put(lwis_dev->irq_gpios_info.gpios, lwis_dev->k_dev);
+		lwis_dev->irq_gpios_info.gpios = NULL;
+	}
+
+	lwis_bus_manager_disconnect_device(lwis_dev);
+
+	/* Call platform-specific probe function */
+	lwis_platform_unprobe(lwis_dev);
+
+	/* Destroy device */
+	if (!IS_ERR_OR_NULL(lwis_dev->dev))
+		device_destroy(core.dev_class, MKDEV(core.device_major, lwis_dev->id));
+
+	if (timer_pending(&lwis_dev->heartbeat_timer))
+		del_timer(&lwis_dev->heartbeat_timer);
 }
 
 /*

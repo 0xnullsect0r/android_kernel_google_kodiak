@@ -14,12 +14,15 @@
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/of_platform.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
 
 #include "irq-gia-lib.h"
+#include "irq-gia-lib-trace.h"
 
 #define GIA_TEST_TIMEOUT_MS 1000
 #define MAX_INPUT_SIZE 20
-#define DEFAULT_OUTPUT_SIZE 100
+#define DEFAULT_OUTPUT_SIZE 350
 #define GIA_TEST_THREADED 0x1
 #define GIA_TEST_ONESHOT 0x2
 
@@ -31,6 +34,11 @@ struct gia_test_intr_line_data {
 	struct completion irq_received;
 	struct dentry *debugfs_file;
 	u64 num_triggers;
+	ktime_t last_trig_time;
+	u64 last_latency_ns;
+	u64 min_latency_ns;
+	u64 max_latency_ns;
+	u64 total_latency_ns;
 };
 
 struct gia_test_data {
@@ -62,17 +70,50 @@ static struct gia_test_intr_line_data *gia_test_get_line_data(struct platform_de
 	return NULL;
 }
 
+static inline void gia_test_record_handler_entry(struct platform_device *pdev, int irq,
+						 struct gia_test_intr_line_data *line)
+{
+	ktime_t handler_entry_time = ktime_get();
+	u32 hwirq = irq_get_irq_data(irq)->hwirq;
+	ktime_t trig_time;
+	u64 latency_ns = 0;
+
+	if (!line) {
+		dev_err(&pdev->dev, "no line data for irq %d\n", irq);
+		trace_gia_test_handler_entry(pdev, irq, hwirq, latency_ns);
+		return;
+	}
+
+	trig_time = READ_ONCE(line->last_trig_time);
+	if (trig_time != 0) {
+		latency_ns = ktime_to_ns(ktime_sub(handler_entry_time, trig_time));
+		WRITE_ONCE(line->last_latency_ns, latency_ns);
+		WRITE_ONCE(line->min_latency_ns,
+			   min(latency_ns, READ_ONCE(line->min_latency_ns)));
+		WRITE_ONCE(line->max_latency_ns,
+			   max(latency_ns, READ_ONCE(line->max_latency_ns)));
+		WRITE_ONCE(line->total_latency_ns,
+			   READ_ONCE(line->total_latency_ns) + latency_ns);
+	}
+
+	trace_gia_test_handler_entry(pdev, irq, hwirq, latency_ns);
+}
+
 static irqreturn_t gia_test_isr(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
+	struct gia_test_intr_line_data *line = gia_test_get_line_data(pdev, irq);
 
-	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
+	if (!line)
+		return IRQ_NONE;
 
-	/* TODO move this result storage to a function */
-	gia_test_get_line_data(pdev, irq)->num_triggers += 1;
+	gia_test_record_handler_entry(pdev, irq, line);
+
+	WRITE_ONCE(line->num_triggers, READ_ONCE(line->num_triggers) + 1);
 	gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(pdev), irq_get_irq_data(irq)->hwirq,
-				  false);
+				  false, NULL);
 
+	complete(&line->irq_received);
 	dev_dbg(&pdev->dev, "gia_test device interrupt %d received\n", irq);
 
 	return IRQ_HANDLED;
@@ -81,9 +122,15 @@ static irqreturn_t gia_test_isr(int irq, void *dev_id)
 static irqreturn_t gia_test_isr_nocomplete(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
+	struct gia_test_intr_line_data *line = gia_test_get_line_data(pdev, irq);
+
+	if (!line)
+		return IRQ_NONE;
+
+	gia_test_record_handler_entry(pdev, irq, line);
 
 	gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(pdev), irq_get_irq_data(irq)->hwirq,
-				  false);
+				  false, NULL);
 	dev_dbg(&pdev->dev, "gia_test device fast handler %d. Wait for thread function\n", irq);
 
 	return IRQ_WAKE_THREAD;
@@ -92,12 +139,13 @@ static irqreturn_t gia_test_isr_nocomplete(int irq, void *dev_id)
 static irqreturn_t gia_test_threaded_isr(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
+	struct gia_test_intr_line_data *line = gia_test_get_line_data(pdev, irq);
 
-	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
+	if (!line)
+		return IRQ_NONE;
 
-	/* TODO move this result storage to a function */
-	gia_test_get_line_data(pdev, irq)->num_triggers += 1;
-
+	WRITE_ONCE(line->num_triggers, READ_ONCE(line->num_triggers) + 1);
+	complete(&line->irq_received);
 	dev_dbg(&pdev->dev, "gia_test device interrupt %d received in threaded handler\n", irq);
 
 	return IRQ_HANDLED;
@@ -122,10 +170,11 @@ static struct platform_device *gia_test_get_gia_parent_pdev(struct platform_devi
 static ssize_t gia_test_print_result(struct file *file, char __user *user_buf,
 				     size_t count, loff_t *ppos)
 {
+	struct gia_test_intr_line_data *line;
 	char *buf;
 	int len, ret = 0;
 	struct gia_test_irq_trigger_data *trigger_data;
-	u64 num_triggers;
+	u64 num_triggers, min_lat, max_lat, last_lat, avg_lat;
 
 	trigger_data = file->private_data;
 	if (!trigger_data) {
@@ -133,15 +182,33 @@ static ssize_t gia_test_print_result(struct file *file, char __user *user_buf,
 		return -EINVAL;
 	}
 
-	num_triggers = gia_test_get_line_data(trigger_data->pdev, trigger_data->irq)->num_triggers;
+	line = gia_test_get_line_data(trigger_data->pdev, trigger_data->irq);
+	if (!line)
+		return -EINVAL;
+
+	num_triggers = READ_ONCE(line->num_triggers);
+	last_lat = READ_ONCE(line->last_latency_ns);
+	min_lat = READ_ONCE(line->min_latency_ns);
+	if (min_lat == U64_MAX)
+		min_lat = 0;
+	max_lat = READ_ONCE(line->max_latency_ns);
+	avg_lat = (num_triggers > 0 && READ_ONCE(line->total_latency_ns) > 0) ?
+		  div64_u64(READ_ONCE(line->total_latency_ns), num_triggers) : 0;
 
 	buf = kmalloc(DEFAULT_OUTPUT_SIZE, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
-	len = snprintf(buf, DEFAULT_OUTPUT_SIZE, "%lld interrupts handled on %s hwirq line %lu\n",
+	len = snprintf(buf, DEFAULT_OUTPUT_SIZE,
+		       "%llu interrupts handled on %s hwirq line %lu\n"
+		       "Handler invocation latency (ns):\n"
+		       "  last: %llu\n"
+		       "  min:  %llu\n"
+		       "  max:  %llu\n"
+		       "  avg:  %llu\n",
 		       num_triggers, trigger_data->pdev->name,
-		       irq_get_irq_data(trigger_data->irq)->hwirq);
+		       irq_get_irq_data(trigger_data->irq)->hwirq,
+		       last_lat, min_lat, max_lat, avg_lat);
 
 	if (*ppos == 0) {
 		if (copy_to_user(user_buf, buf, len) != 0) {
@@ -161,11 +228,16 @@ static int gia_test_trigger_interrupt(struct gia_test_irq_trigger_data *data, u3
 	struct gia_test_irq_trigger_data *trigger_data = data;
 	int hwirq = irq_get_irq_data(trigger_data->irq)->hwirq;
 	struct device *test_dev = &trigger_data->pdev->dev;
+	struct gia_test_intr_line_data *line;
 	struct completion *irq_received;
 	int ret, request_irq_rc;
 	bool got_pm_runtime = true;
 
-	irq_received = &gia_test_get_line_data(trigger_data->pdev, trigger_data->irq)->irq_received;
+	line = gia_test_get_line_data(trigger_data->pdev, trigger_data->irq);
+	if (!line)
+		return -EINVAL;
+
+	irq_received = &line->irq_received;
 
 	/* automatically manage power as this command is intended for ease of use */
 	if (pm_runtime_get_sync(&trigger_data->pdev->dev))
@@ -202,7 +274,7 @@ static int gia_test_trigger_interrupt(struct gia_test_irq_trigger_data *data, u3
 	reinit_completion(irq_received);
 
 	ret = gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(trigger_data->pdev),
-					hwirq, true);
+					hwirq, true, &line->last_trig_time);
 	if (ret) {
 		dev_err(test_dev, "error %d triggering interrupt\n", ret);
 		goto free_irq;
@@ -224,10 +296,28 @@ cleanup:
 	return ret;
 }
 
-static int gia_test_set_clear_itr(struct gia_test_irq_trigger_data *data, bool set)
+static int gia_test_set_clear_itr(struct gia_test_irq_trigger_data *data, bool set,
+				  bool wait)
 {
-	return gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(data->pdev),
-				 irq_get_irq_data(data->irq)->hwirq, set);
+	struct gia_test_intr_line_data *line = gia_test_get_line_data(data->pdev, data->irq);
+	int ret;
+
+	if (set && wait && line)
+		reinit_completion(&line->irq_received);
+
+	ret = gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(data->pdev),
+					irq_get_irq_data(data->irq)->hwirq, set,
+					line ? &line->last_trig_time : NULL);
+	if (ret || !set || !wait || !line)
+		return ret;
+
+	if (!wait_for_completion_timeout(&line->irq_received,
+					 msecs_to_jiffies(GIA_TEST_TIMEOUT_MS))) {
+		dev_err(&data->pdev->dev, "timed out waiting for completion\n");
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
 static int gia_test_request_irq(struct gia_test_irq_trigger_data *data, bool threaded,
@@ -247,9 +337,16 @@ static void gia_test_free_irq(struct gia_test_irq_trigger_data *data)
 	devm_free_irq(&data->pdev->dev, data->irq, data->pdev);
 }
 
-static void gia_test_reset(struct gia_test_irq_trigger_data *data)
+static void gia_test_reset(struct gia_test_intr_line_data *line)
 {
-	gia_test_get_line_data(data->pdev, data->irq)->num_triggers = 0;
+	if (!line)
+		return;
+	WRITE_ONCE(line->num_triggers, 0);
+	WRITE_ONCE(line->last_trig_time, 0);
+	WRITE_ONCE(line->last_latency_ns, 0);
+	WRITE_ONCE(line->min_latency_ns, U64_MAX);
+	WRITE_ONCE(line->max_latency_ns, 0);
+	WRITE_ONCE(line->total_latency_ns, 0);
 }
 
 static ssize_t gia_test_parse_input(struct file *file, const char __user *user_buf, size_t count,
@@ -286,10 +383,12 @@ static ssize_t gia_test_parse_input(struct file *file, const char __user *user_b
 		ret = gia_test_trigger_interrupt(trigger_data, GIA_TEST_ONESHOT|GIA_TEST_THREADED);
 	} else if (strncmp(buf, "trigger", 7) == 0) {
 		ret = gia_test_trigger_interrupt(trigger_data, 0);
+	} else if (strncmp(buf, "set_itr_no_wait", 15) == 0) {
+		ret = gia_test_set_clear_itr(trigger_data, true, false);
 	} else if (strncmp(buf, "set_itr", 7) == 0) {
-		ret = gia_test_set_clear_itr(trigger_data, true);
+		ret = gia_test_set_clear_itr(trigger_data, true, true);
 	} else if (strncmp(buf, "clear_itr", 9) == 0) {
-		ret = gia_test_set_clear_itr(trigger_data, false);
+		ret = gia_test_set_clear_itr(trigger_data, false, false);
 	} else if (strncmp(buf, "request_irq_threaded", 20) == 0) {
 		ret = gia_test_request_irq(trigger_data, true, 0);
 	} else if (strncmp(buf, "request_irq_oneshot", 19) == 0) {
@@ -299,7 +398,7 @@ static ssize_t gia_test_parse_input(struct file *file, const char __user *user_b
 	} else if (strncmp(buf, "free_irq", 8) == 0) {
 		gia_test_free_irq(trigger_data);
 	} else if (strncmp(buf, "reset", 5) == 0) {
-		gia_test_reset(trigger_data);
+		gia_test_reset(gia_test_get_line_data(trigger_data->pdev, trigger_data->irq));
 	} else if (strncmp(buf, "mask", 4) == 0) {
 		disable_irq(trigger_data->irq);
 	} else if (strncmp(buf, "unmask", 6) == 0) {
@@ -310,6 +409,8 @@ static ssize_t gia_test_parse_input(struct file *file, const char __user *user_b
 		ret = disable_irq_wake(trigger_data->irq);
 	} else if (strncmp(buf, "power_on", 8) == 0) {
 		ret = pm_runtime_get_sync(&trigger_data->pdev->dev);
+		if (ret == -EACCES || ret >= 0)
+			ret = 0;
 	} else if (strncmp(buf, "power_off", 9) == 0) {
 		pm_runtime_put_sync(&trigger_data->pdev->dev);
 	} else {
@@ -433,7 +534,7 @@ static int gia_test_probe(struct platform_device *pdev)
 		data->line_data[i].irq_name = intr_names[i];
 		init_completion(&data->line_data[i].irq_received);
 		/* init to non-success value */
-		data->line_data[i].num_triggers = 0;
+		gia_test_reset(&data->line_data[i]);
 	}
 
 	/* register with debugfs. we have one test node per GIA node */

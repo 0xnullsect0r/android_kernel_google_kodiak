@@ -37,6 +37,7 @@
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/of_irq.h>
+#include <linux/irqdesc.h>
 #include <linux/pinctrl/consumer.h>
 #if defined(CONFIG_FB)
 #include <linux/notifier.h>
@@ -199,10 +200,13 @@ int fts_reset_proc(int hdelayms)
 void fts_irq_disable(void)
 {
     unsigned long irqflags;
+    struct irq_desc *desc = irq_to_desc(fts_data->irq);
 
     FTS_FUNC_ENTER();
     spin_lock_irqsave(&fts_data->irq_lock, irqflags);
 
+    FTS_INFO("fts_irq_disable: irq_disabled=%d, irq_desc->depth=%d", fts_data->irq_disabled,
+	     desc ? (int)desc->depth : -1);
     if (!fts_data->irq_disabled) {
         disable_irq_nosync(fts_data->irq);
         fts_data->irq_disabled = true;
@@ -215,10 +219,13 @@ void fts_irq_disable(void)
 void fts_irq_enable(void)
 {
     unsigned long irqflags = 0;
+    struct irq_desc *desc = irq_to_desc(fts_data->irq);
 
     FTS_FUNC_ENTER();
     spin_lock_irqsave(&fts_data->irq_lock, irqflags);
 
+    FTS_INFO("fts_irq_enable: irq_disabled=%d, irq_desc->depth=%d", fts_data->irq_disabled,
+	     desc ? (int)desc->depth : -1);
     if (fts_data->irq_disabled) {
         enable_irq(fts_data->irq);
         fts_data->irq_disabled = false;
@@ -1201,7 +1208,9 @@ static irqreturn_t fts_irq_handler(int irq, void *data)
         }
     }
 #endif
-    int_test_has_interrupt++;
+    WRITE_ONCE(int_test_has_interrupt, int_test_has_interrupt + 1);
+    if (unlikely(READ_ONCE(fts_data->int_test_running)))
+	    complete(&fts_data->int_test_completion);
     fts_data->coords_timestamp = fts_data->isr_timestamp;
     cpu_latency_qos_update_request(&ts_data->pm_qos_req, 100 /* usec */);
     fts_irq_read_report();
@@ -2066,11 +2075,12 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
     mutex_init(&ts_data->report_mutex);
     mutex_init(&ts_data->bus_lock);
     mutex_init(&ts_data->reg_lock);
-    ts_data->is_deepsleep = false;
 
     mutex_init(&ts_data->device_mutex);
     init_completion(&ts_data->bus_resumed);
     complete_all(&ts_data->bus_resumed);
+    init_completion(&ts_data->int_test_completion);
+    ts_data->int_test_running = false;
 
     /* Init communication interface */
     ret = fts_bus_init(ts_data);
@@ -2549,7 +2559,6 @@ static int fts_ts_suspend(struct device *dev)
     FTS_DEBUG("make TP enter into sleep mode");
     mutex_lock(&ts_data->reg_lock);
     ret = fts_write_reg(FTS_REG_POWER_MODE, FTS_REG_POWER_MODE_SLEEP);
-    ts_data->is_deepsleep = true;
     mutex_unlock(&ts_data->reg_lock);
     if (ret < 0)
       FTS_ERROR("set TP to sleep mode fail, ret=%d", ret);
@@ -2683,7 +2692,6 @@ static int fts_ts_resume(struct device *dev)
         return ret;
     }
 
-    ts_data->is_deepsleep = false;
     fts_ex_mode_recovery(ts_data);
 
 #if FTS_ESDCHECK_EN

@@ -28,6 +28,7 @@ enum mtk_trb_cmd_type {
 	TRB_CMD_ENABLE,
 	TRB_CMD_TX,
 	TRB_CMD_DISABLE,
+	TRB_CMD_CHECK_STA,
 	TRB_CMD_SET_CH_CFG,
 	TRB_CMD_SET_HIF_CFG,
 	TRB_CMD_STOP,
@@ -39,7 +40,8 @@ enum mtk_hif_dev_ctrl_cmd {
 	HIF_CTRL_CMD_TRM_NOTIFY,
 	HIF_CTRL_CMD_CHECK_TX_FULL,
 	HIF_CTRL_CMD_RPM_GET,
-	HIF_CTRL_CMD_RPM_PUT
+	HIF_CTRL_CMD_RPM_PUT,
+	HIF_CTRL_CMD_TX_ABORT
 };
 
 struct trb_open_priv {
@@ -48,11 +50,7 @@ struct trb_open_priv {
 	u32 rx_mtu;
 	u32 tx_frag_size;
 	u32 rx_frag_size;
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-	int (*rx_done)(struct sk_buff *skb, void *priv, bool force_recv, bool force_mdee);
-#else
 	int (*rx_done)(struct sk_buff *skb, void *priv, bool force_recv);
-#endif
 };
 
 struct trb_close_priv {

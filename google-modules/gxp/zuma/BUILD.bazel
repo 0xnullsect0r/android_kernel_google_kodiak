@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -46,10 +51,6 @@ ddk_module(
     textual_hdrs = [
         "gxp-common-platform.c",
         "gxp-mailbox-driver.c",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
     ],
     deps = [
         "//common:all_headers_aarch64",

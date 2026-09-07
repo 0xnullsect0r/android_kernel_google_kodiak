@@ -19,7 +19,7 @@
 #include "malibu-kodiak-camera.dtsi"
 #include "malibu-kodiak-evt1-battery.dtsi"
 #include "malibu-kodiak-evt1-charging.dtsi"
-
+#include "malibu-spacecraft-wingboard-charging.dtsi"
 
 / {
 	board_id = <0x80403>;
@@ -31,5 +31,9 @@
 			compatible = "google,malibu-kodiak_2", "google,malibu";
 		};
 	};
+};
+
+&ln8411_dc {
+	status = "disabled";
 };
 

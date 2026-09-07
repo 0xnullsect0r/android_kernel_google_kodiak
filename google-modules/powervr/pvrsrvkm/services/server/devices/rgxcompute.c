@@ -331,15 +331,35 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 	PVRSRV_ERROR				eError = PVRSRV_OK;
 	PVRSRV_RGXDEV_INFO *psDevInfo = psComputeContext->psDeviceNode->pvDevice;
 
+	/* remove node from list before calling destroy - as destroy, if successful
+	 * will invalidate the node
+	 * must be re-added if destroy fails
+	 */
+	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
+	dllist_remove_node(&(psComputeContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
+
 	/* Check if the FW has finished with this resource ... */
 	eError = RGXFWRequestCommonContextCleanUp(psComputeContext->psDeviceNode,
 											  psComputeContext->psServerCommonContext,
 											  RGXFWIF_DM_CDM,
 											  PDUMP_FLAGS_NONE);
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psComputeContext->psDeviceNode,
-						   eError,
-						   RGXFWRequestCommonContextCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psComputeContext->psDeviceNode, &eError))
+	{
+		goto failed;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestCommonContextCleanUp(%s)",
+				__func__,
+				PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 #if defined(SUPPORT_BUFFER_SYNC)
 	/* remove after RGXFWRequestCommonContextCleanUp() because we might return
@@ -365,7 +385,7 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 					"%s: Failed to map firmware compute context (%s)",
 					__func__,
 					PVRSRVGetErrorString(eError)));
-			return eError;
+			goto failed;
 		}
 		RGXFwSharedMemCacheOpValue(psFWComputeContext->sCDMContext.ui32WorkEstCCBSubmitted, INVALIDATE);
 		ui32WorkEstCCBSubmitted = psFWComputeContext->sCDMContext.ui32WorkEstCCBSubmitted;
@@ -380,16 +400,13 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 					__func__, ui32WorkEstCCBSubmitted,
 					psComputeContext->sWorkEstData.ui32WorkEstCCBReceived));
 
-			return PVRSRV_ERROR_RETRY;
+			eError = PVRSRV_ERROR_RETRY;
+			goto failed;
 		}
 	}
 #endif
 
 	/* ... it has so we can free its resources */
-
-	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
-	dllist_remove_node(&(psComputeContext->sListNode));
-	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
 
 #if defined(SUPPORT_WORKLOAD_ESTIMATION)
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVINFO, psDevInfo))
@@ -415,6 +432,13 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 	OSFreeMem(psComputeContext);
 
 	return PVRSRV_OK;
+
+	/* If we failed, return the context to the context list */
+failed:
+	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
+	dllist_add_to_tail(&(psDevInfo->sComputeCtxtListHead), &(psComputeContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
+	return eError;
 }
 
 PVRSRV_ERROR PVRSRVRGXKickCDMKM(RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext,

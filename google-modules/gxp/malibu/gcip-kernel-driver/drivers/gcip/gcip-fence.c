@@ -69,13 +69,6 @@ static int gcip_fence_do_signal(struct gcip_fence *fence, int errno,
 	return -EOPNOTSUPP;
 }
 
-static void gcip_fence_do_waited(struct gcip_fence *fence, enum iif_ip_type ip,
-				 void (*iif_waited_func)(struct iif_fence *, enum iif_ip_type))
-{
-	if (fence->type == GCIP_INTER_IP_FENCE)
-		iif_waited_func(fence->fence.iif, ip);
-}
-
 static void gcip_fence_release_iif(struct iif_fence *iif_fence)
 {
 	kfree(iif_fence);
@@ -247,12 +240,36 @@ int gcip_fence_signal_async(struct gcip_fence *fence, int errno)
 
 void gcip_fence_waited(struct gcip_fence *fence, enum iif_ip_type ip)
 {
-	gcip_fence_do_waited(fence, ip, &iif_fence_waited);
+	gcip_fence_waiter_completed(fence, ip);
 }
 
 void gcip_fence_waited_async(struct gcip_fence *fence, enum iif_ip_type ip)
 {
-	gcip_fence_do_waited(fence, ip, &iif_fence_waited_async);
+	gcip_fence_waiter_completed_async(fence, ip);
+}
+
+void gcip_fence_signaler_completed(struct gcip_fence *fence)
+{
+	if (fence->type == GCIP_INTER_IP_FENCE)
+		iif_fence_signaler_completed(fence->fence.iif);
+}
+
+void gcip_fence_signaler_completed_async(struct gcip_fence *fence)
+{
+	if (fence->type == GCIP_INTER_IP_FENCE)
+		iif_fence_signaler_completed_async(fence->fence.iif);
+}
+
+void gcip_fence_waiter_completed(struct gcip_fence *fence, enum iif_ip_type ip)
+{
+	if (fence->type == GCIP_INTER_IP_FENCE)
+		iif_fence_waiter_completed(fence->fence.iif, ip);
+}
+
+void gcip_fence_waiter_completed_async(struct gcip_fence *fence, enum iif_ip_type ip)
+{
+	if (fence->type == GCIP_INTER_IP_FENCE)
+		iif_fence_waiter_completed_async(fence->fence.iif, ip);
 }
 
 /*

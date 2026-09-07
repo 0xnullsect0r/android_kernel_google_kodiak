@@ -22,6 +22,16 @@
 static const u32 hist_chan_flags = DC_HW_HISTOGRAM_WDMA;
 static const u32 hist_rgb_flags = DC_HW_HISTOGRAM_WDMA;
 
+bool vs_dc_hist_chan_is_wdma(void)
+{
+	return !!(hist_chan_flags & DC_HW_HISTOGRAM_WDMA);
+}
+
+bool vs_dc_hist_rgb_is_wdma(void)
+{
+	return !!(hist_rgb_flags & DC_HW_HISTOGRAM_WDMA);
+}
+
 /* offset between histogram idx channels */
 #define VS_HIST_IDX_OFFSET (DCREG_PANEL0_HIST1_CONTROL_Address - DCREG_PANEL0_HIST0_CONTROL_Address)
 
@@ -360,7 +370,7 @@ static void vs_dc_hist_chan_commit(struct dc_hw *hw, u8 display_id, struct dc_hw
 		dc_write_relaxed(hw, DCREG_PANEL0_HIST0_READ_CONFIRM_Address + offset, rd_confirm);
 
 		/* WDMA configuration */
-		if (hist_chan_flags & DC_HW_HISTOGRAM_WDMA) {
+		if (vs_dc_hist_chan_is_wdma()) {
 			dc_write_relaxed(hw, DCREG_PANEL0_HIST0_WB_ADDRESS_Address + offset,
 				 lower_32_bits(gem_node->paddr));
 			dc_write_relaxed(hw, DCREG_PANEL0_HIST0_WB_HIGH_ADDRESS_Address + offset,
@@ -582,7 +592,7 @@ static void vs_dc_hist_chan_collect(struct dc_hw *hw, u8 display_id,
 	/*
 	 * MEMIO: read data
 	 */
-	if (!(hist_chan_flags & DC_HW_HISTOGRAM_WDMA)) {
+	if (!vs_dc_hist_chan_is_wdma()) {
 		if (gem_node) {
 			spin_unlock_irqrestore(&hw->histogram_slock, flags);
 			/* read all bins */
@@ -619,7 +629,7 @@ static void vs_dc_hist_chan_collect(struct dc_hw *hw, u8 display_id,
 			idx);
 	} else {
 		/* WDMA: configure next frame */
-		if (hist_chan_flags & DC_HW_HISTOGRAM_WDMA) {
+		if (vs_dc_hist_chan_is_wdma()) {
 			dc_write(hw, DCREG_PANEL0_HIST0_WB_ADDRESS_Address + offset,
 				 lower_32_bits(gem_node->paddr));
 			dc_write(hw, DCREG_PANEL0_HIST0_WB_HIGH_ADDRESS_Address + offset,
@@ -734,7 +744,7 @@ static bool hist_rgb_config_hw(struct dc_hw *hw, u8 hw_id, bool enable, const vo
 
 
 		/* WDMA configuration */
-		if (hist_rgb_flags & DC_HW_HISTOGRAM_WDMA) {
+		if (vs_dc_hist_rgb_is_wdma()) {
 			dc_write(hw, DCREG_PANEL0_HIST_RGB_WB_ADDRESS_Address,
 				 lower_32_bits(gem_node->paddr));
 			dc_write(hw, DCREG_PANEL0_HIST_RGB_WB_HIGH_ADDRESS_Address,
@@ -830,7 +840,7 @@ static void vs_dc_hist_rgb_collect(struct dc_hw *hw, u8 display_id,
 	/*
 	 * MEMIO: read data
 	 */
-	if (!(hist_rgb_flags & DC_HW_HISTOGRAM_WDMA)) {
+	if (!vs_dc_hist_rgb_is_wdma()) {
 		if (gem_node) {
 			spin_unlock_irqrestore(&hw->histogram_slock, flags);
 			u32 offset = DCREG_PANEL0_HIST_RED_BIN_RESULT_Address;
@@ -870,7 +880,7 @@ static void vs_dc_hist_rgb_collect(struct dc_hw *hw, u8 display_id,
 	if (!gem_node) {
 		dev_err(hw->dev, "%s: unable to get histogram gem_node for RGB\n", __func__);
 	} else {
-		if (hist_rgb_flags & DC_HW_HISTOGRAM_WDMA) {
+		if (vs_dc_hist_rgb_is_wdma()) {
 			dc_write(hw, DCREG_PANEL0_HIST_RGB_WB_ADDRESS_Address,
 				 lower_32_bits(gem_node->paddr));
 			dc_write(hw, DCREG_PANEL0_HIST_RGB_WB_HIGH_ADDRESS_Address,

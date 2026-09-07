@@ -257,7 +257,7 @@ static int lwis_i3c_proxy_register_io(struct lwis_device *lwis_dev, struct lwis_
 
 	if (!i3c_proxy_dev->i3c && (i3c_proxy_dev->i3c_enabled && force_i2c_mode == 0)) {
 		pr_err("Cannot find I3C instance\n");
-		return -ENODEV;
+		return -ECANCELED;
 	}
 
 	/* Running in interrupt context is not supported as i3c driver might sleep */
@@ -280,6 +280,7 @@ static int lwis_i3c_proxy_batch_register_io(struct lwis_device *lwis_dev,
 					    struct lwis_io_entry *entries, int batch_size)
 {
 	struct lwis_i2c_device *i3c_proxy_dev;
+	int i;
 
 	i3c_proxy_dev = container_of(lwis_dev, struct lwis_i2c_device, base_dev);
 
@@ -291,6 +292,9 @@ static int lwis_i3c_proxy_batch_register_io(struct lwis_device *lwis_dev,
 	/* Running in interrupt context is not supported as i3c driver might sleep */
 	if (in_interrupt())
 		return -EAGAIN;
+
+	for (i = 0; i < batch_size; i++)
+		lwis_save_register_io_info(lwis_dev, &entries[i]);
 
 	return (force_i2c_mode == 0 && i3c_proxy_dev->i3c_enabled) ?
 		       lwis_i3c_io_entries_rw(i3c_proxy_dev, entries, batch_size) :

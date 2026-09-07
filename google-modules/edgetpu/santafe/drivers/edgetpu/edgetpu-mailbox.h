@@ -9,12 +9,15 @@
 
 #include <linux/compiler.h>
 #include <linux/irqreturn.h>
+#include <linux/mailbox_client.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
 
 #include <gcip/gcip-mailbox.h>
 #include <gcip/gcip-memory.h>
 
+#include "edgetpu-config.h"
+#include "edgetpu-firmware-metadata.h"
 #include "edgetpu-internal.h"
 #include "edgetpu.h"
 
@@ -39,8 +42,16 @@ struct edgetpu_device_group;
 struct edgetpu_mailbox {
 	uint mailbox_id;
 	struct edgetpu_dev *etdev;
+
+#if EDGETPU_USE_CMF
+	/* base address for queue metadata */
+	struct edgetpu_queue_metadata *queue_metadata;
+	struct mbox_client mb_client;
+	struct mbox_chan *mb_chan;
+#else
 	/* base offset for CSRs */
 	void __iomem *csr_base;
+#endif /* EDGETPU_USE_CMF */
 
 	/*
 	 * Queue-related fields, all of them are in units of number of elements.
@@ -50,8 +61,12 @@ struct edgetpu_mailbox {
 	u32 resp_queue_size; /* size of resp queue */
 	u32 resp_queue_head; /* offset within the resp queue */
 
+#if !EDGETPU_USE_CMF
 	/* IRQ number. */
 	int irq;
+	/* Whether the mailbox uses MSI */
+	bool msi_enabled;
+#endif /* EDGETPU_USE_CMF */
 	/*
 	 * IRQ handler.
 	 * If @irq is non-zero, it must be disabled with `disable_irq` before changing the function
@@ -134,7 +149,7 @@ struct edgetpu_mailbox_manager {
 	u8 num_ext_mailbox;
 	/* indices reserved for external mailboxes */
 	u8 ext_index_from, ext_index_to;
-	rwlock_t ext_mailboxes_lock;	/* protects ext_mailboxes */
+	rwlock_t ext_mailboxes_lock; /* protects ext_mailboxes */
 	struct edgetpu_mailbox **ext_mailboxes;
 	struct edgetpu_handshake open_devices;
 };
@@ -224,6 +239,18 @@ void edgetpu_mailbox_irq_enable(struct edgetpu_mailbox *mailbox, bool enable);
 void edgetpu_mailbox_set_irq_handler(struct edgetpu_mailbox *mailbox,
 				     void (*handle_irq)(struct edgetpu_mailbox *mailbox));
 
+#if EDGETPU_USE_CMF
+/*
+ * Allocate and initialize the mailbox with metadata at @queue_metadata.
+ *
+ * The mailbox will have its doorbells cleared and enabled.
+ *
+ * This function is safe to call in an atomic context.
+ */
+struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev,
+					      struct edgetpu_queue_metadata *queue_metadata,
+					      uint index);
+#else
 /*
  * Allocate and initialize the mailbox located at @csr_base.
  *
@@ -233,7 +260,8 @@ void edgetpu_mailbox_set_irq_handler(struct edgetpu_mailbox *mailbox,
  */
 /* TODO(b/376971597) remove @index once its only used for external mailboxes. */
 struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev, void __iomem *csr_base,
-					      int irq, uint index);
+					      int irq, uint index, bool msi_enabled);
+#endif /* EDGETPU_USE_CMF */
 
 /*
  * Release a mailbox allocated with `edgetpu_mailbox_alloc`.
@@ -399,6 +427,104 @@ void edgetpu_mailbox_disable_external_mailbox(struct edgetpu_device_group *group
 /* Dump mailbox state info to kernel log for diagnosing timeouts. */
 void edgetpu_mailbox_dump(struct edgetpu_mailbox *mailbox);
 
+#if EDGETPU_USE_CMF
+/* Macros for accessing mailbox metadata on DRAM. */
+
+/* Read mailbox metadata with no memory barrier / access ordering guarantee. */
+#define EDGETPU_MAILBOX_READ(mailbox, base, type, field) READ_ONCE(((type *)(base))->field)
+
+/*
+ * Read mailbox metadata with memory barrier. Ensure the read of metadata completes prior to any
+ * following CPU reads by this thread.
+ */
+#define EDGETPU_MAILBOX_READ_SYNC(mailbox, base, type, field)                               \
+	({                                                                                  \
+		typeof(((type *)(base))->field) __val = READ_ONCE(((type *)(base))->field); \
+		rmb(); /* memory barrier*/                                                  \
+		__val;                                                                      \
+	})
+
+/* Read command queue metadata with no memory barrier / access ordering. */
+#define EDGETPU_MAILBOX_CMD_QUEUE_READ(mailbox, field)                                        \
+	EDGETPU_MAILBOX_READ(mailbox, mailbox->queue_metadata, struct edgetpu_queue_metadata, \
+			     cmd_queue_##field)
+
+/* Read response queue metadata with no memory barrier / access ordering. */
+#define EDGETPU_MAILBOX_RESP_QUEUE_READ(mailbox, field)                                       \
+	EDGETPU_MAILBOX_READ(mailbox, mailbox->queue_metadata, struct edgetpu_queue_metadata, \
+			     resp_queue_##field)
+
+/* Read response queue metadata with memory barrier. */
+#define EDGETPU_MAILBOX_RESP_QUEUE_READ_SYNC(mailbox, field)                                       \
+	EDGETPU_MAILBOX_READ_SYNC(mailbox, mailbox->queue_metadata, struct edgetpu_queue_metadata, \
+				  resp_queue_##field)
+
+/* Write mailbox metadata with no memory barrier / access ordering guarantee. */
+#define EDGETPU_MAILBOX_WRITE(mailbox, base, type, field, value) \
+	WRITE_ONCE(((type *)(base))->field, value)
+
+/*
+ * Write mailbox metadata with memory barrier. Ensure all CPU memory writes by this thread complete
+ * prior to the write of metadata.
+ */
+#define EDGETPU_MAILBOX_WRITE_SYNC(mailbox, base, type, field, value) \
+	do {                                                          \
+		wmb(); /* memory barrier */                           \
+		WRITE_ONCE(((type *)(base))->field, value);           \
+	} while (0)
+
+/*
+ * TODO(b/510560407): This macro is still used by common external mailbox handling; remove it after
+ * the external mailbox refactor.
+ */
+#define EDGETPU_MAILBOX_CONTEXT_WRITE(mailbox, field, value) \
+	do {                                                 \
+	} while (0)
+
+/* Write command queue metadata with no memory barrier / access ordering. */
+#define EDGETPU_MAILBOX_CMD_QUEUE_WRITE(mailbox, field, value)                                 \
+	EDGETPU_MAILBOX_WRITE(mailbox, mailbox->queue_metadata, struct edgetpu_queue_metadata, \
+			      cmd_queue_##field, value)
+
+/* Write command queue metadata with memory barrier. */
+#define EDGETPU_MAILBOX_CMD_QUEUE_WRITE_SYNC(mailbox, field, value)  \
+	EDGETPU_MAILBOX_WRITE_SYNC(mailbox, mailbox->queue_metadata, \
+				   struct edgetpu_queue_metadata, cmd_queue_##field, value)
+
+/* Write response queue metadata with no memory barrier / access ordering. */
+#define EDGETPU_MAILBOX_RESP_QUEUE_WRITE(mailbox, field, value)                                \
+	EDGETPU_MAILBOX_WRITE(mailbox, mailbox->queue_metadata, struct edgetpu_queue_metadata, \
+			      resp_queue_##field, value)
+
+static inline void edgetpu_mailbox_enable(struct edgetpu_mailbox *mailbox)
+{
+	/* Under CMF, enabling the hardware context is managed by the mailbox controller driver. */
+}
+
+static inline void edgetpu_mailbox_disable(struct edgetpu_mailbox *mailbox)
+{
+	/* Under CMF, disabling the hardware context is managed by the mailbox controller driver. */
+}
+
+/* Trigger the hardware doorbell via CMF, default with memory barrier */
+static inline void edgetpu_mailbox_trigger_cmd_queue_doorbell_sync(struct edgetpu_mailbox *mailbox)
+{
+	if (IS_ERR_OR_NULL(mailbox->mb_chan)) {
+		etdev_err_ratelimited(mailbox->etdev,
+				      "Error on mailbox channel before sending message %d: %ld",
+				      mailbox->mailbox_id, PTR_ERR(mailbox->mb_chan));
+		return;
+	}
+
+	mbox_send_message(mailbox->mb_chan, NULL);
+}
+
+static inline void edgetpu_mailbox_trigger_cmd_queue_doorbell(struct edgetpu_mailbox *mailbox)
+{
+	edgetpu_mailbox_trigger_cmd_queue_doorbell_sync(mailbox);
+}
+
+#else
 /* Macros for accessing mailbox CSRs. */
 
 /* Read mailbox register with no memory barrier / access ordering guarantee. */
@@ -486,5 +612,7 @@ static inline void edgetpu_mailbox_trigger_cmd_queue_doorbell_sync(struct edgetp
 {
 	EDGETPU_MAILBOX_CMD_QUEUE_WRITE_SYNC(mailbox, doorbell_set, 1);
 }
+
+#endif /* EDGETPU_USE_CMF */
 
 #endif /* __EDGETPU_MAILBOX_H__ */

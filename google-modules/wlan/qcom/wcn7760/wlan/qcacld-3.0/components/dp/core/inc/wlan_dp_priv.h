@@ -159,6 +159,13 @@ struct dp_affn_override_params {
  * mask
  * @dp_affn_override_high_tput_mask: DP affinity high throughput level affinity
  * mask
+ * @dp_cpu_perf_freq_boost_enable: Flag to enable CPU freq override on high DP traffic
+ * @dp_cpu_little_core_perf_freq: Target performance frequency for little core cluster
+ * @dp_cpu_mid_core_perf_freq: Target performance frequency for mid core cluster
+ * @dp_cpu_big_core_perf_freq: Target performance frequency for big core cluster
+ * @dp_cpu_little_core_start_cpu: Starting CPU index for little core cluster
+ * @dp_cpu_mid_core_start_cpu: Starting CPU index for mid core cluster
+ * @dp_cpu_big_core_start_cpu: Starting CPU index for big core cluster
  * * @del_ack_enable: enable Dynamic Configuration of Tcp Delayed Ack
  * @del_ack_threshold_high: High Threshold inorder to trigger TCP delay ack
  * @del_ack_threshold_low: Low Threshold inorder to trigger TCP delay ack
@@ -240,6 +247,15 @@ struct wlan_dp_psoc_cfg {
 	uint32_t dp_affn_override_low_tput_mask;
 	uint32_t dp_affn_override_mid_tput_mask;
 	uint32_t dp_affn_override_high_tput_mask;
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	bool dp_cpu_perf_freq_boost_enable;
+	uint32_t dp_cpu_little_core_perf_freq;
+	uint32_t dp_cpu_mid_core_perf_freq;
+	uint32_t dp_cpu_big_core_perf_freq;
+	uint32_t dp_cpu_little_core_start_cpu;
+	uint32_t dp_cpu_mid_core_start_cpu;
+	uint32_t dp_cpu_big_core_start_cpu;
+#endif
 #endif /*WLAN_DP_AFFINITY_OVERRIDE_FEATURE*/
 #endif /*WLAN_FEATURE_DP_BUS_BANDWIDTH*/
 
@@ -785,6 +801,7 @@ struct dp_rx_fst {
  * @opm_stats_work: OPM stats work
  * @ipv4_addr: IPv4 address
  * @haps_ctx: HAPS context
+ * @dhcp_ltxid: Last DHCP tx packet transaction id
  */
 struct wlan_dp_intf {
 	struct wlan_dp_psoc_context *dp_ctx;
@@ -882,6 +899,7 @@ struct wlan_dp_intf {
 #ifdef WLAN_HAPS_ENABLE
 	struct dp_haps haps_ctx;
 #endif
+	uint32_t dhcp_ltxid;
 };
 
 #define WLAN_DP_LINK_MAGIC 0x5F44505F4C494E4B	/* "_DP_LINK" in ASCII */

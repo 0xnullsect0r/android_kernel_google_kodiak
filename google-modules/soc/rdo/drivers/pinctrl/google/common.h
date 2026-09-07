@@ -404,6 +404,7 @@ struct google_pinctrl_irqinfo {
  * @system_suspend_count: System suspend counter
  * @system_resume_count: System resume counter
  * @g_pingroups_fops_stats: Contains counters for GPIO API function calls for each pin group
+ * @pins_rpm_stats: Contains runtime power management calls statistics for each pin
  * @de: DebugFs root directory
  */
 struct google_pinctrl {
@@ -448,6 +449,10 @@ struct google_pinctrl {
 
 	struct fops_stats *g_pingroups_fops_stats;
 
+	struct pin_rpm_stats *pins_rpm_stats;
+	bool pins_rpm_stats_alloc;
+	raw_spinlock_t pins_rpm_stats_lock;
+
 	struct dentry *de;
 #endif
 };
@@ -480,8 +485,8 @@ void google_writel(unsigned int reg_offset, u32 val, struct google_pinctrl *gctl
 u32 google_readl(unsigned int reg_offset, struct google_pinctrl *gctl,
 		 const struct google_pingroup *g);
 
-int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl);
-void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl);
+int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl, int pin);
+void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl, int pin);
 int get_reg2offset(u8 reg_num);
 bool google_pinctrl_should_toggle_irq(struct google_pinctrl_irqinfo *info);
 

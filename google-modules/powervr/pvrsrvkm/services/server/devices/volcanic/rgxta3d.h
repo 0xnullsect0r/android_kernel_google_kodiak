@@ -118,6 +118,7 @@ typedef struct _RGX_HWRTDATA_COMMON_COOKIE_
 	DEVMEMINT_RESERVATION* psPMStateReservation;
 	DEVMEMINT_RESERVATION* psPMMListsReservation;
 	IMG_UINT32             ui32RefCount;
+	POS_LOCK               hLock;
 } RGX_HWRTDATA_COMMON_COOKIE;
 
 typedef struct _RGX_KM_HW_RT_DATASET_

@@ -280,6 +280,8 @@ static irqreturn_t goog_mba_ctrl_handle_doorbell_isr(struct goog_mba_ctrl_info *
 	u32 irq_status = mba_readl(mbox_info, CLIENT_DOORBELL_STATUS_OFFSET);
 	int chan_idx;
 
+	trace_goog_mba_ctrl_handle_doorbell_isr(mbox_info, irq_status);
+
 	for (chan_idx = 0; chan_idx < mbox_info->max_client_db_chans && irq_status; chan_idx++) {
 		if (!(irq_status & (1 << chan_idx)))
 			continue;

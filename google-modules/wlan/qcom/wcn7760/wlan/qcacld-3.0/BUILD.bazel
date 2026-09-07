@@ -3,11 +3,10 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch")
 load(":wlan_qcacld3_modules.bzl", "define_module_for_target_variant_chipset")
 
-package(
-    default_visibility = [
-        "//visibility:public",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 config_setting(
     name = "wonder_enabled",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 config GOOGLE_FWMT
-	tristate "GDMC Firmware Metrics"
+	tristate "Firmware Metrics"
 	help
 	  This option enables the driver for Firmware Metrics (FWMT).
 	  The firmware collects various metrics such as system events,

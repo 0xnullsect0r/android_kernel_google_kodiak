@@ -6,9 +6,12 @@
  */
 
 #include <linux/atomic.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/kernel.h>
 #include <linux/mutex.h>
+#include <linux/rwlock.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 
@@ -28,13 +31,22 @@ static void gcip_pm_try_power_down(struct gcip_pm *pm)
 	if (ret == -EAGAIN) {
 		dev_warn(pm->dev, "Power down request denied, retrying in %d ms\n",
 			 GCIP_ASYNC_POWER_DOWN_RETRY_DELAY);
-		pm->power_down_pending = true;
+
+		if (!pm->power_down_pending) {
+			pm->power_down_pending = true;
+			reinit_completion(&pm->pending_power_down_done);
+		}
+
 		schedule_delayed_work(&pm->power_down_work,
 				      msecs_to_jiffies(GCIP_ASYNC_POWER_DOWN_RETRY_DELAY));
 	} else {
 		if (ret)
 			dev_err(pm->dev, "Power down request failed (%d)\n", ret);
-		pm->power_down_pending = false;
+
+		if (pm->power_down_pending) {
+			pm->power_down_pending = false;
+			complete_all(&pm->pending_power_down_done);
+		}
 	}
 }
 
@@ -49,7 +61,7 @@ static void gcip_pm_async_power_down_work(struct work_struct *work)
 	if (pm->power_down_pending)
 		gcip_pm_try_power_down(pm);
 	else
-		dev_info(pm->dev, "Delayed power down cancelled\n");
+		dev_warn(pm->dev, "async power down finds no request pending\n");
 
 	mutex_unlock(&pm->lock);
 }
@@ -81,11 +93,16 @@ struct gcip_pm *gcip_pm_create(const struct gcip_pm_args *args)
 	pm->before_destroy = args->before_destroy;
 	pm->power_up = args->power_up;
 	pm->power_down = args->power_down;
+	pm->power_down_wait_timeout_ms = args->power_down_wait_timeout_ms;
+	if (!pm->power_down_wait_timeout_ms)
+		pm->power_down_wait_timeout_ms = GCIP_POWER_DOWN_WAIT_TIMEOUT_DEFAULT;
 
 	mutex_init(&pm->lock);
+	rwlock_init(&pm->count_lock);
 	INIT_DELAYED_WORK(&pm->power_down_work, gcip_pm_async_power_down_work);
 	INIT_WORK(&pm->put_async_work, gcip_pm_async_put_work);
 	atomic_set(&pm->put_async_count, 0);
+	init_completion(&pm->pending_power_down_done);
 
 	if (pm->after_create) {
 		ret = pm->after_create(pm->data);
@@ -104,11 +121,105 @@ void gcip_pm_destroy(struct gcip_pm *pm)
 
 	pm->power_down_pending = false;
 	cancel_delayed_work_sync(&pm->power_down_work);
+	complete_all(&pm->pending_power_down_done);
 
 	if (pm->before_destroy)
 		pm->before_destroy(pm->data);
 
 	devm_kfree(pm->dev, pm);
+}
+
+static int gcip_pm_get_power_up(struct gcip_pm *pm)
+{
+	int ret = 0;
+
+retry:
+	gcip_pm_lockdep_assert_held(pm);
+
+	/*
+	 * Already powered up.
+	 *
+	 * Not holding @pm->count_lock after checking @pm->count is race-free:
+	 *   1. All functions that can power the block down (e.g., `gcip_pm_put()` and async put
+	 *      workers) hold @pm->lock.
+	 *   2. `gcip_pm_get_if_powered()` is the only function that modifies @pm->count without
+	 *      holding @pm->lock (i.e., it only holds @pm->count_lock), but it increments
+	 *      @pm->count only when power is already active (count > 0).
+	 */
+	if (gcip_pm_get_count(pm))
+		return 0;
+
+	if (!pm->power_down_pending)
+		return pm->power_up(pm->data);
+
+	mutex_unlock(&pm->lock);
+	dev_info(pm->dev, "wait for pending power down to complete");
+	if (!wait_for_completion_timeout(&pm->pending_power_down_done,
+					 msecs_to_jiffies(pm->power_down_wait_timeout_ms))) {
+		dev_err(pm->dev, "timeout waiting for power down to complete");
+		ret = -ETIMEDOUT;
+	}
+
+	mutex_lock(&pm->lock);
+	if (!ret)
+		goto retry;
+	return ret;
+}
+
+/**
+ * gcip_pm_inc_count_locked() - Increases @pm->count and adjusts @pm->suspendable_count if
+ *                              applicable.
+ * @pm: GCIP PM context.
+ * @flags: Flags indicating if @pm->suspendable_count should be adjusted for suspendable path.
+ */
+static void gcip_pm_inc_count_locked(struct gcip_pm *pm, enum gcip_pm_flags flags)
+{
+	lockdep_assert_held(&pm->count_lock);
+
+	WRITE_ONCE(pm->count, pm->count + 1);
+
+	if (flags & GCIP_PM_SUSPENDABLE) {
+		pm->suspendable_count++;
+
+		if (pm->suspendable_count > pm->count)
+			pm->suspendable_count = pm->count;
+	}
+}
+
+/**
+ * gcip_pm_dec_count_locked() - Decreases @pm->count and adjusts @pm->suspendable_count if
+ *                              applicable.
+ * @pm: GCIP PM context.
+ * @flags: Flags indicating if @pm->suspendable_count should be adjusted for suspendable path.
+ *
+ * Return: true if @pm->count reaches 0 (indicating power down is required).
+ */
+static bool gcip_pm_dec_count_locked(struct gcip_pm *pm, enum gcip_pm_flags flags)
+{
+	lockdep_assert_held(&pm->count_lock);
+
+	if (unlikely(!pm->count)) {
+		dev_warn_ratelimited(pm->dev, "gcip-pm count underflow");
+		return false;
+	}
+
+	WRITE_ONCE(pm->count, pm->count - 1);
+
+	if (flags & GCIP_PM_SUSPENDABLE) {
+		if (pm->suspendable_count > 0)
+			--pm->suspendable_count;
+
+		if (pm->suspendable_count > pm->count)
+			pm->suspendable_count = pm->count;
+	}
+
+	if (!pm->count) {
+		pm->power_down_pending = true;
+		reinit_completion(&pm->pending_power_down_done);
+		return true;
+	}
+
+	return false;
 }
 
 /*
@@ -120,50 +231,42 @@ void gcip_pm_destroy(struct gcip_pm *pm)
  */
 static int gcip_pm_get_locked(struct gcip_pm *pm, enum gcip_pm_flags flags)
 {
-	int ret = 0;
+	unsigned long irqflags;
+	int ret;
 
 	gcip_pm_lockdep_assert_held(pm);
+	ret = gcip_pm_get_power_up(pm);
+	if (ret)
+		return ret;
 
-	if (!pm->count) {
-		if (pm->power_down_pending)
-			pm->power_down_pending = false;
-		else
-			ret = pm->power_up(pm->data);
-	}
-
-	if (!ret) {
-		pm->count++;
-
-		if (flags & GCIP_PM_SUSPENDABLE) {
-			pm->suspendable_count++;
-
-			if (pm->suspendable_count > pm->count)
-				pm->suspendable_count = pm->count;
-		}
-	}
+	write_lock_irqsave(&pm->count_lock, irqflags);
+	gcip_pm_inc_count_locked(pm, flags);
+	write_unlock_irqrestore(&pm->count_lock, irqflags);
 
 	dev_dbg(pm->dev, "%s: %d\n", __func__, pm->count);
-
 	return ret;
 }
 
 int gcip_pm_get_if_powered(struct gcip_pm *pm, bool blocking)
 {
+	unsigned long flags;
 	int ret = -EAGAIN;
 
 	/* Fast fails without holding the lock. */
-	if (!pm->count)
+	if (!READ_ONCE(pm->count))
 		return ret;
 
 	if (blocking)
-		mutex_lock(&pm->lock);
-	else if (!mutex_trylock(&pm->lock))
+		write_lock_irqsave(&pm->count_lock, flags);
+	else if (!write_trylock_irqsave(&pm->count_lock, flags))
 		return ret;
 
-	if (pm->count)
-		ret = gcip_pm_get_locked(pm, 0);
+	if (pm->count) {
+		gcip_pm_inc_count_locked(pm, 0);
+		ret = 0;
+	}
 
-	mutex_unlock(&pm->lock);
+	write_unlock_irqrestore(&pm->count_lock, flags);
 
 	return ret;
 }
@@ -192,29 +295,30 @@ int gcip_pm_get_flags(struct gcip_pm *pm, enum gcip_pm_flags flags)
 
 static void __gcip_pm_put_flags(struct gcip_pm *pm, enum gcip_pm_flags flags)
 {
+	unsigned long irqflags;
+	bool do_power_down;
+
+	might_sleep();
+
 	mutex_lock(&pm->lock);
 
-	if (WARN_ON(!pm->count))
-		goto unlock;
+	write_lock_irqsave(&pm->count_lock, irqflags);
+	do_power_down = gcip_pm_dec_count_locked(pm, flags);
+	write_unlock_irqrestore(&pm->count_lock, irqflags);
 
-	--pm->count;
-
-	if (flags & GCIP_PM_SUSPENDABLE) {
-		if (pm->suspendable_count > 0)
-			--pm->suspendable_count;
-
-		if (pm->suspendable_count > pm->count)
-			pm->suspendable_count = pm->count;
-	}
-
-	if (!pm->count) {
-		pm->power_down_pending = true;
+	/*
+	 * Calling gcip_pm_try_power_down() without holding @pm->count_lock is race-free because:
+	 *   1. All the functions that can change power state (e.g., `gcip_pm_get()`) hold
+	 *      @pm->lock.
+	 *   2. `gcip_pm_get_if_powered()` does not hold @pm->lock, but it only increments the count
+	 *      when power is active (count > 0). Since count is now 0 when @do_power_down is true,
+	 *      that function will return -EAGAIN immediately.
+	 */
+	if (do_power_down)
 		gcip_pm_try_power_down(pm);
-	}
 
 	dev_dbg(pm->dev, "%s: %d\n", __func__, pm->count);
 
-unlock:
 	mutex_unlock(&pm->lock);
 }
 
@@ -268,6 +372,7 @@ void gcip_pm_flush_delayed_power_down_work(struct gcip_pm *pm, int retry)
 		dev_warn(pm->dev,
 			 "Cancel the power down request, the block might be in the bad state");
 		pm->power_down_pending = false;
+		complete_all(&pm->pending_power_down_done);
 	}
 
 	mutex_unlock(&pm->lock);
@@ -275,16 +380,29 @@ void gcip_pm_flush_delayed_power_down_work(struct gcip_pm *pm, int retry)
 
 int gcip_pm_get_count(struct gcip_pm *pm)
 {
-	return pm->count;
+	int count;
+	unsigned long flags;
+
+	read_lock_irqsave(&pm->count_lock, flags);
+	count = pm->count;
+	read_unlock_irqrestore(&pm->count_lock, flags);
+
+	return count;
 }
 
 bool gcip_pm_suspendable_locked(struct gcip_pm *pm, int *count)
 {
+	unsigned long flags;
+	bool suspendable;
+
 	gcip_pm_lockdep_assert_held(pm);
 
-	*count = gcip_pm_get_count(pm);
+	read_lock_irqsave(&pm->count_lock, flags);
+	suspendable = pm->count <= pm->suspendable_count;
+	*count = pm->count;
+	read_unlock_irqrestore(&pm->count_lock, flags);
 
-	if (*count > pm->suspendable_count)
+	if (!suspendable)
 		return false;
 
 	if (pm->power_down_pending) {
@@ -303,12 +421,15 @@ bool gcip_pm_is_powered(struct gcip_pm *pm)
 
 void gcip_pm_shutdown(struct gcip_pm *pm, bool force)
 {
+	int count;
+
 	mutex_lock(&pm->lock);
 
-	if (pm->count) {
+	count = gcip_pm_get_count(pm);
+	if (count) {
 		if (!force)
 			goto unlock;
-		dev_warn(pm->dev, "Force shutdown with power up count: %d", pm->count);
+		dev_warn(pm->dev, "Force shutdown with power up count: %d", count);
 	}
 
 	gcip_pm_try_power_down(pm);

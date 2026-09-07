@@ -15,10 +15,11 @@
 #include <linux/time64.h>
 #include <linux/timekeeping.h>
 
-#include "edgetpu.h"
+#include "edgetpu-client.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-wakelock.h"
+#include "edgetpu.h"
 
 /*
  * Clients holding wakelocks with total active time longer than this number of seconds are
@@ -247,7 +248,7 @@ int edgetpu_wakelock_acquire(struct edgetpu_client *client, u32 flags)
 	if (flags & EDGETPU_ACQUIRE_WAKELOCK_FLAG_SUSPEND)
 		wakelock->suspendable = true;
 	if (!ret) {
-		ktime_get_ts64(&wakelock->current_acquire_timestamp);
+		ktime_get_real_ts64(&wakelock->current_acquire_timestamp);
 
 		if (!wakelock->suspendable)
 			edgetpu_wakelock_ws_acquire(client);
@@ -272,7 +273,7 @@ int edgetpu_wakelock_release(struct edgetpu_client *client)
 			return -EAGAIN;
 		}
 
-		ktime_get_ts64(&curr);
+		ktime_get_real_ts64(&curr);
 		curr = timespec64_sub(curr, wakelock->current_acquire_timestamp);
 		wakelock->total_acquired_time = timespec64_add(wakelock->total_acquired_time, curr);
 		if (!wakelock->suspendable)

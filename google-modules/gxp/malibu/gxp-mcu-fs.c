@@ -2,7 +2,7 @@
 /*
  * Common file system operations for devices with MCU support.
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #include <linux/bits.h>
@@ -13,6 +13,7 @@
 #include <linux/slab.h>
 
 #include <gcip/gcip-dma-fence.h>
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-fence-array.h>
 #include <gcip/gcip-fence.h>
 #include <gcip/gcip-telemetry.h>
@@ -317,9 +318,11 @@ gxp_ioctl_register_mcu_telemetry_eventfd(struct gxp_client *client,
 
 	switch (ibuf.type) {
 	case GXP_TELEMETRY_TYPE_LOGGING:
-		return gcip_telemetry_set_event(&mcu->telemetry_log, ibuf.eventfd);
+		return gcip_event_mgr_set(mcu->event_mgr, GCIP_TELEMETRY_TYPE_LOG, ibuf.eventfd,
+					  client);
 	case GXP_TELEMETRY_TYPE_TRACING:
-		return gcip_telemetry_set_event(&mcu->telemetry_trace, ibuf.eventfd);
+		return gcip_event_mgr_set(mcu->event_mgr, GCIP_TELEMETRY_TYPE_TRACE, ibuf.eventfd,
+					  client);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -337,10 +340,10 @@ gxp_ioctl_unregister_mcu_telemetry_eventfd(struct gxp_client *client,
 
 	switch (ibuf.type) {
 	case GXP_TELEMETRY_TYPE_LOGGING:
-		gcip_telemetry_unset_event(&mcu->telemetry_log);
+		gcip_event_mgr_unset(mcu->event_mgr, GCIP_TELEMETRY_TYPE_LOG);
 		return 0;
 	case GXP_TELEMETRY_TYPE_TRACING:
-		gcip_telemetry_unset_event(&mcu->telemetry_trace);
+		gcip_event_mgr_unset(mcu->event_mgr, GCIP_TELEMETRY_TYPE_TRACE);
 		return 0;
 	default:
 		return -EOPNOTSUPP;

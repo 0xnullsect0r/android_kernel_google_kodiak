@@ -16,6 +16,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 
+#include <interconnect/google_irm_api.h>
 #include <mailbox/protocols/mba/apc/common/service_ids.h>
 #include <perf/mbfs.h>
 #include <soc/google/goog_mba_cpm_iface.h>
@@ -23,6 +24,9 @@
 #include "apc_irm_debug.h"
 #include "apc_irm_plat.h"
 #include "include/perf/core/apc_irm.h"
+
+#define CREATE_TRACE_POINTS
+#include "apc_irm_trace.h"
 
 #define CPM_TASK_TIMEOUT_MS 10000
 
@@ -92,9 +96,16 @@ static void irm_mbox_rx_callback(u32 context, void *msg, void *priv_data)
 	unsigned long i;
 
 	for_each_set_bit(i, &client_mask, MAX_APC_IRM_CLIENT_ID) {
-		if (clients[i])
+		if (clients[i]) {
 			complete(&clients[i]->cpm_done);
+			/* Clear bits handled by apc_irm so only unprocessed bits are delegated */
+			__clear_bit(i, &client_mask);
+		}
 	}
+#if IS_ENABLED(CONFIG_GOOGLE_IRM)
+	if (client_mask)
+		google_irm_delegate_rx(client_mask);
+#endif
 }
 
 static int irm_vote_show(struct seq_file *s, void *v)
@@ -448,6 +459,19 @@ void stage_irm_subclient_vote(struct irm_subclient_t *subclient)
 }
 EXPORT_SYMBOL_GPL(stage_irm_subclient_vote);
 
+static void trace_irm_vote(struct irm_client_t *client, struct irm_vote_t *vote)
+{
+	/*
+	 * client->id can be replaced with a constant u8 value to put the votes of the
+	 * same kind from different clients on the same track in Perfetto.
+	 */
+	trace_published_vote_bw_gmc(client->name, client->id, vote);
+	trace_published_vote_max_opp(client->name, client->id, vote);
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	trace_published_vote_bw_gslc(client->name, client->id, vote);
+#endif
+}
+
 static void aggregate_votes(struct irm_client_t *client, struct irm_vote_t *total)
 {
 	struct irm_subclient_t *sc;
@@ -502,6 +526,8 @@ int publish_irm_vote(struct irm_client_t *client)
 		apply_vote(irm_base + client->base_reg_offset, client->synchronous_via_apc,
 			   &total_vote);
 
+		trace_irm_vote(client, &total_vote);
+
 		// Wait for ACK
 		long time_left = wait_for_completion_timeout(&client->cpm_done,
 							     msecs_to_jiffies(CPM_TASK_TIMEOUT_MS));
@@ -517,6 +543,7 @@ int publish_irm_vote(struct irm_client_t *client)
 		client->published_vote = total_vote;
 		apply_vote(irm_base + client->base_reg_offset, client->synchronous_via_apc,
 			   &total_vote);
+		trace_irm_vote(client, &total_vote);
 		spin_unlock_irqrestore(&client->lock, flags);
 	}
 

@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_submodule")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 genrule(
     name = "gen_tmi3_headers",
@@ -37,31 +35,9 @@ genrule(
     message = "Generating tmi3 header files...",
 )
 
-# Top-level DDK module for tmi3.
-# This rule groups the submodules and provides common settings like kernel_build and kconfig.
+# ddk_module for building mtk_common.ko
 ddk_module(
-    name = "tmi3",
-    # The main Kconfig for this set of modules.
-    kconfig = "Kconfig",
-    # The individual .ko outputs are defined by the ddk_submodules listed in deps.
-    kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
-    # Dependencies include the submodules and other necessary libraries/headers.
-    deps = [
-        ":mtk_common_mod",
-        ":mtk_pcie_mod",
-        # Include the shared headers for tmi3.
-        ":tmi3_headers",
-    ],
-)
-
-# ddk_submodule for building mtk_common.ko
-ddk_submodule(
-    name = "mtk_common_mod",
+    name = "mtk_common",
     srcs = [
         "common/mtk_bm.c",
         "common/mtk_ctrl_plane.c",
@@ -83,6 +59,7 @@ ddk_submodule(
         ":pcie/core/mtk_utility_cfg.h",
     ],
     out = "mtk_common.ko",
+    hdrs = [":tmi3_headers"],
     conditional_srcs = {
         "CONFIG_DEBUG_FS": {
             True: [
@@ -109,12 +86,17 @@ ddk_submodule(
         "-include",
         "wwan_defines.h",
     ],
+    defconfig = select({
+        "//private/devices/google/common:soc_is_malibu": "//private/google-modules/radio/mediatek/t900/wwan/tmi3/make:malibu_defconfig",
+        "//conditions:default": "//private/google-modules/radio/mediatek/t900/wwan/tmi3/make:default_defconfig",
+    }),
     includes = [
         "common",
         "pcie/core",
     ],
+    kconfig = "Kconfig",
+    kernel_build = "//private/devices/google/common:kernel",
     deps = [
-        ":tmi3_headers",
         "//private/google-modules/radio/common/metrics_collection:headers",
         "//private/google-modules/radio/common/radio-bridge",
         "//private/google-modules/radio/mediatek/t900/wwan/pwrctl:wwan_gpio_pwrctl",
@@ -126,9 +108,9 @@ ddk_submodule(
     ],
 )
 
-# ddk_submodule for building mtk_pcie.ko
-ddk_submodule(
-    name = "mtk_pcie_mod",
+# ddk_module for building mtk_pcie.ko
+ddk_module(
+    name = "mtk_pcie",
     srcs = [
         "pcie/core/mtk_cldma.c",
         "pcie/core/mtk_cldma_drv.c",
@@ -167,12 +149,19 @@ ddk_submodule(
         "-include",
         "wwan_defines.h",
     ],
+    defconfig = select({
+        "//private/devices/google/common:soc_is_malibu": "//private/google-modules/radio/mediatek/t900/wwan/tmi3/make:malibu_defconfig",
+        "//conditions:default": "//private/google-modules/radio/mediatek/t900/wwan/tmi3/make:default_defconfig",
+    }),
     includes = [
         "pcie/core",
         "pcie/customize/google",
         "pcie/m9xx",
     ],
+    kconfig = "Kconfig",
+    kernel_build = "//private/devices/google/common:kernel",
     deps = [
+        ":mtk_common",
         ":tmi3_headers",
         "//private/google-modules/radio/common/metrics_collection:headers",
         "//private/google-modules/radio/mediatek/t900/wwan/pwrctl:wwan_gpio_pwrctl",
@@ -233,15 +222,5 @@ ddk_headers(
     visibility = [
         "//private/google-modules/noa/common:__subpackages__",
         "//private/google-modules/radio/mediatek:__subpackages__",
-    ],
-)
-
-filegroup(
-    name = "tmi3.kconfig",
-    srcs = [
-        "Kconfig",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

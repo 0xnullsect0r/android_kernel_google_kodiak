@@ -57,6 +57,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rogue_trace_events.h"
 #endif
 
+#if defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
+#include <linux/jhash.h>
+#endif
+
 
 #define ROUND_DOWN_TO_NEAREST_1024(number) (((number) >> 10) << 10)
 
@@ -245,6 +249,7 @@ void WorkEstHashLockDestroy(POS_LOCK psWorkEstHashLock)
 	}
 }
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 void WorkEstCheckFirmwareCCB(PVRSRV_RGXDEV_INFO *psDevInfo)
 {
 	RGXFWIF_WORKEST_FWCCB_CMD *psFwCCBCmd;
@@ -269,6 +274,20 @@ void WorkEstCheckFirmwareCCB(PVRSRV_RGXDEV_INFO *psDevInfo)
 	}
 	RGXFwSharedMemCacheOpValue(psFWCCBCtl->ui32ReadOffset, FLUSH);
 }
+#endif
+
+#if defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
+static IMG_UINT64 GenerateWorkloadID(IMG_UINT32 ui32UID,
+                                     const RGX_WORKLOAD *psWorkloadCharsIn)
+{
+	IMG_UINT32 ui32Ret = JHASH_INITVAL;
+
+	ui32Ret = jhash((const u8 *)&ui32UID, sizeof(ui32UID), ui32Ret);
+	ui32Ret = jhash((const u8 *)psWorkloadCharsIn, sizeof(*psWorkloadCharsIn), ui32Ret);
+
+	return (IMG_UINT64)ui32Ret;
+}
+#endif
 
 PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
                             WORKEST_HOST_DATA         *psWorkEstHostData,
@@ -278,11 +297,15 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
                             IMG_UINT64                ui64DeadlineInus,
                             RGXFWIF_WORKEST_KICK_DATA *psWorkEstKickData)
 {
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 	RGX_WORKLOAD          *psWorkloadCharacteristics;
 	IMG_UINT64            *pui64CyclePrediction;
-	IMG_UINT64            ui64CurrentTime;
+#endif
+	IMG_UINT64            ui64CurrentTime = 0;
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 	WORKEST_RETURN_DATA   *psReturnData;
 	IMG_UINT32            ui32ReturnDataWO;
+#endif
 #if defined(SUPPORT_SOC_TIMER)
 	PVRSRV_DEVICE_CONFIG  *psDevConfig;
 	IMG_UINT64            ui64CurrentSoCTime;
@@ -317,6 +340,13 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 	if (psDevConfig->pfnSoCTimerRead)
 	{
 		ui64CurrentSoCTime = psDevConfig->pfnSoCTimerRead(psDevConfig->hSysData);
+
+		if (psDevConfig->pfnSoCTimerToMonotonicNS64)
+		{
+			ui64CurrentTime = psDevConfig->pfnSoCTimerToMonotonicNS64(
+				psDevConfig->hSysData,
+				ui64CurrentSoCTime) / 1000;
+		}
 	}
 	else
 	{
@@ -325,9 +355,17 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 	}
 #endif
 
+#if defined(SUPPORT_SOC_TIMER)
+	if (!ui64CurrentTime)
+	{
+#endif
 	eError = OSClockMonotonicus64(&ui64CurrentTime);
 	PVR_LOG_RETURN_IF_ERROR(eError, "unable to access System Monotonic clock");
+#if defined(SUPPORT_SOC_TIMER)
+	}
+#endif
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 	OSLockAcquire(psDevInfo->hWorkEstLock);
 
 	/* Select the next index for the return data and update it (is this thread safe?) */
@@ -336,6 +374,7 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 
 	/* Index for the return data passed to/from the firmware. */
 	psWorkEstKickData->ui16ReturnDataIndex = ui32ReturnDataWO;
+#endif
 	if (ui64DeadlineInus > ui64CurrentTime)
 	{
 		/* Rounding is done to reduce multiple deadlines with minor spread flooding the fw workload array. */
@@ -365,6 +404,7 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 		psWorkEstKickData->ui64Deadline = 0;
 	}
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 	/* Set up data for the return path to process the workload; the matching data is needed
 	   as it holds the hash data, the host data is needed for completion updates */
 	psReturnData = &psDevInfo->asReturnData[ui32ReturnDataWO];
@@ -376,10 +416,18 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 	psReturnData->ui64Deadline = ui64DeadlineInus;
 	psReturnData->eCmdType = eDMCmdType;
 #endif
+#endif
 
+#if defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
+	psWorkEstKickData->ui64WorkloadID = GenerateWorkloadID(
+		OSGetCurrentClientProcessIDKM(), psWorkloadCharsIn);
+#endif
+
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 	/* The workload characteristic is needed in the return data for the matching
-	   of future workloads via the hash. */
+	   as it holds the hash data, the host data is needed for completion updates */
 	psWorkloadCharacteristics = &psReturnData->sWorkloadCharacteristics;
+
 	memcpy(psWorkloadCharacteristics, psWorkloadCharsIn, sizeof(RGX_WORKLOAD));
 
 	OSLockRelease(psDevInfo->hWorkEstLock);
@@ -442,10 +490,12 @@ PVRSRV_ERROR WorkEstPrepare(PVRSRV_RGXDEV_INFO        *psDevInfo,
 		/* There is no prediction */
 		psWorkEstKickData->ui32CyclesPrediction = 0;
 	}
+#endif
 
 	return PVRSRV_OK;
 }
 
+#if !defined(SUPPORT_WORKLOAD_ESTIMATION_FW)
 PVRSRV_ERROR WorkEstRetire(PVRSRV_RGXDEV_INFO *psDevInfo,
 						   RGXFWIF_WORKEST_FWCCB_CMD *psReturnCmd)
 {
@@ -682,6 +732,7 @@ unlock_workest:
 
 	return PVRSRV_ERROR_INVALID_PARAMS;
 }
+#endif
 
 void _WorkEstInit(PVRSRV_RGXDEV_INFO *psDevInfo,
 						 WORKLOAD_MATCHING_DATA *psWorkloadMatchingData,

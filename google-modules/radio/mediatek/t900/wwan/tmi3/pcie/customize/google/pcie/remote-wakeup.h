@@ -6,6 +6,8 @@
 #ifndef __REMOTE_WAKEUP_H__
 #define __REMOTE_WAKEUP_H__
 
+#include <linux/workqueue.h>
+
 #include "../common/radio-google.h"
 
 struct remote_wakeup {
@@ -14,6 +16,7 @@ struct remote_wakeup {
 	int pewake_irq;
 	bool ready;
 	bool enabled;
+	struct work_struct resume_work;
 };
 
 int remote_wakeup_init(struct radio_google *goog);

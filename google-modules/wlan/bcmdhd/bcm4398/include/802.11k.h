@@ -8,7 +8,7 @@
  * RM - same as RRM?
  * NGBR - Neighbor Report
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -39,6 +39,8 @@
 #include <packed_section_start.h>
 
 /* ************* 802.11k related definitions. ************* */
+
+#define DOT11_CHLOAD_SCALE_UNIT 255u
 
 /* Radio measurements enabled capability ie */
 #define DOT11_RRM_CAP_LEN		5	/* length of rrm cap bitmap */
@@ -443,6 +445,8 @@ BWL_PRE_PACKED_STRUCT struct dot11_rmrep_stat {
 	uint8 group_id;
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_rmrep_stat dot11_rmrep_stat_t;
+#define DOT11_RMREP_STAT_LEN 3
+
 
 /* Statistics Group Report: Group IDs */
 enum {

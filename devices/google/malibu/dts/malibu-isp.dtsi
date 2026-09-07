@@ -1443,6 +1443,7 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_ISPBE_PDMA>;
 			power-domains = <&sswrp_ispbe_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		lwis_ispbe_msa_tnr_pdma: lwis_ispbe_msa_tnr_pdma@320000 {
@@ -1494,6 +1495,7 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_MSA_TNR_PDMA>;
 			power-domains = <&sswrp_ispbe_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		lwis_ispbe_msa_hdr_pdma: lwis_ispbe_msa_hdr_pdma@360000 {
@@ -1545,6 +1547,7 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_MSA_HDR_PDMA>;
 			power-domains = <&sswrp_ispbe_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		lwis_ispbe_pipe: lwis_ispbe_pipe@290000 {
@@ -1874,6 +1877,7 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_GSW_PDMA>;
 			power-domains = <&sswrp_gcv_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		lwis_gcv_cre_pdma: lwis_gcv_cre_pdma@160000 {
@@ -1925,6 +1929,7 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_CRE_PDMA>;
 			power-domains = <&sswrp_gcv_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		lwis_gcv_gsw_pipe: lwis_gcv_gsw_pipe@100000 {

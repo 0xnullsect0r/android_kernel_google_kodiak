@@ -107,16 +107,13 @@ static struct platform_device gxp_sscd_dev = {
 static void gxp_common_platform_reg_sscd(void)
 {
 	/* Registers SSCD platform device */
-	if (gxp_debug_dump_is_enabled()) {
-		if (platform_device_register(&gxp_sscd_dev))
-			pr_err(GXP_NAME " Unable to register SSCD platform device\n");
-	}
+	if (platform_device_register(&gxp_sscd_dev))
+		pr_err(GXP_NAME " Unable to register SSCD platform device\n");
 }
 
 static void gxp_common_platform_unreg_sscd(void)
 {
-	if (gxp_debug_dump_is_enabled())
-		platform_device_unregister(&gxp_sscd_dev);
+	platform_device_unregister(&gxp_sscd_dev);
 }
 
 #else /* CONFIG_SUBSYSTEM_COREDUMP */
@@ -1301,7 +1298,7 @@ static int gxp_ioctl_trigger_debug_dump(struct gxp_client *client, __u32 __user 
 	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID))
 		return -EPERM;
 
-	if (!gxp_debug_dump_is_enabled()) {
+	if (!gxp_debug_dump_is_enabled(gxp)) {
 		dev_err(gxp->dev, "Debug dump functionality is disabled\n");
 		return -EINVAL;
 	}

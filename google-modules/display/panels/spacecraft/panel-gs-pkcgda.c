@@ -340,6 +340,7 @@ static struct drm_dsc_config pps_configs[PANEL_TYPE_MAX][NUM_SUPPORTED_RESOLUTIO
 #define CGYDA_TE2_FALLING_EDGE_OFFSET 0x59
 #define PKKDA_TE2_FALLING_EDGE_OFFSET 0x5B
 
+#define PKKDA_TE_USEC_480HZ 275
 #define PKKDA_TE_USEC_HS 373
 #define CGYDA_TE_USEC_HS 377
 #define PKKDA_TE_USEC_NS 551
@@ -390,8 +391,6 @@ static const struct gs_panel_mode_array cgyda_modes = GS_PANEL_MODES(
 						 CGYDA_WQHD_VDISPLAY, CGYDA_WQHD_VFP,
 						 CGYDA_WQHD_VSA, CGYDA_WQHD_VBP),
 			CGYDA_DIMENSION_MM,
-			/* aligned to bootloader resolution */
-			.type = DRM_MODE_TYPE_PREFERRED,
 		},
 		.gs_mode = {
 			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
@@ -457,6 +456,8 @@ static const struct gs_panel_mode_array cgyda_modes = GS_PANEL_MODES(
 						 CGYDA_WQHD_VDISPLAY, CGYDA_WQHD_VFP,
 						 CGYDA_WQHD_VSA, CGYDA_WQHD_VBP),
 			CGYDA_DIMENSION_MM,
+			/* aligned to bootloader resolution */
+			.type = DRM_MODE_TYPE_PREFERRED,
 		},
 		.gs_mode = {
 			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
@@ -519,14 +520,54 @@ static const struct gs_panel_mode_array cgyda_modes = GS_PANEL_MODES(
 static const struct gs_panel_mode_array pkkda_modes = GS_PANEL_MODES(
 	{
 		.mode = {
+			.name = "1344x2992x120@480",
+			DRM_VRR_MODE_TIMING(120, 480, PKKDA_WQHD_HDISPLAY, PKKDA_WQHD_HFP,
+						 PKKDA_WQHD_HSA, PKKDA_WQHD_HBP,
+						 PKKDA_WQHD_VDISPLAY, PKKDA_WQHD_VFP,
+						 PKKDA_WQHD_VSA, PKKDA_WQHD_VBP),
+			PKKDA_DIMENSION_MM,
+		},
+		.gs_mode = {
+			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
+			.vblank_usec = 120,
+			.te_usec = PKKDA_TE_USEC_480HZ,
+			.bpc = 8,
+			.dsc = PKKDA_WQHD_DSC,
+		},
+		.te2_timing = {
+			.rising_edge = PKCGDA_TE2_RISING_EDGE_OFFSET,
+			.falling_edge = PKKDA_TE2_FALLING_EDGE_OFFSET,
+		},
+	},
+	{
+		.mode = {
+			.name = "1080x2404x120@480",
+			DRM_VRR_MODE_TIMING(120, 480, PKKDA_FHD_HDISPLAY, PKKDA_FHD_HFP,
+						 PKKDA_FHD_HSA, PKKDA_FHD_HBP,
+						 PKKDA_FHD_VDISPLAY, PKKDA_FHD_VFP,
+						 PKKDA_FHD_VSA, PKKDA_FHD_VBP),
+			PKKDA_DIMENSION_MM,
+		},
+		.gs_mode = {
+			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
+			.vblank_usec = 120,
+			.te_usec = PKKDA_TE_USEC_480HZ,
+			.bpc = 8,
+			.dsc = PKKDA_FHD_DSC,
+		},
+		.te2_timing = {
+			.rising_edge = PKCGDA_TE2_RISING_EDGE_OFFSET,
+			.falling_edge = PKKDA_TE2_FALLING_EDGE_OFFSET,
+		},
+	},
+	{
+		.mode = {
 			.name = "1344x2992x120@240",
 			DRM_VRR_MODE_TIMING(120, 240, PKKDA_WQHD_HDISPLAY, PKKDA_WQHD_HFP,
 						 PKKDA_WQHD_HSA, PKKDA_WQHD_HBP,
 						 PKKDA_WQHD_VDISPLAY, PKKDA_WQHD_VFP,
 						 PKKDA_WQHD_VSA, PKKDA_WQHD_VBP),
 			PKKDA_DIMENSION_MM,
-			/* aligned to bootloader resolution */
-			.type = DRM_MODE_TYPE_PREFERRED,
 		},
 		.gs_mode = {
 			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
@@ -592,6 +633,8 @@ static const struct gs_panel_mode_array pkkda_modes = GS_PANEL_MODES(
 						 PKKDA_WQHD_VDISPLAY, PKKDA_WQHD_VFP,
 						 PKKDA_WQHD_VSA, PKKDA_WQHD_VBP),
 			PKKDA_DIMENSION_MM,
+			/* aligned to bootloader resolution */
+			.type = DRM_MODE_TYPE_PREFERRED,
 		},
 		.gs_mode = {
 			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
@@ -1017,6 +1060,12 @@ static void pkcgda_set_panel_feat_manual_mode_fi(struct gs_panel *ctx, bool enab
 		/* Mask Setting */
 		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x01, 0xBD);
 		GS_DCS_BUF_ADD_CMD(dev, 0xBD, 0x02);
+
+		/* Brightness Transition Setting */
+		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x1E, 0x67);
+		GS_DCS_BUF_ADD_CMD(dev, 0x67, 0x10);
+		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x28, 0x67);
+		GS_DCS_BUF_ADD_CMD(dev, 0x67, 0xF3);
 	}
 
 	dev_dbg(ctx->dev, "manual mode fi=%d\n", enabled);
@@ -1040,7 +1089,16 @@ static enum gs_panel_tex_opt pkcgda_set_panel_feat_te(struct gs_panel *ctx, u32 
 	const bool is_ns_mode = test_bit(FEAT_OP_NS, feat);
 
 	if (!spanel->force_changeable_te) {
-		if (te_freq == 240) {
+		if (te_freq == 480) {
+			/* 480Hz multi TE */
+			GS_DCS_BUF_ADD_CMD(dev, 0xB9, 0x41);
+			/* TE width */
+			GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x08, 0xB9);
+			GS_DCS_BUF_ADD_CMD(dev, 0xB9, 0x2B, 0xA3, 0x02, 0x2B, 0xA3, 0x02);
+			/* VRR Masking */
+			GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x1A, 0xB9);
+			GS_DCS_BUF_ADD_CMD(dev, 0xB9, 0x40);
+		} else if (te_freq == 240) {
 			static const u8 vrr_te_settings[PANEL_TYPE_MAX][GS_PWM_RATE_MAX][7] = {
 				{ /* CGYDA */
 					{ 0xB9, 0xB0, 0xE3, 0x02, 0x55, 0x63, 0x02 },
@@ -1163,22 +1221,38 @@ static void pkcgda_set_panel_feat_early_exit(struct gs_panel *ctx, u32 vrefresh,
 	const unsigned long *feat = ctx->sw_status.feat;
 	u8 val;
 
+	if (test_bit(FEAT_EARLY_EXIT, feat) && te_freq == 480) {
+		/* EM Cyc */
+		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0xEA, 0xBD);
+		GS_DCS_BUF_ADD_CMD(dev, 0xBD, 0x03);
+		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x04, 0x75, 0x67);
+		GS_DCS_BUF_ADD_CMD(dev, 0x67, 0x03);
+	}
+
 	if (!test_bit(FEAT_EARLY_EXIT, feat) || vrefresh == 80 || vrefresh == 48)
 		val = 0x66;
 	else
-		val = (te_freq == 240) ? 0x64 : 0x65;
+		val = (te_freq > 120) ? 0x64 : 0x65;
 
 	GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x03, 0xBD);
 	GS_DCS_BUF_ADD_CMD(dev, 0xBD, val);
+
+	if (test_bit(FEAT_EARLY_EXIT, feat) && te_freq == 480) {
+		/* Freq. Set */
+		GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x5B, 0xBD);
+		GS_DCS_BUF_ADD_CMD(dev, 0xBD, 0x00, 0x00, 0x00, 0x04, 0x00, 0x0C, 0x00, 0x2C, 0x00,
+					0x02, 0x00, 0x06, 0x00, 0x10, 0x01, 0xDC);
+	}
 }
 
-static void pkcgda_set_panel_feat_tsp_sync(struct gs_panel *ctx, const struct gs_panel_mode *pmode)
+static void pkcgda_set_panel_feat_tsp_sync(struct gs_panel *ctx, const struct gs_panel_mode *pmode,
+					   u32 te_freq)
 {
 	struct device *dev = ctx->dev;
-	const bool is_ns_mode = gs_is_ns_op_rate(pmode);
+	const bool use_alt_setting = gs_is_ns_op_rate(pmode) || te_freq == 480;
 
 	GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x05, 0xF2);
-	GS_DCS_BUF_ADD_CMD(dev, 0xF2, is_ns_mode ? 0x02 : 0x03);
+	GS_DCS_BUF_ADD_CMD(dev, 0xF2, use_alt_setting ? 0x02 : 0x03);
 }
 
 static void pkcgda_set_panel_feat_opec_setting(struct gs_panel *ctx,
@@ -1380,6 +1454,11 @@ static void pkcgda_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mo
 	bool irc_mode_changed, idle_vrefresh_changed, vrefresh_changed, te_freq_changed;
 	DECLARE_BITMAP(changed_feat, FEAT_MAX);
 
+	if (te_freq == 480 && GET_PANEL_TYPE(ctx) != PANEL_TYPE_PKKDA) {
+		dev_warn(dev, "unsupported TE %u on panel, falling back to 120Hz\n", te_freq);
+		te_freq = 120;
+	}
+
 	if (te_freq > vrefresh && idle_vrefresh > 1)
 		dev_warn(dev, "te might be gated (te=%u vrefresh=%u idle_vrefresh=%u)\n",
 				te_freq, vrefresh, idle_vrefresh);
@@ -1402,10 +1481,15 @@ static void pkcgda_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mo
 	if (gs_is_ns_op_rate(pmode)) {
 		set_bit(FEAT_OP_NS, feat);
 		clear_bit(FEAT_PWM_HIGH, feat);
+	} else if (te_freq == 480) {
+		clear_bit(FEAT_OP_NS, feat);
+		set_bit(FEAT_PWM_HIGH, feat);
 	} else {
 		clear_bit(FEAT_OP_NS, feat);
 		if (ctx->pwm_mode == GS_PWM_RATE_HIGH)
 			set_bit(FEAT_PWM_HIGH, feat);
+		else
+			clear_bit(FEAT_PWM_HIGH, feat);
 	}
 
 	/* Create bitmap of changed feature values to modify */
@@ -1428,6 +1512,7 @@ static void pkcgda_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mo
 		}
 	}
 
+	ctx->panel_settings_changed = true;
 	snprintf(spanel->trace_msg, sizeof(spanel->trace_msg),
 		 "feat: hbm=%u irc=%u h_pwm=%u fi=%u@a,%u@m ee=%u rr=%3u-%3u@%3u",
 		 test_bit(FEAT_HBM, feat), irc_mode, test_bit(FEAT_PWM_HIGH, feat),
@@ -1485,8 +1570,8 @@ static void pkcgda_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mo
 		pkcgda_set_panel_feat_manual_mode_fi(ctx, test_bit(FEAT_FRAME_MANUAL_FI, feat));
 
 	/* TSP Sync setting */
-	if (test_bit(FEAT_OP_NS, changed_feat))
-		pkcgda_set_panel_feat_tsp_sync(ctx, pmode);
+	if (test_bit(FEAT_OP_NS, changed_feat) || te_freq_changed)
+		pkcgda_set_panel_feat_tsp_sync(ctx, pmode, te_freq);
 
 	/* Opec setting */
 	if (test_bit(FEAT_PWM_HIGH, changed_feat) || test_bit(FEAT_OP_NS, changed_feat))
@@ -1656,7 +1741,7 @@ static void pkcgda_set_panel_lp_feat(struct gs_panel *ctx, const struct gs_panel
 
 	pkcgda_set_panel_lp_feat_te(ctx);
 	pkcgda_set_panel_lp_feat_freq(ctx, pmode);
-	pkcgda_set_panel_feat_tsp_sync(ctx, pmode);
+	pkcgda_set_panel_feat_tsp_sync(ctx, pmode, gs_drm_mode_te_freq(&pmode->mode));
 	pkcgda_set_panel_feat_opec_setting(ctx, pmode);
 
 	GS_DCS_BUF_ADD_CMDLIST(dev, panel_update);
@@ -2330,6 +2415,9 @@ static enum gs_pwm_mode pkcgda_get_pwm_mode(struct gs_panel *ctx)
 	if (ctx->op_hz == 60)
 		return GS_PWM_RATE_STANDARD;
 
+	if (gs_drm_mode_te_freq(&ctx->current_mode->mode) == 480)
+		return GS_PWM_RATE_HIGH;
+
 	return ctx->pwm_mode;
 }
 
@@ -2344,6 +2432,11 @@ static int pkcgda_set_pwm_mode(struct gs_panel *ctx, enum gs_pwm_mode mode)
 
 	if (ctx->current_mode->gs_mode.is_lp_mode) {
 		dev_warn(dev, "can't set PWM during LP mode\n");
+		return -EINVAL;
+	}
+
+	if (gs_drm_mode_te_freq(&ctx->current_mode->mode) == 480) {
+		dev_warn(dev, "can't set PWM when 480Hz TE is active\n");
 		return -EINVAL;
 	}
 

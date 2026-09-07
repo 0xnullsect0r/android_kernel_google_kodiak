@@ -15,6 +15,7 @@
 #include <linux/dma-resv.h>
 #include <linux/err.h>
 #include <linux/gfp_types.h>
+#include <linux/iosys-map.h>
 #include <linux/math.h>
 #include <linux/mm.h>
 #include <linux/mm_types.h>
@@ -29,6 +30,7 @@
 #include <linux/swap.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <trace/events/gcip.h>
 
 #include <gcip/gcip-iommu.h>
@@ -188,14 +190,15 @@ static int gcip_pin_user_pages(struct device *dev, struct page **pages, unsigned
 			break;
 
 		if (ret >= 0) {
-			dev_err(dev, "Can only pin %u of %u pages requested", ret, num_pages);
+			dev_warn(dev, "try #%d pinned %u of %u pages requested", tried + 1, ret,
+				 num_pages);
 			for (i = 0; i < ret; i++)
 				unpin_user_page(pages[i]);
 		}
 		ret = 0;
 	}
-	if (tried > 0)
-		dev_info(dev, "mapping required %d retries with LRU cache disabled", tried);
+	if (tried > 0 && (ret == num_pages))
+		dev_info(dev, "pinning required %d retries with LRU cache disabled", tried);
 
 	return ret;
 }
@@ -244,7 +247,7 @@ gcip_mapping_alloc_and_pin_user_pages(struct device *dev, u64 host_address, uint
 	if (!(*gup_flags & FOLL_WRITE))
 		goto err_free_pages;
 
-	dev_warn_ratelimited(dev, "pin failed (ret=%d), assuming buffer is read-only", ret);
+	dev_warn_ratelimited(dev, "writeable pin failed (ret=%d), retrying read-only", ret);
 	*gup_flags &= ~FOLL_WRITE;
 	*map_debug_flags |= GCIP_MAP_DEBUG_ASSUME_RDONLY;
 
@@ -297,7 +300,7 @@ static struct sg_table *gcip_mapping_buffer_sgt_create(struct device *dev, u64 h
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
-	if (!access_ok((const void *)host_address, size)) {
+	if (!access_ok(u64_to_user_ptr(host_address), size)) {
 		dev_err(dev, "invalid address range in buffer map request");
 		return ERR_PTR(-EFAULT);
 	}
@@ -865,9 +868,9 @@ static struct sg_table *gcip_mapping_dmabuf_map_sgt_to_iova(struct gcip_iommu_do
 	 * the flags reported via debugfs, which could be confusing.
 	 */
 	client_context_map_flags = gcip_map_flags |
-		(DMA_ATTR_SKIP_CPU_SYNC << GCIP_MAP_FLAGS_DMA_ATTR_OFFSET);
-	nents_mapped = gcip_iommu_domain_map_sgt_to_iova(domain, sgt_ret, iova,
-							 &client_context_map_flags);
+				   (DMA_ATTR_SKIP_CPU_SYNC << GCIP_MAP_FLAGS_DMA_ATTR_OFFSET);
+	nents_mapped =
+		gcip_iommu_domain_map_sgt_to_iova(domain, sgt_ret, iova, &client_context_map_flags);
 	if (!nents_mapped) {
 		ret = -ENOSPC;
 		dev_err(domain->dev, "Failed to map dmabuf to IOMMU domain (ret=%d)\n", ret);
@@ -941,6 +944,106 @@ struct gcip_mapping *gcip_mapping_dmabuf_map(struct gcip_iommu_domain *domain,
 	return gcip_mapping_dmabuf_map_to_iova(domain, dmabuf, 0, gcip_map_flags);
 }
 
+static int gcip_mapping_dmabuf_vmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	struct gcip_dmabuf_mapping *dmabuf_mapping = to_dmabuf_mapping(mapping);
+
+	return dma_buf_vmap_unlocked(dmabuf_mapping->dma_buf, map);
+}
+
+static int gcip_mapping_buffer_vmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	unsigned int npages, page_idx = 0;
+	struct sg_page_iter sg_iter;
+	struct page **pages;
+	void *vaddr;
+	int ret;
+
+	if (!mapping->sgt)
+		return -EINVAL;
+
+	/*
+	 * Calculate the number of pages represented by the mapping. Using mapping->size directly
+	 * to get the count of continuous pages for the overall footprint.
+	 */
+	npages = mapping->size >> PAGE_SHIFT;
+	if (npages == 0)
+		return -EINVAL;
+
+	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	for_each_sg_page(mapping->sgt->sgl, &sg_iter, mapping->sgt->orig_nents, 0) {
+		if (WARN_ON_ONCE(page_idx >= npages)) {
+			ret = -EFAULT;
+			goto err_free_pages;
+		}
+		pages[page_idx++] = sg_page_iter_page(&sg_iter);
+	}
+
+	if (WARN_ON_ONCE(page_idx != npages)) {
+		ret = -EFAULT;
+		goto err_free_pages;
+	}
+
+	vaddr = vmap(pages, npages, VM_MAP, PAGE_KERNEL);
+	if (!vaddr) {
+		ret = -ENOMEM;
+		goto err_free_pages;
+	}
+
+	kvfree(pages);
+	iosys_map_set_vaddr(map, vaddr + offset_in_page(mapping->device_address));
+	return 0;
+
+err_free_pages:
+	kvfree(pages);
+	return ret;
+}
+
+int gcip_mapping_vmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	iosys_map_clear(map);
+
+	if (mapping->type == GCIP_MAPPING_TYPE_DMABUF)
+		return gcip_mapping_dmabuf_vmap(mapping, map);
+	else if (mapping->type == GCIP_MAPPING_TYPE_BUFFER)
+		return gcip_mapping_buffer_vmap(mapping, map);
+
+	return -EINVAL;
+}
+
+static void gcip_mapping_dmabuf_vunmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	struct gcip_dmabuf_mapping *dmabuf_mapping = to_dmabuf_mapping(mapping);
+
+	if (iosys_map_is_null(map))
+		return;
+
+	dma_buf_vunmap_unlocked(dmabuf_mapping->dma_buf, map);
+	iosys_map_clear(map);
+}
+
+static void gcip_mapping_buffer_vunmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	if (iosys_map_is_null(map))
+		return;
+
+	vunmap(PTR_ALIGN_DOWN(map->vaddr, PAGE_SIZE));
+	iosys_map_clear(map);
+}
+
+void gcip_mapping_vunmap(struct gcip_mapping *mapping, struct iosys_map *map)
+{
+	if (mapping->type == GCIP_MAPPING_TYPE_DMABUF)
+		gcip_mapping_dmabuf_vunmap(mapping, map);
+	else if (mapping->type == GCIP_MAPPING_TYPE_BUFFER)
+		gcip_mapping_buffer_vunmap(mapping, map);
+	else
+		iosys_map_clear(map);
+}
+
 /**
  * gcip_mapping_dmabuf_unmap() - Unmaps the dma buf mapping.
  * @mapping: The pointer of the mapping instance to be unmapped.
@@ -960,7 +1063,8 @@ static void gcip_mapping_dmabuf_unmap(struct gcip_mapping *mapping)
 		 * performed for the default domain mapping by the dma-buf exporter during the
 		 * dma_buf_unmap_attachment call; we don't need a duplicate sync here.
 		 */
-		client_context_map_flags = mapping->gcip_map_flags |
+		client_context_map_flags =
+			mapping->gcip_map_flags |
 			(DMA_ATTR_SKIP_CPU_SYNC << GCIP_MAP_FLAGS_DMA_ATTR_OFFSET);
 
 		if (mapping->user_specified_daddr)
@@ -997,19 +1101,24 @@ static void entry_show_dma_addrs(struct gcip_mapping *mapping, struct seq_file *
 		}
 		seq_puts(s, "]");
 	}
-	seq_puts(s, "\n");
 }
 
 void gcip_mapping_dmabuf_show(struct gcip_mapping *mapping, struct seq_file *s)
 {
 	static const char *dma_dir_tbl[4] = { "rw", "r", "w", "?" };
 	struct gcip_dmabuf_mapping *dmabuf_mapping = to_dmabuf_mapping(mapping);
+	phys_addr_t pa = sg_phys(mapping->sgt->sgl);
+	unsigned long attrs = GCIP_MAP_FLAGS_GET_DMA_ATTR(mapping->gcip_map_flags);
 
 	seq_printf(s, "  %pad %lu %s %s %pad", &mapping->device_address,
 		   DIV_ROUND_UP(mapping->size, PAGE_SIZE), dma_dir_tbl[mapping->dir],
 		   dmabuf_mapping->dma_buf->exp_name,
 		   &sg_dma_address(dmabuf_mapping->sgt_default->sgl));
 	entry_show_dma_addrs(mapping, s);
+	seq_printf(s, " %pap", &pa);
+	seq_printf(s, " %c%c\n",
+		   GCIP_MAP_FLAGS_GET_DMA_COHERENT(mapping->gcip_map_flags) ? 'C' : '.',
+		   attrs & DMA_ATTR_SKIP_CPU_SYNC ? 'S' : '.');
 }
 
 size_t gcip_mapping_dmabuf_hiorder_size(struct gcip_mapping *mapping)

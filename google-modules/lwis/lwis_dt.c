@@ -12,9 +12,11 @@
 #include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 
 #include "lwis_bus_manager.h"
@@ -1223,6 +1225,48 @@ static int parse_ioreg_reg_offsets(struct lwis_ioreg_device *ioreg_dev)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_GOOGLE_IIS)
+static int parse_ioreg_access_controllers(struct lwis_ioreg_device *ioreg_dev)
+{
+	struct device *k_dev = ioreg_dev->base_dev.k_dev;
+	struct device_node *ac_node;
+	struct platform_device *ac_pdev;
+	struct device_link *link;
+	int ac_index = 0;
+	int ret = -ENODEV;
+
+	while ((ac_node = of_parse_phandle(k_dev->of_node, "access-controllers", ac_index))) {
+		if (!of_device_is_compatible(ac_node, "google,iis")) {
+			of_node_put(ac_node);
+			ac_index++;
+			continue;
+		}
+
+		ac_pdev = of_find_device_by_node(ac_node);
+		if (!ac_pdev) {
+			ret = dev_err_probe(k_dev, -EPROBE_DEFER, "Failed to find IIS device\n");
+			goto put_node;
+		}
+
+		link = device_link_add(k_dev, &ac_pdev->dev,
+				       DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_CONSUMER);
+		if (!link) {
+			ret = dev_err_probe(k_dev, -EINVAL, "Failed to link to IIS\n");
+			goto put_device;
+		}
+		ret = 0;
+
+put_device:
+		put_device(&ac_pdev->dev);
+put_node:
+		of_node_put(ac_node);
+		break;
+	}
+
+	return ret;
+}
+#endif
+
 int lwis_base_parse_dt(struct lwis_device *lwis_dev)
 {
 	struct device *dev;
@@ -1506,6 +1550,18 @@ int lwis_ioreg_device_parse_dt(struct lwis_ioreg_device *ioreg_dev)
 	parse_ioreg_device_group(ioreg_dev);
 	parse_ioreg_valid_range(ioreg_dev);
 	parse_ioreg_reg_offsets(ioreg_dev);
+#if IS_ENABLED(CONFIG_GOOGLE_IIS)
+	ret = parse_ioreg_access_controllers(ioreg_dev);
+	if (ret == -ENODEV) {
+		if (strstr(dev_name(ioreg_dev->base_dev.dev), "pdma")) {
+			dev_err(ioreg_dev->base_dev.dev, "Missing IIS device!\n");
+			goto error_ioreg;
+		}
+	} else if (ret) {
+		dev_err_probe(ioreg_dev->base_dev.dev, ret, "Failed to attach iis device\n");
+		goto error_ioreg;
+	}
+#endif
 
 	return 0;
 

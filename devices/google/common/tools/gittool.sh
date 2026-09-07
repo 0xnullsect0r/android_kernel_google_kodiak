@@ -48,6 +48,8 @@ COMMANDS:
     Merge <upstream>.
 
     --bug-id=<id>       Append "Bug: <id>" to all generated commit messages.
+    --continue-with-conflicts
+                        Commit conflicts with "[conflict]" subject prefix and continue.
     --dry-run           Show what would be merged without actually merging.
     --by-commit         Merge by commit. Equivalent commits already in HEAD are
                         merged with "-s ours" and marked as skipped.
@@ -492,6 +494,8 @@ function find_missing_commits() {
 #   0 on success, 1 on failure.
 function merge() {
   local dry_run
+  local continue_with_conflicts
+  local had_conflicts
   local first_parent=1
   local batch_skip
   local ignore_keywords
@@ -509,6 +513,9 @@ function merge() {
     case "$1" in
       --dry-run)
         dry_run=1
+        ;;
+      --continue-with-conflicts)
+        continue_with_conflicts=1
         ;;
       --automerger)
         by_commit=1
@@ -637,17 +644,9 @@ function merge() {
 
     # Commit subject
     local subject
-    if (( ${#reported_commits[@]} == 1 )); then
+    if [[ "${mode}" == "merge" ]] && (( ${#reported_commits[@]} == 1 )); then
       subject="$(git show -s --pretty=%s "${reported_commits[0]}")"
-      subject="${subject#MERGE: }"
-      case "${mode}" in
-        skip)
-          subject="SKIP: ${subject#SKIP: }"
-          ;;
-        merge)
-          subject="MERGE: ${subject#MERGE: }"
-          ;;
-      esac
+      subject="MERGE: ${subject#MERGE: }"
     else
       case "${mode}" in
         skip)
@@ -657,8 +656,8 @@ function merge() {
           subject="Merge"
           ;;
       esac
-      if (( ${#reported_commits[@]} > 1 )); then
-        subject+=" ${#reported_commits[@]} commits"
+      if (( ${#reported_commits[@]} > 0 )); then
+        subject+=" ${#reported_commits[@]} commit(s)"
       else
         subject+=" merge commits"
       fi
@@ -670,7 +669,7 @@ function merge() {
 
     # Commit body
     local body=""
-    if (( ${#reported_commits[@]} == 1 )) && [[ "${mode}" == "merge" ]]; then
+    if [[ "${mode}" == "merge" ]] && (( ${#reported_commits[@]} == 1 )); then
       body="$(git show -s --pretty=%b "${reported_commits[0]}")"$'\n'
       body+="(merged from commit ${reported_commits[0]})"  # No $'\n', to connect with the footer
     else
@@ -727,8 +726,22 @@ function merge() {
               git merge "${merge_args[@]}" "${independent_commits[@]}" 2>&1)" || exit_code=$?
 
     if (( exit_code == 1 )); then
-      logging::error "Merge failed. Resolve conflicts and re-run this command to continue."
-      return 1
+      if [[ -n "${continue_with_conflicts}" ]] &&
+         git rev-parse --verify -q MERGE_HEAD >/dev/null; then
+        logging::warning "Merge conflicted. Committing conflicts."
+        git add -u
+        sed -i '1s/^/[conflict] /' "${GIT_DIR}/MERGE_MSG"
+        if env "${merge_env[@]}" git commit --allow-empty --no-verify -s --no-edit; then
+          exit_code=0
+          had_conflicts=1
+        else
+          logging::error "Failed to commit merge conflicts."
+          return 1
+        fi
+      else
+        logging::error "Merge failed. Resolve conflicts and re-run this command to continue."
+        return 1
+      fi
     fi
 
     if (( exit_code != 0 )); then
@@ -755,6 +768,9 @@ function merge() {
     pending_merge_mode="merge"
     readarray -t pending_merge_commits < <(git rev-list "${rev_list_args[@]}")
     _flush_pending_merges || return $?
+    if [[ -n "${had_conflicts}" ]]; then
+      return 2
+    fi
     return 0
   fi
 
@@ -782,7 +798,7 @@ function merge() {
   fi
 
   local -A simplified_history=()
-  for c in $(git rev-list "${rev_list_args[@]}" "--" "."); do
+  for c in $(git rev-list "${rev_list_args[@]}" "--" "${GIT_WORK_TREE}"); do
     simplified_history["${c}"]=1
   done
 
@@ -868,7 +884,14 @@ function merge() {
       if [[ -n "${dry_run}" ]]; then
         skip="cherry-picked (dry-run)"
       else
-        if git cherry-pick -x "${commit}" >/dev/null 2>&1; then
+        if git cherry-pick -x -s "${commit}" >/dev/null 2>&1; then
+          skip="cherry-picked"
+        elif [[ -n "${continue_with_conflicts}" ]]; then
+          logging::warning "Cherry-pick conflicted for ${formatted_commit}. Committing conflicts."
+          git add -u
+          sed -i '1s/^/[conflict] /' "${GIT_DIR}/MERGE_MSG"
+          git commit --allow-empty --no-verify -s --no-edit
+          had_conflicts=1
           skip="cherry-picked"
         else
           logging::error "Cherry-pick failed for ${formatted_commit}." \
@@ -907,6 +930,10 @@ function merge() {
   _flush_pending_merges || return $?
 
   logging::info "Skipped: ${skipped}, Merged: ${merged}"
+
+  if [[ -n "${had_conflicts}" ]]; then
+    return 2
+  fi
 }
 
 # Main entry point for the gittool script.
@@ -954,6 +981,9 @@ function main() {
   if [[ -z "${cmd}" ]]; then
     logging::usage_out
   fi
+
+  GIT_DIR="$(git rev-parse --git-dir)"
+  GIT_WORK_TREE="$(git rev-parse --show-toplevel)"
 
   case "${cmd}" in
     fetch_if_needed|find_commit|find_missing_commits|merge)

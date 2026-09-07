@@ -15,6 +15,7 @@ max77759tcpcspmi: max77759tcpc-spmi@4 {
 	orientation-switch;
 	mode-switch;
 	pullup-supply = <&ldo_19m_reg>;
+	vbus-dis-gpio = <&max77779_sgpio 0 GPIO_ACTIVE_HIGH>;
 
 	conn: connector {
 		compatible = "usb-c-connector";
@@ -66,6 +67,7 @@ max77759tcpcspmi: max77759tcpc-spmi@4 {
 				VDO_CERT(0x0)
 				VDO_PRODUCT(0x4EE1, 0x0)>;
 		pd-revision = /bits/ 8 <0x3 0x1 0x1 0x8>;
+		charging-adapter-pdp-milliwatt = <30000>;
 
 		capabilities {
 			caps0 {

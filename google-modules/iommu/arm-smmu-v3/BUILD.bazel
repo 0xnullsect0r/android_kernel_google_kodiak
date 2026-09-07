@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "kernel_module_group")
+load("//build/kernel/kleaf:kernel.bzl", "ddk_headers")
 load("//private/devices/google/common/kleaf:checkpatch.bzl", "checkpatch_strict")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch_strict(
     name = "checkpatch",
@@ -29,18 +28,4 @@ ddk_headers(
     hdrs = glob(["include/**/*.h"]),
     includes = ["include"],
     visibility = [":__subpackages__"],
-)
-
-kernel_module_group(
-    name = "arm-smmu-v3",
-    srcs = [
-        "//private/google-modules/iommu/arm-smmu-v3/drivers/iommu:acfw-debug",
-        "//private/google-modules/iommu/arm-smmu-v3/drivers/iommu:arm/arm-smmu-v3/arm_smmu_v3",
-        "//private/google-modules/iommu/arm-smmu-v3/drivers/iommu:arm/arm-smmu-v3/arm_smmu_v3_kvm",
-        "//private/google-modules/iommu/arm-smmu-v3/drivers/iommu:io-pgtable-pixel",
-        "//private/google-modules/iommu/arm-smmu-v3/drivers/perf:arm_smmuv3_pmu",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
 )

@@ -3,6 +3,11 @@
 # Google Wonder WiFi Virtual Device driver.
 load("//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -54,10 +59,6 @@ ddk_module(
     defconfig = "defconfig",
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/wlan:__subpackages__",
-    ],
     deps = select({
         "//private/devices/google/common:soc_is_malibu": [
             "//private/google-modules/wlan/linux:cfg80211",

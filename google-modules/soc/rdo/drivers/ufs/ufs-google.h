@@ -121,7 +121,6 @@ struct ufs_google_ops {
 	int (*config_cpm)(struct ufs_google_host *host);
 	void (*config_vs)(struct ufs_google_host *host); /* virtual config (VS) */
 	void (*set_refclk_control)(struct ufs_google_host *host, bool on);
-	bool rext_internal;
 };
 
 struct ufs_google_host {
@@ -143,6 +142,7 @@ struct ufs_google_host {
 	bool phy_init_needed;
 	enum phy_patch_mode phy_patch_mode;
 	bool clkgate_delay_set;
+	u32 rext_val;
 	ktime_t device_off_time;
 
 	void __iomem *ufs_top_mmio;
@@ -180,6 +180,8 @@ struct ufs_google_host {
 	int phy_cal_size;
 	bool pm_request_active;
 	bool pm_set;
+	bool mcq_cleanup_ah8_was_enabled;
+	int mcq_cleanup_count;
 
 	/* dts properties */
 	u64 caps;
@@ -203,6 +205,9 @@ enum google_host_cap {
 	GCAP_REF_CLK_ACG = BIT(8), /* REF_CLK auto clock gating */
 	GCAP_SKIP_CPORT_SETUP = BIT(9),
 	GCAP_MPHY_PMC_WAR = BIT(10),
+	GCAP_REXT_INTERNAL = BIT(11),
+	GCAP_LIMIT_RESET_TO_EH = BIT(12), /* Limit reset to error handling */
+	GCAP_MCQ_CLEANUP_WAR = BIT(13),
 
 	/* Resources CAPs - starts from bit 32 */
 	GCAP_RSC_IP_IDLE = BIT(32),

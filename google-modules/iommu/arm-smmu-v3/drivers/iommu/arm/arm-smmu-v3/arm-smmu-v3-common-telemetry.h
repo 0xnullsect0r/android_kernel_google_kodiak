@@ -18,6 +18,30 @@ enum smmu_domain_type {
 	DOMAIN_TYPE_UNATTACHED,
 	DOMAIN_TYPE_S1,
 	DOMAIN_TYPE_S2,
+	DOMAIN_TYPE_NESTED,
+};
+
+enum evtq_fault_type {
+	SMMU_EVTQ_BAD_STREAMID_CONFIG,
+	SMMU_EVTQ_STE_FETCH_FAULT,
+	SMMU_EVTQ_BAD_STE_CONFIG,
+	SMMU_EVTQ_STREAM_DISABLED_FAULT,
+	SMMU_EVTQ_BAD_SUBSTREAMID_CONFIG,
+	SMMU_EVTQ_CD_FETCH_FAULT,
+	SMMU_EVTQ_BAD_CD_CONFIG,
+	SMMU_EVTQ_TRANSLATION_FAULT,
+	SMMU_EVTQ_ADDR_SIZE_FAULT,
+	SMMU_EVTQ_ACCESS_FAULT,
+	SMMU_EVTQ_PERMISSION_FAULT,
+	SMMU_EVTQ_VMS_FETCH_FAULT,
+	SMMU_EVTQ_UNKNOWN_FAULT,
+	SMMU_EVTQ_FAULT_COUNT
+};
+
+enum smmu_gerror_type {
+	SMMU_GERROR_SFM,
+	SMMU_GERROR_EVTQ_ABT,
+	SMMU_GERROR_NUM,
 };
 
 /**
@@ -35,6 +59,8 @@ struct kvm_arm_smmu_domain_telemetry {
 	int domain_id;
 	struct kvm_arm_smmu_domain *domain;
 	atomic64_t map_sg_count;
+	atomic64_t map_count;
+	atomic64_t unmap_count;
 	atomic64_t sg_len_total;
 	atomic64_t iova_min;
 	atomic64_t iova_max;
@@ -104,11 +130,15 @@ struct arm_smmu_domain_telemetry_common {
 /**
  * struct kvm_arm_smmu_device_telemetry - Holding device telemetry data from host side pKVM driver
  * @device_id: device identifier from host perspective
+ * @evtq_fault_counts: Counter per fault type
+ * @gerrors: Array of gerror counters
  * @hasdevt: (hyp_arm_smmu_device_telemetry) - Pointing to hyp accessed device telemetry structure
  * @dev: Pointer to struct device for this smmu. This helps in printing device specific logs
  */
 struct kvm_arm_smmu_device_telemetry {
 	int device_id;
+	atomic64_t evtq_fault_counts[SMMU_EVTQ_FAULT_COUNT];
+	atomic64_t gerrors[SMMU_GERROR_NUM];
 	struct hyp_arm_smmu_device_telemetry *hasdevt;
 	struct device *dev;
 };
@@ -138,6 +168,7 @@ struct arm_smmu_device_telemetry_common {
 };
 
 /* Collection of telemetry data recording APIs */
+void arm_smmu_tlm_rec_failed_cookie_alloc(void);
 void arm_smmu_dom_tlm_inc_map_sg_cnt(struct arm_smmu_domain_telemetry_common *asdtc);
 void arm_smmu_dom_tlm_rec_sg_len(struct arm_smmu_domain_telemetry_common *asdtc,
 				 unsigned int sg_list_len);
@@ -147,9 +178,12 @@ void arm_smmu_dom_tlm_rec_iova_pa_alignment(struct arm_smmu_domain_telemetry_com
 					    unsigned long iova, phys_addr_t paddr, size_t size);
 
 void arm_smmu_dom_tlm_rec_domain_id(struct arm_smmu_domain_telemetry_common *asdtc,
-				    pkvm_handle_t domain_id);
+				    pkvm_handle_t domain_id, bool nested);
 void arm_smmu_dev_tlm_rec_dev_id(struct arm_smmu_device_telemetry_common *asdevtc,
 				 pkvm_handle_t device_id);
+void arm_smmu_dev_tlm_rec_evtq_fault(struct arm_smmu_device_telemetry_common *asdevtc, u8 evt_id);
+void arm_smmu_dev_tlm_inc_gerror_cnt(struct arm_smmu_device_telemetry_common *asdevtc,
+				     enum smmu_gerror_type type);
 
 /**
  * arm_smmu_device_telemetry_alloc - Allocate and initialize telemetry for a device
@@ -170,6 +204,9 @@ void arm_smmu_device_telemetry_free(struct arm_smmu_device *smmu_device, int mod
 
 void arm_smmu_telemetry_register_hvc(void);
 extern int ptw_hvc_num;
+
+void arm_smmu_dom_tlm_map_end(struct arm_smmu_domain_telemetry_common *asdtc);
+void arm_smmu_dom_tlm_unmap_end(struct arm_smmu_domain_telemetry_common *asdtc);
 
 /* API to copy shared_tel pointer from kvm driver to telemetry file */
 void arm_smmu_set_shared_telemetry_ptr(struct hyp_shared_arm_smmu_telemetry *shared_tel);

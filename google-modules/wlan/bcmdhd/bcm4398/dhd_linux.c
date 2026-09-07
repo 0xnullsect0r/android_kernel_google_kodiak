@@ -1,7 +1,7 @@
 /*
  * Basically selected code segments from usb-cdc.c and usb-rndis.c
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -106,6 +106,7 @@
 #if defined(WL_CFG80211)
 #include <wl_cfg80211.h>
 #include <wl_cfgvif.h>
+#include <wl_cfgscan.h>
 #ifdef WL_BAM
 #include <wl_bam.h>
 #endif	/* WL_BAM */
@@ -5503,18 +5504,22 @@ dhd_set_monitor_ioctl(dhd_pub_t *dhdp, int ifidx, bool val)
 	if (ret != 0) {
 		DHD_ERROR(("%s Failed to set monitor mode, err %d\n",
 			__FUNCTION__, ret));
+		dhdp->monitor_iface_up = FALSE;
 	} else {
 		DHD_PRINT(("%s monitor mode %s\n",
 			__FUNCTION__, monitor ? "enabled" : "disabled"));
 		dhd->monitor_type[ifidx] = monitor;
 		/* FW will send the packet on 0 interface. so set for 0 interface too */
 		dhd->monitor_type[0] = monitor;
+		/* Set monitor_iface_up here,
+		 * so that if it is FALSE, any Rx packets will be dropped
+		 */
+		dhdp->monitor_iface_up = val;
 	}
 
 	return ret;
 }
 
-#define CMD_TX_ACTIVE 0x1
 int
 dhd_set_art_tx_active(dhd_pub_t *dhd, u8 ifidx, bool enable)
 {
@@ -5527,8 +5532,8 @@ dhd_set_art_tx_active(dhd_pub_t *dhd, u8 ifidx, bool enable)
 	pxtlv->len = sizeof(u32);
 	pxtlv->data[0] = 0x1;
 
-	ret = bcm_pack_xtlv_entry((uint8 **)&pxtlv, &mybuf_len, CMD_TX_ACTIVE, sizeof(enable),
-			(const u8 *)&enable, BCM_XTLV_OPTION_ALIGN32);
+	ret = bcm_pack_xtlv_entry((uint8 **)&pxtlv, &mybuf_len, WL_ART_CMD_TXACTIVE, sizeof(enable),
+		(const u8 *)&enable, BCM_XTLV_OPTION_ALIGN32);
 	if (ret != BCME_OK) {
 		ret = -EINVAL;
 		DHD_ERROR(("%s failed to pack tx enable, err: %s\n",
@@ -5548,6 +5553,41 @@ dhd_set_art_tx_active(dhd_pub_t *dhd, u8 ifidx, bool enable)
 }
 
 #define DEF_MONITOR_CHSPEC htod16(0xe09b)
+
+#ifdef WONDERTAP
+int
+dhd_set_art_tx_rate_mask(dhd_pub_t *dhd, u8 ifidx, uint8 tx_rate_mask)
+{
+	int ret = BCME_OK;
+	bcm_xtlv_t *pxtlv = NULL;
+	uint8 mybuf[WLC_IOCTL_SMLEN];
+	uint16 mybuf_len = sizeof(mybuf);
+	pxtlv = (bcm_xtlv_t *)mybuf;
+
+	pxtlv->len = sizeof(u32);
+	pxtlv->data[0] = 0x1;
+
+	ret = bcm_pack_xtlv_entry((uint8 **)&pxtlv, &mybuf_len, WL_ART_CMD_CONN_SELECT,
+		sizeof(tx_rate_mask), (const u8 *)&tx_rate_mask, BCM_XTLV_OPTION_ALIGN32);
+	if (ret != BCME_OK) {
+		ret = -EINVAL;
+		DHD_ERROR(("%s failed to pack tx_rate_mask, err: %s\n",
+			__FUNCTION__, bcmerrorstr(ret)));
+		return ret;
+	}
+
+	ret = dhd_iovar(dhd, ifidx, "art", (char *)&mybuf, sizeof(mybuf), NULL, 0, TRUE);
+	if (ret < 0) {
+		DHD_ERROR(("%s ART tx_rate_mask (0x%x) set fail, err: %s\n",
+			__FUNCTION__, tx_rate_mask, bcmerrorstr(ret)));
+	} else {
+		DHD_ERROR(("%s ART tx_rate_mask (0x%x) set pass\n",
+			__FUNCTION__, tx_rate_mask));
+	}
+
+	return ret;
+}
+#endif /* WONDERTAP */
 
 static int
 dhd_monitor_open(struct net_device *net)
@@ -5588,14 +5628,27 @@ dhd_monitor_open(struct net_device *net)
 	}
 #ifdef DHD_ART
 	else {
-		u8 random_mac_addr[ETH_ALEN];
 		DHD_PRINT(("dhd_monitor_open: ART mode\n"));
-		RANDOM_BYTES(random_mac_addr, ETHER_ADDR_LEN);
-		ETHER_SET_UNICAST(random_mac_addr);
-		ETHER_SET_LOCALADDR(random_mac_addr);
 
-		wdev = wl_cfg80211_add_if(cfg, primary_ndev,
-			WL_IF_TYPE_ART, net->name, random_mac_addr);
+#ifdef WL_CFG80211
+		/* abort any scan in progress */
+		wl_cfgscan_scan_abort(cfg);
+#endif /* WL_CFG80211 */
+
+		/* If art_mac_addr is not initialized, use random macaddr */
+		if (ETHER_ISNULLADDR(dhdp->art_mac_addr)) {
+			u8 random_mac_addr[ETH_ALEN];
+			DHD_PRINT(("dhd_monitor_open: ART mode\n"));
+			RANDOM_BYTES(random_mac_addr, ETHER_ADDR_LEN);
+			ETHER_SET_UNICAST(random_mac_addr);
+			ETHER_SET_LOCALADDR(random_mac_addr);
+			wdev = wl_cfg80211_add_if(cfg, primary_ndev,
+				WL_IF_TYPE_ART, net->name, random_mac_addr);
+		} else {
+			wdev = wl_cfg80211_add_if(cfg, primary_ndev,
+				WL_IF_TYPE_ART, net->name, dhdp->art_mac_addr);
+		}
+
 		if (!wdev) {
 			ret = -ENODEV;
 			goto exit;
@@ -5622,7 +5675,11 @@ dhd_monitor_open(struct net_device *net)
 			goto exit;
 		}
 #endif /* WL_CFG80211 */
-
+#ifdef WONDERTAP
+		if (dhdp->rate_adaptation_enable) {
+			dhd_set_art_tx_rate_mask(dhdp, ifidx, dhdp->tx_rate_mask);
+		}
+#endif /* WONDERTAP */
 		ret = dhd_set_art_tx_active(dhdp, ifidx, TRUE);
 		if (ret < 0) {
 			goto exit;
@@ -5741,7 +5798,7 @@ dhd_monitor_stop(struct net_device *net)
 	DHD_PRINT(("%s : enable RPM\n", __FUNCTION__));
 	DHD_ART_WAKE_UNLOCK(&dhd->pub);
 	/* clear filter bssid after use */
-	bzero(&cfg->art_bssid, ETH_ALEN);
+	bzero(&dhd->pub.art_bssid, ETH_ALEN);
 #endif /* DHD_ART */
 exit:
 	return ret;
@@ -6121,7 +6178,14 @@ dhd_add_monitor_if(dhd_info_t *dhd)
 		return;
 	}
 
-	devname = "radiotap";
+#ifdef WONDERTAP
+	if (!(dhdp->op_mode & DHD_FLAG_MONITOR_MODE)) {
+		devname = "wondertap";
+	} else
+#endif /* WONDERTAP */
+	{
+		devname = "radiotap";
+	}
 
 #ifdef DHD_ART
 	RANDOM_BYTES(ea_addr.octet, ETHER_ADDR_LEN);
@@ -6317,11 +6381,20 @@ dhd_set_monitor(dhd_pub_t *pub, int ifidx, int val)
 
 	dhd_net_if_lock_local(dhd);
 	if (!val) {
+#ifndef WL_CFG80211_MONITOR
+		pub->monitor_iface_up = FALSE;
+#endif /* WL_CFG80211_MONITOR */
 		/* Delete monitor */
 		dhd_del_monitor_if(dhd);
 	} else {
 		/* Add monitor */
 		dhd_add_monitor_if(dhd);
+#ifndef WL_CFG80211_MONITOR
+		/* For FC WL_CFG80211_MONITOR is not defined. So set monitor iface up
+		 * once the monitor interface is up in FW
+		 */
+		pub->monitor_iface_up = TRUE;
+#endif /* WL_CFG80211_MONITOR */
 	}
 	dhd->monitor_type[ifidx] = val;
 	/* FW always sends monitor packets on interface zero
@@ -10090,6 +10163,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #ifdef DHD_TIMESYNC
 	dhd->pub.ts_lock = osl_spin_lock_init(dhd->pub.osh);
+	OSL_LOCK_CLASS_SET(dhd->pub.ts_lock);
 	/* attach the timesync module */
 	if (dhd_timesync_attach(&dhd->pub) != 0) {
 		DHD_ERROR(("dhd_timesync_attach failed\n"));
@@ -10147,6 +10221,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 #endif /* !OEM_ANDROID && BTLOG */
 #ifdef DBG_PKT_MON
 	dhd->pub.dbg->pkt_mon_lock = osl_spin_lock_init(dhd->pub.osh);
+	OSL_LOCK_CLASS_SET(dhd->pub.dbg->pkt_mon_lock);
 #ifdef DBG_PKT_MON_INIT_DEFAULT
 	dhd_os_dbg_attach_pkt_monitor(&dhd->pub);
 #endif /* DBG_PKT_MON_INIT_DEFAULT */
@@ -10156,6 +10231,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #ifdef DHD_MEM_STATS
 	dhd->pub.mem_stats_lock = osl_spin_lock_init(dhd->pub.osh);
+	OSL_LOCK_CLASS_SET(dhd->pub.mem_stats_lock);
 	dhd->pub.txpath_mem = 0;
 	dhd->pub.rxpath_mem = 0;
 #endif /* DHD_MEM_STATS */
@@ -10170,6 +10246,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #if defined(DHD_MESH)
 	dhd->pub.mesh_rt_lock = osl_spin_lock_init(dhd->pub.osh);
+	OSL_LOCK_CLASS_SET(dhd->pub.mesh_rt_lock);
 #endif /* defined(DHD_MESH) */
 
 #ifdef RX_PKT_POOL
@@ -12087,6 +12164,11 @@ dhd_get_fw_capabilities(dhd_pub_t *dhd)
 
 	int ret = 0;
 	uint32 cap_buf_size = sizeof(dhd->fw_capabilities);
+
+	/* Validate that feature bit definitions for SET1 and SET2 do not overlap */
+	STATIC_ASSERT(WLC_CAPEXT_FEATURE_SET1_MAX < WLC_CAPEXT_FEATURE_SET2_BUCKET_START);
+	STATIC_ASSERT((WLC_CAPEXT_FEATURE_SET2_BUCKET_END + 1u) == WLC_CAPEXT_FEATURE_BITPOS_MAX);
+
 	bzero(dhd->fw_capabilities, cap_buf_size);
 	if (dhd->wlc_ver_major < 17) {
 		ret = dhd_iovar(dhd, 0, "cap", NULL, 0, dhd->fw_capabilities, (cap_buf_size - 1),
@@ -19462,8 +19544,17 @@ int net_os_send_hang_message_reason(struct net_device *dev, const char *string_n
 
 int dhd_net_wifi_platform_set_power(struct net_device *dev, bool on, unsigned long delay_msec)
 {
-	dhd_info_t *dhd = DHD_DEV_INFO(dev);
-	return wifi_platform_set_power(dhd->adapter, on, delay_msec);
+	int ret = BCME_ERROR;
+
+	if (dev) {
+		dhd_info_t *dhd = DHD_DEV_INFO(dev);
+
+		if (dhd && dhd->adapter) {
+			ret = wifi_platform_set_power(dhd->adapter, on, delay_msec);
+		}
+	}
+
+	return ret;
 }
 
 int dhd_wifi_platform_set_power(dhd_pub_t *pub, bool on)
@@ -24551,6 +24642,7 @@ dhd_ring_init(dhd_pub_t *dhdp, uint8 *buf, uint32 buf_size, uint32 elem_size,
 	ret_ring = (dhd_ring_info_t *)buf;
 	ret_ring->type = type;
 	ret_ring->ring_sync = (void *)DHD_RING_SYNC_LOCK_INIT(dhdp->osh);
+	OSL_LOCK_CLASS_SET(ret_ring->ring_sync);
 	ret_ring->magic = DHD_RING_MAGIC;
 
 	if (type == DHD_RING_TYPE_FIXED) {

@@ -256,7 +256,7 @@ void dc_deinit_debugfs(struct vs_dc *dc)
 	debugfs_remove_recursive(dc->debugfs);
 }
 #else
-int dc_init_debugfs(struct device *dev, struct vs_dc *dc)
+int dc_init_debugfs(struct vs_dc *dc)
 {
 	return 0;
 }

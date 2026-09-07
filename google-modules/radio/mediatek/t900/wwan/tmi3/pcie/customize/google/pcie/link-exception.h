@@ -17,18 +17,19 @@
 /* If multiple errors are reported, the largest number will be treated as the main reason. */
 #define EXCP_REASONS_LIST(X)                                    \
 	X(CLDMA_ERROR, 0, "CLDMA error")                        \
-	X(CLDMA_RX_HWO_ERROR, 1, "CLDMA RX HWO error")          \
-	X(CLDMA_TX_HWO_ERROR, 2, "CLDMA TX HWO error")          \
-	X(CCCI_PKT_OUT_OF_ORDER, 3, "CCCI packet out-of-order") \
-	X(COR_ERROR, 4, "PCIe correctable error")               \
-	X(LINK_ERROR, 5, "Driver-detected PCIe link error")     \
-	X(UNCOR_ERROR, 6, "PCIe uncorrectable error")           \
-	X(CPL_TIMEOUT, 7, "PCIe completion timeout")            \
-	X(LINK_DOWN, 8, "PCIe surprise down")                   \
-	X(LINK_UNREADY, 9, "PCIe link unready")                 \
-	X(SUSPEND_TIMEOUT, 10, "PCIe suspend timeout")          \
-	X(RESUME_TIMEOUT, 11, "PCIe resume timeout")            \
-	X(COLD_RESUME, 12, "PCIe cold resume")
+	X(CLDMA_TX_TIMEOUT, 1, "CLDMA TX timeout")              \
+	X(CLDMA_RX_HWO_ERROR, 2, "CLDMA RX HWO error")          \
+	X(CLDMA_TX_HWO_ERROR, 3, "CLDMA TX HWO error")          \
+	X(CCCI_PKT_OUT_OF_ORDER, 4, "CCCI packet out-of-order") \
+	X(COR_ERROR, 5, "PCIe correctable error")               \
+	X(LINK_ERROR, 6, "Driver-detected PCIe link error")     \
+	X(UNCOR_ERROR, 7, "PCIe uncorrectable error")           \
+	X(CPL_TIMEOUT, 8, "PCIe completion timeout")            \
+	X(LINK_DOWN, 9, "PCIe surprise down")                   \
+	X(LINK_UNREADY, 10, "PCIe link unready")                \
+	X(SUSPEND_TIMEOUT, 11, "PCIe suspend timeout")          \
+	X(RESUME_TIMEOUT, 12, "PCIe resume timeout")            \
+	X(COLD_RESUME, 13, "PCIe cold resume")
 
 enum link_exception_reason {
 #define ENUM_GEN(name, bit, desc) EXCP_REASON_##name = BIT(bit),

@@ -200,8 +200,11 @@ static int google_wlc_chip_get_vout(struct google_wlc_data *chgr, u32 *mv)
 	if (chgr->chip->reg_vout < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_vout, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
@@ -213,8 +216,11 @@ static int google_wlc_chip_get_vrect(struct google_wlc_data *chgr, u32 *mv)
 	if (chgr->chip->reg_vrect < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_vrect, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
@@ -226,8 +232,11 @@ static int google_wlc_chip_get_iout(struct google_wlc_data *chgr, u32 *ma)
 	if (chgr->chip->reg_iout < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_iout, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_IOUT_MA)
+			return -EINVAL;
 		*ma = val;
+	}
 	return ret;
 }
 
@@ -239,8 +248,11 @@ static int google_wlc_chip_get_temp(struct google_wlc_data *chgr, u32 *millic)
 	if (chgr->chip->reg_die_temp < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_die_temp, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_TEMP_C)
+			return -EINVAL;
 		*millic = C_TO_MILLIC(val);
+	}
 	return ret;
 }
 
@@ -252,8 +264,11 @@ static int google_wlc_chip_get_opfreq(struct google_wlc_data *chgr, u32 *khz)
 	if (chgr->chip->reg_op_freq < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_op_freq, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_FREQ_KHZ)
+			return -EINVAL;
 		*khz = val;
+	}
 	return ret;
 }
 

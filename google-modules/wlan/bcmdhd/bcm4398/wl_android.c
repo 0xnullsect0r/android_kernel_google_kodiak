@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 driver - Android related functions
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -2053,13 +2053,19 @@ wl_android_art_apply_config(struct net_device *art_ndev)
 	uint16 mybuf_len = sizeof(mybuf);
 	u8 resp_buf[WLC_IOCTL_SMLEN] = {0};
 	struct bcm_cfg80211 *cfg = wl_get_cfg(art_ndev);
+	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
 
 	if (!art_ndev) {
 		WL_ERR(("ART I/F is not present\n"));
 		return -ENODEV;
 	}
 
-	if (ETHER_ISNULLADDR(cfg->art_bssid)) {
+	if (!dhdp) {
+		WL_ERR(("dhd_pub is null\n"));
+		return -EINVAL;
+	}
+
+	if (ETHER_ISNULLADDR(dhdp->art_bssid)) {
 		WL_DBG_MEM(("ART BSSID is not set. Skip macaddr filtering\n"));
 		return BCME_OK;
 	}
@@ -2068,7 +2074,7 @@ wl_android_art_apply_config(struct net_device *art_ndev)
 	pxtlv->len = sizeof(wl_art_cmd_config_v1_t);
 
 	art_cmd_config.version = WL_ART_CONFIG_VER_1;
-	eacopy(&cfg->art_bssid, &art_cmd_config.mac_addr);
+	eacopy(&dhdp->art_bssid, &art_cmd_config.mac_addr);
 	/* set bssid */
 	pxtlv->len = htod16(sizeof(wl_art_cmd_config_v1_t));
 	ret = bcm_pack_xtlv_entry((uint8 **)&pxtlv, &mybuf_len, WL_ART_CMD_CONFIG,
@@ -2100,6 +2106,7 @@ wl_android_art_set_bssid(struct net_device *dev, char *command, int total_len)
 	char *token = NULL;
 	u8 mac_addr[ETH_ALEN] = {0};
 	struct bcm_cfg80211 *cfg = wl_get_cfg(dev);
+	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
 
 
 	/* drop command */
@@ -2133,7 +2140,7 @@ wl_android_art_set_bssid(struct net_device *dev, char *command, int total_len)
 	}
 
 	/* cache macaddr */
-	eacopy(&mac_addr, cfg->art_bssid);
+	eacopy(&mac_addr, dhdp->art_bssid);
 	return BCME_OK;
 }
 
@@ -2229,6 +2236,7 @@ wl_android_art_set_txrate(struct net_device *dev, char *command, int total_len)
 	uint32 rspec = 0;
 	dhd_pub_t *dhdp = wl_cfg80211_get_dhdp(dev);
 	chanspec_t chanspec;
+	struct bcm_cfg80211 *cfg = wl_get_cfg(dev);
 
 	/* Accept: "TX_RATE <format> <mcs> <nss>", e.g. "TX_RATE HE 7 2" */
 	matched = sscanf(command + strlen(CMD_ART_TX_RATE), "%7s %d %d", format, &mcs, &nss);
@@ -2284,6 +2292,10 @@ wl_android_art_set_txrate(struct net_device *dev, char *command, int total_len)
 		DHD_ERROR(("%s ART_SET_CHAN is not set\n", __FUNCTION__));
 		return -EINVAL;
 	}
+
+	/* abort any scan in progress */
+	wl_cfgscan_scan_abort(cfg);
+
 	if (CHSPEC_BAND(chanspec) == WL_CHANSPEC_BAND_5G) {
 		rspec |= WL_RSPEC_LDPC;
 		error = wldev_iovar_setint(dev, "5g_rate", rspec);
@@ -4679,162 +4691,11 @@ wl_android_get_fcc_pwr_limit_2g(struct net_device *dev, char *command, int total
  */
 #define STA_INFO_ADD_FMT	"%d %d %d %d %d %d %d %d %d %d %d %d %d %d"
 
-
 #define STAINFO_BAND_2G    0x0001
 #define STAINFO_BAND_5G    0x0002
 #define STAINFO_BAND_6G    0x0004
 #define STAINFO_BAND_60G   0x0008
 
-/* Number of OFDM/Legacy rates to skip */
-#define OFDM_RATES_COUNT	12u
-#define MAX_MCS_STRING_LEN	256u
-#define MAX_NUM_RATES		44u
-
-#ifdef STAINFO_LEGACY
-/*
- * Format MCS rate statistics into string format: "N=count,N-1=count,..."
- * Skip OFDM rates and only include MCS rates
- */
-static int wl_format_rate_stats(char *buf, int buf_len, wifi_rate_stat *stats,
-		int num_rates, bool is_tx)
-{
-	int bytes_written = 0;
-	int i;
-
-	for (i = num_rates-1; i >= 0; i--) {
-		if (i != num_rates-1) {
-			bytes_written += snprintf(buf + bytes_written,
-					buf_len - bytes_written, ",");
-		}
-		bytes_written += snprintf(buf + bytes_written,
-				buf_len - bytes_written, "%d=%u",
-				i, is_tx ? stats[i].tx_mpdu : stats[i].rx_mpdu);
-	}
-	return bytes_written;
-}
-
-int get_antenna_mode(uint32 nss)
-{
-	switch (nss) {
-	case 1:
-		return 1; /* SISO */
-	case 2:
-		return 2; /* MIMO 2x2 */
-	case 3:
-		return 3; /* MIMO 3x3 */
-	case 4:
-		return 4; /* MIMO 4x4 */
-	default:
-		return 1;
-	}
-}
-
-int get_bw_integer(const char* bw_str)
-{
-	if (!strcmp(bw_str, "20MHz")) {
-		return 20;
-	}
-	if (!strcmp(bw_str, "40MHz")) {
-		return 40;
-	}
-	if (!strcmp(bw_str, "80MHz")) {
-		return 80;
-	}
-	if (!strcmp(bw_str, "160MHz")) {
-		return 160;
-	}
-	if (!strcmp(bw_str, "320MHz")) {
-		return 320;
-	}
-	return 20;
-}
-
-static int get_wfa_reason(uint32 reason)
-{
-	switch (reason) {
-	case 0:
-		return 0;  /* unspecified */
-	case 2:
-		return 2;  /* auth no longer valid */
-	case 4:
-		return 4;  /* inactivity */
-	default:
-		return 0;
-	}
-}
-
-/*
- * Get and process rate statistics for sta_info
- */
-static int
-wl_get_rate_stats(struct net_device *dev, char *tx_rate_info, char *rx_rate_info,
-		int buf_len)
-{
-	int err = BCME_OK;
-	char *rate_iovar_buf = NULL;
-	wifi_rate_stat *p_wifi_rate_stat = NULL;
-	int num_rate;
-	struct bcm_cfg80211 *cfg = wl_get_cfg(dev);
-
-	/* Allocate buffer for rate statistics */
-	rate_iovar_buf = (char *)MALLOCZ(cfg->osh, WLC_IOCTL_MAXLEN);
-	if (!rate_iovar_buf) {
-		WL_ERR(("Failed to allocate rate statistics buffer\n"));
-		return BCME_NOMEM;
-	}
-
-	/* Get rate statistics */
-	err = wldev_iovar_getbuf(dev, "ratestat", NULL, 0,
-			rate_iovar_buf, WLC_IOCTL_MAXLEN, NULL);
-	if (err != BCME_OK) {
-		WL_ERR(("Failed to get rate statistics: error %d\n", err));
-		goto exit;
-	}
-
-	p_wifi_rate_stat = (wifi_rate_stat *)rate_iovar_buf;
-
-	/* Verify version and length */
-	if (p_wifi_rate_stat->version != WLC_LINKSTATS_RATESTATS_V1) {
-		err = BCME_VERSION;
-		WL_ERR(("Failed to get ratestats: version mismatch error %d\n", err));
-		goto exit;
-	}
-
-	if (p_wifi_rate_stat->length < sizeof(wifi_rate_stat)) {
-		err = BCME_BADLEN;
-		WL_ERR(("Failed to get ratestats: avail len %d, expected len %ld\n",
-				p_wifi_rate_stat->length, sizeof(wifi_rate_stat)));
-		goto exit;
-	}
-
-	num_rate = p_wifi_rate_stat->length / sizeof(wifi_rate_stat);
-	if (num_rate > MAX_NUM_RATES) {
-		WL_ERR(("Invalid num_rate %d\n", num_rate));
-		goto exit;
-	}
-	WL_DBG(("Number of rates: %d\n", num_rate));
-
-	/* Format TX rate statistics with tx_mpdu */
-	err = wl_format_rate_stats(tx_rate_info, buf_len, p_wifi_rate_stat, num_rate, true);
-	if (err < 0) {
-		WL_ERR(("Failed to format the tx rate stats, err %d\n", err));
-		goto exit;
-	}
-
-	/* Format RX rate statistics with rx_mpdu */
-	err = wl_format_rate_stats(rx_rate_info, buf_len, p_wifi_rate_stat, num_rate, false);
-	if (err < 0) {
-		WL_ERR(("Failed to format the rx rate stats, err %d\n", err));
-		goto exit;
-	}
-
-exit:
-	if (rate_iovar_buf) {
-		MFREE(cfg->osh, rate_iovar_buf, WLC_IOCTL_MAXLEN);
-	}
-	return err;
-}
-#endif /* STAINFO_LEGACY */
 
 s32
 wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
@@ -4860,12 +4721,6 @@ wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
 	uint32 tx_pkts_total = 0, tx_pkts_retries = 0;
 	uint32 tx_pkts_fw_total = 0, tx_pkts_fw_retries = 0;
 	uint32 tx_pkts_fw_retry_exhausted = 0;
-#ifdef STAINFO_LEGACY
-	uint32 rx_pkts = 0, rx_failures = 0;
-	char tx_rate_info[MAX_MCS_STRING_LEN] = {0};
-	char rx_rate_info[MAX_MCS_STRING_LEN] = {0};
-#endif /* STAINFO_LEGACY */
-	uint32 supported_band = 0;
 	int8 rssi[WL_STA_ANT_MAX] = {0};
 	int8 rx_lastpkt_rssi[WL_STA_ANT_MAX] = {0};
 	u16 bands = 0;
@@ -4875,7 +4730,6 @@ wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
 	struct maclist *assoc_maclist = (struct maclist *)mac_buf;
 
 	BCM_REFERENCE(bands);
-	BCM_REFERENCE(supported_band);
 	/* This Command used during only SoftAP mode. */
 	WL_DBG(("%s\n", command));
 
@@ -17537,6 +17391,7 @@ wl_wbtext_init(struct bcm_cfg80211 *cfg)
 
 	/* Allocate spinlock for protecting wbtext_bssid_list */
 	cfg->wbtext_bssid_list_sync = (void *)WL_CFG_WBTEXT_BSSID_LIST_SYNC_INIT(cfg->osh);
+	OSL_LOCK_CLASS_SET(cfg->wbtext_bssid_list_sync);
 
 	if (!cfg->wbtext_bssid_list_sync) {
 		WL_ERR(("Failed to alloc spinlock\n"));

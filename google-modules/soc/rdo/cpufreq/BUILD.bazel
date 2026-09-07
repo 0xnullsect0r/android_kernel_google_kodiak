@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "google_cpufreq.kconfig",
     srcs = [
@@ -32,10 +37,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf/thermal:__subpackages__",
-    ],
     deps = [
         ":trace_headers",
         "//common:all_headers_aarch64",

@@ -586,7 +586,7 @@ static void RGX_MISRHandler_Main (void *pvData)
 	/* Calibrate the GPU frequency and recorrelate Host and GPU timers (done every few seconds) */
 	RGXTimeCorrRestartPeriodic(psDeviceNode);
 
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
 	{
 		/* Process Workload Estimation Specific commands from the FW */

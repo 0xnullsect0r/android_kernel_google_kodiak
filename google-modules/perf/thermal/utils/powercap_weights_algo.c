@@ -12,10 +12,28 @@
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/workqueue.h>
 
 #include "google_powercap_helper.h"
 #include "google_powercap_stats.h"
 #include "powercap_weights_algo.h"
+
+#define GPC_CSV_PARENT_LIMIT_FMT \
+	"GPC_CSV_PARENT:%s,id=%llu,limit=%llu,tot_wt=%u,thresh=%u," \
+	"surplus=0,rec_wt=0\n"
+
+#define GPC_CSV_CHILD_LIMIT_FMT \
+	"GPC_CSV_CHILD:%s,id=%llu,child=%s,wt=%u,base_lim=%llu," \
+	"allocated_lim=%llu,userspace_lim=%llu,cur=%llu,rec=0\n"
+
+#define GPC_CSV_PARENT_WEIGHTS_FMT \
+	"GPC_CSV_PARENT:%s,id=%llu,limit=%llu,tot_wt=%u,thresh=%u," \
+	"surplus=%llu,rec_wt=%u\n"
+
+#define GPC_CSV_CHILD_WEIGHTS_FMT \
+	"GPC_CSV_CHILD:%s,id=%llu,child=%s,wt=%u,base_lim=%llu," \
+	"allocated_lim=%llu,userspace_lim=%llu,cur=%llu,rec=%d\n"
+
 
 VISIBLE_IF_KUNIT int gpc_weights_of_property_count_strings(struct device_node *np,
 								const char *propname)
@@ -38,6 +56,14 @@ VISIBLE_IF_KUNIT int gpc_weights_kstrtou32(const char *s, unsigned int base, u32
 	return kstrtou32(s, base, res);
 }
 
+static void gpc_weights_limit_work_fn(struct work_struct *work)
+{
+	struct gpowercap_weight_child *wc =
+		container_of(work, struct gpowercap_weight_child, work);
+
+	gpowercap_set_parent_power_limit(wc->gpc, wc->limit_uw);
+}
+
 static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_weights,
 					  struct gpowercap *gpowercap,
 					  u64 power_limit)
@@ -52,18 +78,50 @@ static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_wei
 	if (gpc_weights->total_weight == 0)
 		return;
 
+	gpowercap->decision_id++;
+	list_for_each_entry(wc, &gpc_weights->weighted_children, node) {
+		if (wc->gpc)
+			wc->gpc->decision_id = gpowercap->decision_id;
+	}
+
 	if (power_limit >= gpc_weights->gpowercap.power_max) {
+		pr_debug(GPC_CSV_PARENT_LIMIT_FMT,
+			 gpowercap->zone.name, gpowercap->decision_id, power_limit,
+			 gpc_weights->total_weight, gpc_weights->redistribution_threshold);
+
 		list_for_each_entry(wc, &gpc_weights->weighted_children, node) {
-			if (wc->gpc && wc->gpc->power_limit != wc->gpc->power_max)
+			if (!wc->gpc)
+				continue;
+
+			if (wc->gpc->power_limit != wc->gpc->power_max) {
+				pr_debug(GPC_CSV_CHILD_LIMIT_FMT,
+					 gpowercap->zone.name, gpowercap->decision_id,
+					 wc->gpc->zone.name,
+					 wc->weight, wc->gpc->power_max, wc->gpc->power_max,
+					 wc->gpc->userspace_power_limit, wc->current_power_uw);
 				gpowercap_set_parent_power_limit(wc->gpc, wc->gpc->power_max);
+			}
 		}
 		goto update_stats;
 	}
 
-	if (power_limit <= gpc_weights->gpowercap.power_min) {
+	if (power_limit == gpc_weights->gpowercap.power_min) {
+		pr_debug(GPC_CSV_PARENT_LIMIT_FMT,
+			 gpowercap->zone.name, gpowercap->decision_id, power_limit,
+			 gpc_weights->total_weight, gpc_weights->redistribution_threshold);
+
 		list_for_each_entry(wc, &gpc_weights->weighted_children, node) {
-			if (wc->gpc && wc->gpc->power_limit != wc->gpc->power_min)
+			if (!wc->gpc)
+				continue;
+
+			if (wc->gpc->power_limit != wc->gpc->power_min) {
+				pr_debug(GPC_CSV_CHILD_LIMIT_FMT,
+					 gpowercap->zone.name, gpowercap->decision_id,
+					 wc->gpc->zone.name,
+					 wc->weight, wc->gpc->power_min, wc->gpc->power_min,
+					 wc->gpc->userspace_power_limit, wc->current_power_uw);
 				gpowercap_set_parent_power_limit(wc->gpc, wc->gpc->power_min);
+			}
 		}
 		goto update_stats;
 	}
@@ -78,10 +136,12 @@ static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_wei
 
 		if (remaining_weight == 0) {
 			wc->limit_uw = 0;
+			wc->base_limit_uw = 0;
 			continue;
 		}
 
 		wc->limit_uw = div_u64(remaining_power * wc->weight, remaining_weight);
+		wc->base_limit_uw = wc->limit_uw;
 		remaining_power -= wc->limit_uw;
 		remaining_weight -= wc->weight;
 
@@ -92,12 +152,8 @@ static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_wei
 
 		wc->current_power_uw = wc->gpc->current_power_uw;
 
-		pr_debug("Node[%s]: child[%s] base_limit:%llu current:%llu\n",
-			 gpowercap->zone.name, wc->gpc->zone.name, wc->limit_uw,
-			 wc->current_power_uw);
-
 		threshold_power = div_u64(wc->limit_uw *
-						GPC_WEIGHTS_ALGO_RECEIVER_THRESHOLD_PERCENT,
+						gpc_weights->redistribution_threshold,
 					100);
 		wc->is_receiver = false;
 		/*
@@ -115,8 +171,6 @@ static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_wei
 		}
 	}
 
-	pr_debug("Node[%s]: total_surplus:%llu total_receiver_weight:%u\n",
-		 gpowercap->zone.name, total_surplus, total_receiver_weight);
 	/* Pass 2: Distribute surplus to receivers */
 	if (total_surplus > 0 && total_receiver_weight > 0) {
 		u64 remaining_surplus = total_surplus;
@@ -155,13 +209,22 @@ static void __gpc_weights_algo_distribute(struct gpowercap_weights_algo *gpc_wei
 	}
 
 	/* Pass 3: Apply limits */
+	pr_debug(GPC_CSV_PARENT_WEIGHTS_FMT,
+		 gpowercap->zone.name, gpowercap->decision_id, power_limit,
+		 gpc_weights->total_weight, gpc_weights->redistribution_threshold,
+		 total_surplus, total_receiver_weight);
+
 	list_for_each_entry(wc, &gpc_weights->weighted_children, node) {
 		if (!wc->gpc)
 			continue;
 
-		pr_debug("Node[%s]: child[%s] new limit:%llu\n",
-				 gpowercap->zone.name, wc->gpc->zone.name, wc->limit_uw);
-		gpowercap_set_parent_power_limit(wc->gpc, wc->limit_uw);
+		pr_debug(GPC_CSV_CHILD_WEIGHTS_FMT,
+			 gpowercap->zone.name, gpowercap->decision_id,
+			 wc->gpc->zone.name, wc->weight,
+			 wc->base_limit_uw, wc->limit_uw,
+			 wc->gpc->userspace_power_limit,
+			 wc->current_power_uw, wc->is_receiver);
+		queue_work(gpowercap_wq ? : system_unbound_wq, &wc->work);
 	}
 
 update_stats:
@@ -225,7 +288,7 @@ VISIBLE_IF_KUNIT int __gpc_weights_algo_evaluate(struct gpowercap *gpowercap)
 	struct gpowercap_weights_algo *gpc_weights = to_gpowercap_weights_algo(gpowercap);
 	struct gpowercap *child;
 	struct gpowercap_weight_child *wc;
-	u64 power_min = 0, power_max = 0;
+	u64 power_max = 0;
 	bool found;
 
 	if (!gpowercap)
@@ -286,6 +349,7 @@ VISIBLE_IF_KUNIT int __gpc_weights_algo_evaluate(struct gpowercap *gpowercap)
 				gpowercap->zone.name, child->zone.name);
 			new_wc->weight = GPC_WEIGHTS_ALGO_DEFAULT_WEIGHT;
 			new_wc->gpc = child;
+			INIT_WORK(&new_wc->work, gpc_weights_limit_work_fn);
 			list_add_tail(&new_wc->node, &gpc_weights->weighted_children);
 		}
 	}
@@ -297,10 +361,9 @@ VISIBLE_IF_KUNIT int __gpc_weights_algo_evaluate(struct gpowercap *gpowercap)
 	}
 
 	gpowercap_for_each_children(gpowercap, child) {
-		power_min += child->power_min;
 		power_max += child->power_max;
 	}
-	gpowercap->power_min = power_min;
+	gpowercap->power_min = 0;
 	gpowercap->power_max = power_max;
 	if (!test_bit(GPOWERCAP_PARENT_LIMIT_FLAG, &gpowercap->flags))
 		gpowercap->parent_power_limit = gpowercap->power_max;
@@ -310,7 +373,7 @@ VISIBLE_IF_KUNIT int __gpc_weights_algo_evaluate(struct gpowercap *gpowercap)
 		gpowercap->power_limit = gpowercap->power_max;
 
 	if (gpowercap->opp_table) {
-		gpowercap->opp_table[0].power = power_min;
+		gpowercap->opp_table[0].power = 0;
 		gpowercap->opp_table[1].power = power_max;
 	}
 
@@ -441,15 +504,56 @@ out:
 
 static DEVICE_ATTR_RW(power_distribution_weights);
 
+VISIBLE_IF_KUNIT ssize_t power_redistribution_threshold_show(struct device *dev,
+						       struct device_attribute *attr, char *buf)
+{
+	struct gpowercap *gpowercap = to_gpowercap(to_powercap_zone(dev));
+	struct gpowercap_weights_algo *gpc_weights = to_gpowercap_weights_algo(gpowercap);
+	int count;
+
+	mutex_lock(&gpc_weights->lock);
+	count = sysfs_emit(buf, "%u\n", gpc_weights->redistribution_threshold);
+	mutex_unlock(&gpc_weights->lock);
+
+	return count;
+}
+
+VISIBLE_IF_KUNIT ssize_t power_redistribution_threshold_store(struct device *dev,
+							struct device_attribute *attr,
+							const char *buf, size_t count)
+{
+	struct gpowercap *gpowercap = to_gpowercap(to_powercap_zone(dev));
+	struct gpowercap_weights_algo *gpc_weights = to_gpowercap_weights_algo(gpowercap);
+	u32 threshold;
+	int ret;
+
+	ret = gpc_weights_kstrtou32(buf, 10, &threshold);
+	if (ret)
+		return ret;
+
+	if (threshold == 0 || threshold > 100)
+		return -EINVAL;
+
+	mutex_lock(&gpc_weights->lock);
+	gpc_weights->redistribution_threshold = threshold;
+	mutex_unlock(&gpc_weights->lock);
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(power_redistribution_threshold);
+
 VISIBLE_IF_KUNIT void __gpc_weights_algo_release(struct gpowercap *gpowercap)
 {
 	struct gpowercap_weights_algo *gpc_weights = to_gpowercap_weights_algo(gpowercap);
 	struct gpowercap_weight_child *wc, *tmp;
 
+	gpc_device_remove_file(&gpowercap->zone.dev, &dev_attr_power_redistribution_threshold);
 	gpc_device_remove_file(&gpowercap->zone.dev, &dev_attr_power_distribution_weights);
 
 	list_for_each_entry_safe(wc, tmp, &gpc_weights->weighted_children, node) {
 		list_del(&wc->node);
+		cancel_work_sync(&wc->work);
 		kfree(wc->name);
 		kfree(wc);
 	}
@@ -483,6 +587,7 @@ VISIBLE_IF_KUNIT struct gpowercap *__gpc_weights_algo_setup(struct device_node *
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&gpc_weights->lock);
 	INIT_LIST_HEAD(&gpc_weights->weighted_children);
+	gpc_weights->redistribution_threshold = GPC_WEIGHTS_ALGO_RECEIVER_THRESHOLD_PERCENT;
 
 	gpc_weights->gpowercap.opp_table =
 		kcalloc(GPC_WEIGHTS_ALGO_NUM_OPPS, sizeof(*gpc_weights->gpowercap.opp_table),
@@ -525,6 +630,7 @@ VISIBLE_IF_KUNIT struct gpowercap *__gpc_weights_algo_setup(struct device_node *
 				kfree(wc);
 				continue;
 			}
+			INIT_WORK(&wc->work, gpc_weights_limit_work_fn);
 			list_add_tail(&wc->node, &gpc_weights->weighted_children);
 		}
 	} else if (count > 0) {
@@ -543,6 +649,16 @@ VISIBLE_IF_KUNIT struct gpowercap *__gpc_weights_algo_setup(struct device_node *
 				     &dev_attr_power_distribution_weights);
 	if (ret) {
 		pr_err("Failed to create power_distribution_weights sysfs for %s\n", name);
+		gpowercap_unregister(&gpc_weights->gpowercap);
+		return ERR_PTR(ret);
+	}
+
+	ret = gpc_device_create_file(&gpc_weights->gpowercap.zone.dev,
+				     &dev_attr_power_redistribution_threshold);
+	if (ret) {
+		pr_err("Failed to create power_redistribution_threshold sysfs for %s\n", name);
+		gpc_device_remove_file(&gpc_weights->gpowercap.zone.dev,
+				       &dev_attr_power_distribution_weights);
 		gpowercap_unregister(&gpc_weights->gpowercap);
 		return ERR_PTR(ret);
 	}

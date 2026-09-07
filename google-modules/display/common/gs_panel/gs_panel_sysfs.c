@@ -145,7 +145,7 @@ static ssize_t serial_number_show(struct device *dev, struct device_attribute *a
 	 * Either initialization (with power on) needs to have happened,
 	 * or need to have valid ID passed from bootloader
 	 */
-	if (!ctx->initialized && ctx->gs_connector->panel_id == INVALID_PANEL_ID)
+	if (!ctx->initialized && ctx->gs_connector->panel_id == PANEL_ID_INVALID_VALUE)
 		return -EPERM;
 
 	if (!strcmp(ctx->panel_serial_number, ""))
@@ -159,10 +159,10 @@ static ssize_t panel_extinfo_show(struct device *dev, struct device_attribute *a
 	const struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
 	const struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
-	if (ctx->panel_extinfo[0] == '\0')
+	if (ctx->panel_id == PANEL_ID_INVALID_VALUE)
 		return -EPERM;
 
-	return sysfs_emit(buf, "%s\n", ctx->panel_extinfo);
+	return sysfs_emit(buf, "%08x\n", swab32(ctx->panel_id));
 }
 
 static ssize_t panel_name_show(struct device *dev, struct device_attribute *attr, char *buf)

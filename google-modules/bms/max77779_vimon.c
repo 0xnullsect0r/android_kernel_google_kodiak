@@ -15,6 +15,8 @@
 #include <linux/list.h>
 #include <linux/genalloc.h>
 
+#include <misc/logbuffer.h>
+
 #include "google_bms.h"
 #include "max77779.h"
 #include "max77779_vimon.h"

@@ -2428,6 +2428,7 @@ static int dw_cdphy_frequency_hopping(struct phy *phy)
 		val = pll_config.pll_frac_quote;
 		dw_cdphy_write_field(cdphy_g301->field_pll_cfg7_rw_pll_frac_quot, val);
 		cdphy_g301->hs_config.datarate = cdphy->datarate;
+		memcpy(&cdphy_g301->hs_config.pll_config, &pll_config, sizeof(pll_config));
 	}
 
 	/* 10 - Set register */
@@ -2501,6 +2502,7 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 {
 	struct dw_mipi_cdphy *cdphy = phy_get_drvdata(phy);
 	struct dw_mipi_cdphy_g301 *cdphy_g301 = cdphy->cdphy_priv_data;
+	struct dw_cdphy_hs_configuration *hs_config = &cdphy_g301->hs_config;
 	struct phy_configure_opts_mipi_dphy *cdphy_opts = &opts->mipi_dphy;
 	u32 val = 0 ;
 	u32 ovr_en = cdphy->lane_ovr_en;
@@ -2509,10 +2511,7 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 	dev_info(&cdphy->phy->dev, "Configuring CD-PHY G301\n");
 	pr_info("datarate = %d\n", cdphy->datarate);
 
-	if (cdphy->datarate != cdphy_g301->hs_config.datarate) {
-		struct pll_config pll_config;
-		struct dphy_hs_regs dphy_regs;
-		struct cphy_hs_regs cphy_regs;
+	if (cdphy->datarate != 0) {
 		bool pll_calc_old = false;
 
 		if (cdphy->driver_data && cdphy->driver_data->pll_calc_old)
@@ -2530,35 +2529,28 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 
 		if (pll_calc_old)
 			ret = pll_calc(cdphy->datarate, cdphy->pll_ref_clk_khz,
-						cdphy->pll_ssc, &pll_config);
+						cdphy->pll_ssc, &hs_config->pll_config);
 		else
 			ret = pll_calc_v2(cdphy->datarate, cdphy->pll_ref_clk_khz,
-						cdphy->pll_ssc, &pll_config);
+						cdphy->pll_ssc, &hs_config->pll_config);
 
 		if (ret == 0) {
 			if (cdphy->is_cphy)
-				ret = cphy_regs_calc(cdphy->datarate, &cphy_regs);
+				ret = cphy_regs_calc(cdphy->datarate, &hs_config->cphy_regs);
 			else
-				ret = dphy_regs_calc(cdphy->datarate, &dphy_regs);
+				ret = dphy_regs_calc(cdphy->datarate, &hs_config->dphy_regs);
 		}
 
 		if (ret != 0) {
 			dev_warn(&cdphy->phy->dev, "%s: failed to apply datarate %d Mbps\n",
 				 __func__, cdphy->datarate);
-			if (cdphy_g301->hs_config.datarate != 0)
+			if (hs_config->datarate != 0)
 				dev_warn(&cdphy->phy->dev, "%s:  use %d Mbps\n", __func__,
-					 cdphy_g301->hs_config.datarate);
+					 hs_config->datarate);
 			else
 				return ret;
 		} else {
-			cdphy_g301->hs_config.datarate = cdphy->datarate;
-			memcpy(&cdphy_g301->hs_config.pll_config, &pll_config, sizeof(pll_config));
-			if (cdphy->is_cphy)
-				memcpy(&cdphy_g301->hs_config.cphy_regs, &cphy_regs,
-					sizeof(cphy_regs));
-			else
-				memcpy(&cdphy_g301->hs_config.dphy_regs, &dphy_regs,
-					sizeof(dphy_regs));
+			hs_config->datarate = cdphy->datarate;
 		}
 	}
 

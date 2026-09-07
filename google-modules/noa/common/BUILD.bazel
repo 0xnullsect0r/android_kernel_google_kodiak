@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_submodule", "kernel_module")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_submodule")
 load(":copy_files.bzl", "copy_files")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "noa.kconfig",
@@ -11,63 +16,6 @@ filegroup(
     visibility = [
         "//private/devices/google:__subpackages__",
         "//private/google-modules/soc/gs:__pkg__",
-    ],
-)
-
-filegroup(
-    name = "noa_headers",
-    srcs = glob([
-        "**/*.h",
-        "**/*.c",
-    ]),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/noa/common/sim/ncp:__pkg__",
-        "//private/google-modules/noa/common/sim/nep:__pkg__",
-        "//private/google-modules/noa/common/tether:__pkg__",
-        "//private/google-modules/radio/mediatek/t900/wwan/tmi3:__pkg__",
-        "//private/google-modules/radio/samsung/s5300:__pkg__",
-        "//private/google-modules/radio/samsung/s5400:__pkg__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/soc/rdo/pci:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4389:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390v2:__pkg__",
-        "//private/google-modules/wlan/wcn6740/wlan/qcacld-3.0:__pkg__",
-    ],
-)
-
-kernel_module(
-    name = "noa",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-        "**/Makefile",
-    ]) + [
-        "//private/google-modules/soc/gs:headers",
-    ] + select({
-        "//private/google-modules/power/mitigation:radio_s5300": [],
-        "//private/google-modules/power/mitigation:radio_s5400": [],
-        "//conditions:default": ["//private/google-modules/radio/mediatek/t900/wwan/tmi3:tmi3_headers"],
-    }),
-    outs = [
-        "ncp_sim.ko",
-        "nep_sim.ko",
-        "noa.ko",
-        "noa_cont.ko",
-        "noa_ring_manager.ko",
-    ],
-    kernel_build = "//private/google-modules/soc/gs:gs_kernel_build",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4389:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390v2:__pkg__",
-        "//private/google-modules/wlan/wcn6740/wlan/qcacld-3.0:__pkg__",
-    ],
-    deps = [
     ],
 )
 
@@ -166,6 +114,10 @@ ddk_headers(
     includes = ["."],
     visibility = [
         "//private/google-modules/radio/mediatek/t900/wwan/tmi3:__pkg__",
+        "//private/google-modules/soc/rdo/pci:__pkg__",
+        "//private/google-modules/wlan/bcmdhd/bcm4390v2:__pkg__",
+        "//private/google-modules/wlan/qcom/wcn7760/cnss2:__subpackages__",
+        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__subpackages__",
     ],
 )
 
@@ -211,6 +163,8 @@ ddk_submodule(
                 "sim/ncp/wlan_build/wdev_if/wdev_if.c",
                 "sim/ncp/wlan_build/wdev_if/hw_arch/brcm/wdev_if_hw_arch_brcm.c",
                 "sim/ncp/wlan_build/wdev_if/chip/brcm4390/wdev_if_chip_brcm_4390.c",
+                "sim/ncp/wlan_build/wdev_if/hw_arch/wcn7760/wdev_if_hw_arch_wcn7760.c",
+                "sim/ncp/wlan_build/wdev_if/chip/wcn7760/wdev_if_chip_wcn_7760.c",
                 "sim/ncp/wlan_build/wlan_debug_controller/wlan_packet_sniffer/wlan_debug_packet_sniffer_controller.c",
                 "sim/ncp/wlan_build/wlan_debug_controller/wlan_packet_sniffer/wlan_debug_packet_sniffer.c",
                 "sim/ncp/wlan_build/wlan_debug_controller/wlan_log_sys/wlan_debug_log_sys_controller.c",
@@ -622,16 +576,6 @@ ddk_submodule(
 ddk_module(
     name = "malibu.pixel",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/soc/rdo/pci:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4389:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390:__pkg__",
-        "//private/google-modules/wlan/bcmdhd/bcm4390v2:__pkg__",
-        "//private/google-modules/wlan/wcn6740/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":ddk-ncp_sim",
         ":ddk-nep_sim",
@@ -640,39 +584,6 @@ ddk_module(
         ":ddk-noa_ring_manager",
         ":ddk-noa_test_harness",
         "//common:all_headers_aarch64",
-    ],
-)
-
-kernel_module(
-    name = "noa.fullsoc",
-    srcs = glob([
-        "**/*.c",
-        "**/*.h",
-        "**/Makefile",
-        "**/Makefile.rpc",
-    ]) + [
-        "//private/google-modules/noa/nanopb:sources",
-        "//private/google-modules/noa/noah_lib:sources",
-    ] + [
-        "//private/google-modules/dpa:ddk_headers",
-        "//private/google-modules/soc/gs:headers",
-        "//private/google-modules/soc/rdo:rdo_soc_headers",
-    ],
-    outs = [
-        "ncp_sim.ko",
-        "nep_sim.ko",
-        "noa.ko",
-        "noa_cont.ko",
-        "noa_ring_manager.ko",
-    ],
-    kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
-    deps = [
-        "//common:all_headers_aarch64",
-        "//private/google-modules/dpa:google-dpa",
     ],
 )
 

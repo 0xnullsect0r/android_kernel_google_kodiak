@@ -1104,17 +1104,6 @@ static int mtk_wwan_newlink(void *ctxt, struct net_device *dev, u32 intf_id,
 
 	dev->max_mtu = wcb->data_blk->trans_info.max_mtu;
 
-#if !IS_ENABLED(CONFIG_GOOGLE_B490485015_WORKAROUND)
-	/*
-	 * b/490485015: The modem performs LRO and creates SKBs with a frag_list.
-	 * Advertising NETIF_F_GRO_FRAGLIST allows the kernel's GRO engine to also
-	 * perform GRO on these SKBs, creating an illegal nested frag_list, which
-	 * leads to a kernel panic. Disable fraglist GRO to prevent this.
-	 */
-	dev->features |= NETIF_F_GRO_FRAGLIST;
-	dev->hw_features |= NETIF_F_GRO_FRAGLIST;
-#endif
-
 	if (wcb->data_blk->trans_info.cap & DATA_F_GRO_HW) {
 		dev->features |= NETIF_F_GRO_HW;
 		dev->hw_features |= NETIF_F_GRO_HW;

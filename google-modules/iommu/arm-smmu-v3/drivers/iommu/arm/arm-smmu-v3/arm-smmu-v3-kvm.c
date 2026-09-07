@@ -311,7 +311,7 @@ static struct kvm_arm_smmu_domain *__kvm_arm_smmu_domain_alloc(void)
 	 * Initialize domain_id of just allocated domains to -1. This will be updated later
 	 * during domain attach time.
 	 */
-	arm_smmu_dom_tlm_rec_domain_id(kvm_smmu_domain->telemetry, UNFINALIZED_DOMAIN);
+	arm_smmu_dom_tlm_rec_domain_id(kvm_smmu_domain->telemetry, UNFINALIZED_DOMAIN, false);
 
 	return kvm_smmu_domain;
 }
@@ -532,7 +532,7 @@ static int kvm_arm_smmu_domain_finalize(struct kvm_arm_smmu_domain *kvm_smmu_dom
 	}
 
 out:
-	arm_smmu_dom_tlm_rec_domain_id(kvm_smmu_domain->telemetry, kvm_smmu_domain->id);
+	arm_smmu_dom_tlm_rec_domain_id(kvm_smmu_domain->telemetry, kvm_smmu_domain->id, nested);
 	kvm_smmu_domain->pgtbl_ops = pgtbl_ops;
 	kvm_smmu_domain->smmu = smmu;
 	return ret;
@@ -1019,8 +1019,10 @@ static int kvm_arm_smmu_map_pages(struct iommu_domain *domain,
 	arm_smmu_dom_tlm_rec_iova_pa_alignment(kvm_smmu_domain->telemetry, iova, paddr, size);
 	ret = kvm_iommu_map_pages(kvm_smmu_domain->id, iova, paddr, pgsize,
 				  pgcount, prot, gfp, total_mapped);
-
-	arm_smmu_dom_tlm_rec_iova_range(kvm_smmu_domain->telemetry, iova, *total_mapped);
+	if (!ret) {
+		arm_smmu_dom_tlm_map_end(kvm_smmu_domain->telemetry);
+		arm_smmu_dom_tlm_rec_iova_range(kvm_smmu_domain->telemetry, iova, *total_mapped);
+	}
 	return ret;
 }
 
@@ -1030,6 +1032,8 @@ static int kvm_arm_smmu_map_pages_nested(struct iommu_domain *domain, unsigned l
 {
 	struct kvm_arm_smmu_domain *kvm_smmu_domain = to_kvm_smmu_domain(domain);
 	struct io_pgtable_ops *ops = kvm_smmu_domain->pgtbl_ops;
+	size_t size = pgsize * pgcount;
+	int ret;
 
 	if (!ops)
 		return -ENODEV;
@@ -1039,7 +1043,13 @@ static int kvm_arm_smmu_map_pages_nested(struct iommu_domain *domain, unsigned l
 		prot &= ~IOMMU_GFP_KERNEL;
 	}
 
-	return ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp, total_mapped);
+	arm_smmu_dom_tlm_rec_iova_pa_alignment(kvm_smmu_domain->telemetry, iova, paddr, size);
+	ret = ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp, total_mapped);
+	if (!ret) {
+		arm_smmu_dom_tlm_map_end(kvm_smmu_domain->telemetry);
+		arm_smmu_dom_tlm_rec_iova_range(kvm_smmu_domain->telemetry, iova, *total_mapped);
+	}
+	return ret;
 }
 
 static void kvm_arm_smmu_consume_err(struct arm_smmu_device *smmu)
@@ -1072,6 +1082,8 @@ static size_t kvm_arm_smmu_unmap_pages(struct iommu_domain *domain,
 	local_lock_irqsave(&err_lock, flags);
 	kvm_arm_smmu_consume_err(kvm_smmu_domain->smmu);
 	local_unlock_irqrestore(&err_lock, flags);
+	if (unmapped)
+		arm_smmu_dom_tlm_unmap_end(kvm_smmu_domain->telemetry);
 
 	return unmapped;
 }
@@ -1092,6 +1104,8 @@ static size_t kvm_arm_smmu_unmap_pages_nested(struct iommu_domain *domain, unsig
 	local_lock_irqsave(&err_lock, flags);
 	kvm_arm_smmu_consume_err(kvm_smmu_domain->smmu);
 	local_unlock_irqrestore(&err_lock, flags);
+	if (unmapped)
+		arm_smmu_dom_tlm_unmap_end(kvm_smmu_domain->telemetry);
 
 	return unmapped;
 }
@@ -1159,6 +1173,16 @@ static struct iommu_map_cookie_sg *kvm_arm_smmu_alloc_cookie_sg(unsigned long io
 	int ret;
 	struct kvm_arm_smmu_map_sg *map_sg;
 
+	/*
+	 * For small scatter-gather lists, the overhead of batching (allocating
+	 * a page and sharing/unsharing it with the hypervisor) can outweigh
+	 * the performance benefits. Since sharing/unsharing adds two
+	 * hypercalls on top of the map_sg call, batching is only beneficial
+	 * for lists with more than three entries.
+	 */
+	if (nents < 4)
+		return NULL;
+
 	if (prot & IOMMU_GFP_KERNEL) {
 		gfp = GFP_KERNEL;
 		prot &= ~IOMMU_GFP_KERNEL;
@@ -1166,13 +1190,16 @@ static struct iommu_map_cookie_sg *kvm_arm_smmu_alloc_cookie_sg(unsigned long io
 
 	map_sg = kzalloc(sizeof(*map_sg), gfp);
 
-	if (!map_sg)
+	if (!map_sg) {
+		arm_smmu_tlm_rec_failed_cookie_alloc();
 		return NULL;
+	}
 	/* Limit list size to a single page. */
 	map_sg->nents = kvm_iommu_sg_nents_round(1);
 	map_sg->sg = kvm_iommu_sg_alloc(map_sg->nents, gfp);
 	if (!map_sg->sg) {
 		kfree(map_sg);
+		arm_smmu_tlm_rec_failed_cookie_alloc();
 		return NULL;
 	}
 	map_sg->iova = iova;
@@ -1183,6 +1210,7 @@ static struct iommu_map_cookie_sg *kvm_arm_smmu_alloc_cookie_sg(unsigned long io
 	if (ret) {
 		kvm_iommu_sg_free(map_sg->sg, map_sg->nents);
 		kfree(map_sg);
+		arm_smmu_tlm_rec_failed_cookie_alloc();
 		return NULL;
 	}
 
@@ -1202,8 +1230,8 @@ static int kvm_arm_smmu_add_deferred_map_sg(struct iommu_map_cookie_sg *cookie,
 	/* Out of space, flush the list. */
 	if (map_sg->nents == map_sg->ptr) {
 		arm_smmu_dom_tlm_rec_sg_len(kvm_smmu_domain->telemetry, map_sg->nents);
-		mapped = kvm_iommu_map_sg(kvm_smmu_domain->id, sg, map_sg->iova,
-					  map_sg->ptr, map_sg->prot, map_sg->gfp);
+		mapped = kvm_iommu_map_sg(kvm_smmu_domain->id, sg, map_sg->iova, map_sg->ptr,
+					  map_sg->prot, map_sg->gfp);
 		/*
 		 * Something went wrong, undo the mappings from the current sg list,
 		 * leaving total mapped as it would be unmapped from core code as
@@ -1250,16 +1278,18 @@ static size_t kvm_arm_smmu_consume_deferred_map_sg(struct iommu_map_cookie_sg *c
 	struct kvm_arm_smmu_domain *kvm_smmu_domain = to_kvm_smmu_domain(map_sg->cookie.domain);
 	size_t total_mapped = map_sg->total_mapped;
 
-	arm_smmu_dom_tlm_inc_map_sg_cnt(kvm_smmu_domain->telemetry);
-	arm_smmu_dom_tlm_rec_sg_len(kvm_smmu_domain->telemetry, map_sg->ptr);
 	/* Might be cleared from error path. */
 	if (map_sg->ptr)
-		total_mapped += kvm_iommu_map_sg(kvm_smmu_domain->id, sg, map_sg->iova,
-						 map_sg->ptr, map_sg->prot, map_sg->gfp);
+		total_mapped += kvm_iommu_map_sg(kvm_smmu_domain->id, sg, map_sg->iova, map_sg->ptr,
+						 map_sg->prot, map_sg->gfp);
 
 	/* Telemetry quirks */
 	mapped = total_mapped - map_sg->total_mapped;
-	arm_smmu_dom_tlm_rec_iova_range(kvm_smmu_domain->telemetry, map_sg->iova, mapped);
+	if (mapped) {
+		arm_smmu_dom_tlm_inc_map_sg_cnt(kvm_smmu_domain->telemetry);
+		arm_smmu_dom_tlm_rec_sg_len(kvm_smmu_domain->telemetry, map_sg->ptr);
+		arm_smmu_dom_tlm_rec_iova_range(kvm_smmu_domain->telemetry, map_sg->iova, mapped);
+	}
 	kvm_iommu_unshare_hyp_sg(sg, map_sg->nents);
 	kvm_iommu_sg_free(sg, map_sg->nents);
 	kfree(map_sg);
@@ -1500,12 +1530,14 @@ static irqreturn_t kvm_arm_smmu_evt_handler(int irq, void *dev)
 {
 	int ret;
 	struct arm_smmu_device *smmu = dev;
+	struct host_arm_smmu_device *host_smmu = smmu_to_host(smmu);
 	struct arm_smmu_queue *q = &smmu->evtq.q;
 	struct arm_smmu_ll_queue *llq = &q->llq;
 	static DEFINE_RATELIMIT_STATE(rs, DEFAULT_RATELIMIT_INTERVAL,
 				      DEFAULT_RATELIMIT_BURST);
 	u64 evt[EVTQ_ENT_DWORDS];
 	struct arm_smmu_event event = {0};
+	struct arm_smmu_device_telemetry_common *asdevtc = host_smmu->telemetry;
 
 	ret = pm_runtime_resume_and_get(smmu->dev);
 	if (ret < 0) {
@@ -1517,6 +1549,7 @@ static irqreturn_t kvm_arm_smmu_evt_handler(int irq, void *dev)
 		while (!queue_remove_raw(q, evt)) {
 			kvm_arm_smmu_decode_event(smmu, evt, &event);
 			if (kvm_arm_smmu_handle_event(smmu, evt, &event)) {
+				arm_smmu_dev_tlm_rec_evtq_fault(asdevtc, event.id);
 				arm_smmu_dump_event(smmu, evt, &event, &rs);
 				kvm_arm_smmu_dump_ptes(smmu, &event, &rs);
 			}
@@ -1542,6 +1575,7 @@ static irqreturn_t kvm_arm_smmu_gerror_handler(int irq, void *dev)
 {
 	u32 gerror, gerrorn, active;
 	struct arm_smmu_device *smmu = dev;
+	struct host_arm_smmu_device *host_smmu = smmu_to_host(smmu);
 
 	if (pm_runtime_get_if_active(smmu->dev) == 0) {
 		dev_err(smmu->dev, "Unable to handle global error interrupt because device not runtime active\n");
@@ -1562,8 +1596,10 @@ static irqreturn_t kvm_arm_smmu_gerror_handler(int irq, void *dev)
 		 active);
 
 	/* There is no API to reconfigure the device at the moment.*/
-	if (active & GERROR_SFM_ERR)
+	if (active & GERROR_SFM_ERR) {
 		dev_err(smmu->dev, "device has entered Service Failure Mode!\n");
+		arm_smmu_dev_tlm_inc_gerror_cnt(host_smmu->telemetry, SMMU_GERROR_SFM);
+	}
 
 	if (active & GERROR_MSI_GERROR_ABT_ERR)
 		dev_warn(smmu->dev, "GERROR MSI write aborted\n");
@@ -1580,8 +1616,10 @@ static irqreturn_t kvm_arm_smmu_gerror_handler(int irq, void *dev)
 	if (active & GERROR_PRIQ_ABT_ERR)
 		dev_err(smmu->dev, "PRIQ write aborted -- events may have been lost\n");
 
-	if (active & GERROR_EVTQ_ABT_ERR)
+	if (active & GERROR_EVTQ_ABT_ERR) {
 		dev_err(smmu->dev, "EVTQ write aborted -- events may have been lost\n");
+		arm_smmu_dev_tlm_inc_gerror_cnt(host_smmu->telemetry, SMMU_GERROR_EVTQ_ABT);
+	}
 
 	if (active & GERROR_CMDQ_ERR) {
 		dev_err(smmu->dev, "CMDQ ERR -- Hypervisor cmdq corrupted?\n");

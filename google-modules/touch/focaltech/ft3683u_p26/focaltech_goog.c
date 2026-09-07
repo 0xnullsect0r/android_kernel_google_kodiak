@@ -28,15 +28,18 @@ static irqreturn_t goog_fts_irq_ts(int irq, void *data)
 extern int int_test_has_interrupt;
 static irqreturn_t goog_fts_irq_handler(int irq, void *data)
 {
-    int_test_has_interrupt++;
+	WRITE_ONCE(int_test_has_interrupt, int_test_has_interrupt + 1);
+	if (unlikely(READ_ONCE(fts_data->int_test_running)))
+		complete(&fts_data->int_test_completion);
 
-    if (fts_data->log_level >= 2)
-      FTS_INFO("irq_handler gap: %lld", fts_data->isr_timestamp - fts_data->coords_timestamp);
+	if (fts_data->log_level >= 2)
+		FTS_INFO("irq_handler gap: %lld",
+			 fts_data->isr_timestamp - fts_data->coords_timestamp);
 
-    fts_data->coords_timestamp = fts_data->isr_timestamp;
-    fts_irq_read_report();
+	fts_data->coords_timestamp = fts_data->isr_timestamp;
+	fts_irq_read_report();
 
-    return IRQ_HANDLED;
+	return IRQ_HANDLED;
 }
 
 static int goog_enter_deep_sleep_mode(struct fts_ts_data *ts_data)
@@ -170,7 +173,6 @@ static int goog_fts_ts_suspend(struct device *dev)
 
         FTS_DEBUG("make TP enter into sleep mode");
         ret = goog_enter_deep_sleep_mode(ts_data);
-        ts_data->is_deepsleep = !ret;
         if (ret < 0) {
             FTS_ERROR("set TP to sleep mode fail, ret=%d", ret);
             continue;
@@ -222,7 +224,6 @@ static int goog_fts_ts_resume(struct device *dev)
 
     fts_update_feature_setting(ts_data);
 
-    ts_data->is_deepsleep = false;
     fts_irq_enable();
 
     FTS_FUNC_EXIT();
@@ -1099,11 +1100,17 @@ static int gti_ping(void *private_data, struct gti_ping_cmd *cmd)
 // Reference:
 static int gti_get_sensing_mode(void *private_data, struct gti_sensing_cmd *cmd)
 {
-    struct fts_ts_data *ts_data = private_data;
+	int ret = 0;
+	u8 wake_value = 0;
 
-    cmd->setting = (!ts_data->is_deepsleep) ?
-        GTI_SENSING_MODE_ENABLE : GTI_SENSING_MODE_DISABLE;
-    return 0;
+	ret = fts_read_reg(FTS_REG_WAKEUP, &wake_value);
+	if (ret < 0) {
+		FTS_ERROR("read reg0x95 fails ret %d", ret);
+		return ret;
+	}
+
+	cmd->setting = (wake_value == 0xAA) ? GTI_SENSING_MODE_DISABLE : GTI_SENSING_MODE_ENABLE;
+	return 0;
 }
 
 static int gti_get_vsync_hsync_frequency(

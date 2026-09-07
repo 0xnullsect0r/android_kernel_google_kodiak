@@ -19,7 +19,9 @@
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
+
 #include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 
 #include "hl7132_regs.h"
 #include "hl7132_charger.h"

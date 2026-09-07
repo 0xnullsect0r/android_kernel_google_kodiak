@@ -247,13 +247,15 @@ mlo_mgr_get_link_info_by_vdev_id(struct wlan_mlo_dev_context *mlo_dev_ctx,
  * @psoc: Pointer to soc
  * @sync_ind: Structure with roam synch parameters
  *
- * During roaming reassoc, when partner link rejected while standby link
- * allowed, link vdev will switch from partner link to standby link,
- * link vdev self mac will be changed to standby link self mac in F/W and
- * passed to host by roam_sync event.
- * Host also need update all self mac info in link vdev and os_if accordingly.
+ * Called for every active link during roam sync to sync the FW-assigned
+ * per-link self MAC into vdev_mlme macaddr/linkaddr and HDD link_info.
+ * For links whose MAC changed (e.g. standby link promoted to partner),
+ * also updates DP with the new MAC address.
+ * The OSIF callback is invoked for all links, including those whose MAC
+ * is unchanged, to ensure vdev_mlme is always consistent with the MLO
+ * MGR sta_ctx link table after roam.
  *
- * Return: void
+ * Return: QDF_STATUS
  */
 static QDF_STATUS
 mlo_roam_update_all_vdev_macaddr(struct wlan_objmgr_psoc *psoc,
@@ -310,10 +312,7 @@ mlo_roam_update_all_vdev_macaddr(struct wlan_objmgr_psoc *psoc,
 			continue;
 		}
 
-		if (qdf_is_macaddr_equal(&link_info->link_addr, new_self_mac))
-			continue;
-
-		/* Save old MAC address before updating */
+		/* Save old MAC address before invoking callback */
 		qdf_copy_macaddr(&old_self_mac, &link_info->link_addr);
 
 		status = cb(roamed_vdev, link_vdev_id,
@@ -325,11 +324,13 @@ mlo_roam_update_all_vdev_macaddr(struct wlan_objmgr_psoc *psoc,
 		}
 		/* Update link_info with new MAC address */
 		qdf_copy_macaddr(&link_info->link_addr, new_self_mac);
-		mlo_debug("Updated vdev %d MAC from "
-			  QDF_MAC_ADDR_FMT " to " QDF_MAC_ADDR_FMT,
-			  link_info->vdev_id,
-			  QDF_MAC_ADDR_REF(old_self_mac.bytes),
-			  QDF_MAC_ADDR_REF(new_self_mac->bytes));
+
+		if (!qdf_is_macaddr_equal(&old_self_mac, new_self_mac))
+			mlo_debug("Updated vdev %d MAC from "
+				  QDF_MAC_ADDR_FMT " to " QDF_MAC_ADDR_FMT,
+				  link_info->vdev_id,
+				  QDF_MAC_ADDR_REF(old_self_mac.bytes),
+				  QDF_MAC_ADDR_REF(new_self_mac->bytes));
 	}
 
 rel_ref:
@@ -1452,6 +1453,19 @@ mlo_roam_prepare_and_send_link_connect_req(struct wlan_objmgr_vdev *assoc_vdev,
 		req.crypto.mgmt_ciphers = rso_cfg->orig_sec_info.mgmtcipherset;
 		req.crypto.akm_suites = rso_cfg->orig_sec_info.key_mgmt;
 		req.assoc_ie.len = rso_cfg->assoc_ie.len;
+		/*
+		 * Derive user_mfp from rso_rsn_caps (for cross-AKM roam)
+		 * but also preserve MFPC/MFPR from the original connection
+		 * profile. If rso_rsn_caps lost these bits (e.g. due to
+		 * user_mfp not being re-propagated), orig_sec_info.rsn_caps
+		 * ensures they are restored, preventing rso_rsn_caps from
+		 * being permanently zeroed out on the next cm_connect_start_ind.
+		 */
+		req.crypto.user_mfp =
+			(rso_cfg->rso_rsn_caps |
+			 (rso_cfg->orig_sec_info.rsn_caps &
+			  (RSN_CAP_MFP_REQUIRED | RSN_CAP_MFP_CAPABLE))) &
+			(RSN_CAP_MFP_REQUIRED | RSN_CAP_MFP_CAPABLE);
 
 		req.assoc_ie.ptr = qdf_mem_malloc(req.assoc_ie.len);
 		if (!req.assoc_ie.ptr)

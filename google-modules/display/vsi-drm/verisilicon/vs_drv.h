@@ -8,12 +8,32 @@
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <drm/drm_atomic.h>
 #include <drm/drm_device.h>
 #include <drm/drm_gem.h>
 
 #include <drm/sscd/gs_sscd_dpu.h>
 #include "vs_sscd.h"
 #include "vs_plane.h"
+
+/**
+ * struct vs_drm_private_state - vs_drm private state object.
+ * @base: DRM private state base.
+ * @fe0_dma_sram_used: bytes of DMA SRAM currently committed to FE0.
+ * @fe1_dma_sram_used: bytes of DMA SRAM currently committed to FE1.
+ * @fe0_scl_sram_used: bytes of scaler (SCL) SRAM currently committed to FE0.
+ * @fe1_scl_sram_used: bytes of scaler (SCL) SRAM currently committed to FE1.
+ */
+struct vs_drm_private_state {
+	struct drm_private_state base;
+
+	u32 fe0_dma_sram_used;
+	u32 fe1_dma_sram_used;
+	u32 fe0_scl_sram_used;
+	u32 fe1_scl_sram_used;
+};
+
+#define to_vs_drm_private_state(state) container_of((state), struct vs_drm_private_state, base)
 
 struct drm_state_history_record;
 
@@ -24,8 +44,10 @@ struct drm_state_history_record;
  * @domain: iommu domain for DRM.
  *  - all DC IOMMU share same domain to reduce mapping
  * @pitch_alignment: buffer pitch alignment required by sub-devices.
+ * @private_state_obj: internal DRM private obj mapped to vs_drm_private_state.
  */
 struct vs_drm_private {
+	struct drm_private_obj private_state_obj;
 	struct device *dma_dev;
 	/* when we have more than one display core, this need to be an array */
 	struct device *dc_dev;
@@ -59,6 +81,11 @@ struct vs_drm_private {
 	 * state coredumps. Filled during bind.
 	 */
 	struct sscd_funcs dpu_state_coredump_funcs;
+
+	/**
+	 * @wb_connectors_mask: Bitmask of all writeback connectors on the device
+	 */
+	u32 wb_connectors_mask;
 };
 
 int vs_drm_iommu_attach_device(struct drm_device *drm_dev, struct device *dev);

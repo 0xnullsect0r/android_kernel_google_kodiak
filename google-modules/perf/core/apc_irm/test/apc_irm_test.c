@@ -226,8 +226,10 @@ static void apc_irm_test_register_writes(struct kunit *test)
 			      << CPM_IRM_FREQ_CLAMP_INT_ANCESTOR_FAB_SHIFT;
 	expected_min_clamp |= min_t(u16, 8, CPM_IRM_FREQ_CLAMP_INT_DESCENDANT_FAB_MASK)
 			      << CPM_IRM_FREQ_CLAMP_INT_DESCENDANT_FAB_SHIFT;
+#if (IS_ENABLED(CONFIG_SOC_MBU) || IS_ENABLED(CONFIG_SOC_LGA))
 	// Expect valid bit to be set since values are not default (0xF)
 	expected_min_clamp |= CPM_IRM_FREQ_CLAMP_VALID_BIT;
+#endif
 
 	val = get_irm_register_value_from_mbfs(client, MIN_CLAMP_GMC_FILE_NAME);
 	KUNIT_EXPECT_EQ(test, val, expected_min_clamp);

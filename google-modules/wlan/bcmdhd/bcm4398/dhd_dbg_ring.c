@@ -1,7 +1,7 @@
 /*
  * DHD debug ring API and structures - implementation
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -109,6 +109,7 @@ dhd_dbg_ring_init(dhd_pub_t *dhdp, dhd_dbg_ring_t *ring, uint16 id, uint8 *name,
 	}
 
 	ring->lock = DHD_DBG_RING_LOCK_INIT(dhdp->osh);
+	OSL_LOCK_CLASS_SET(ring->lock);
 
 	DHD_DBG_RING_LOCK(ring->lock, flags);
 	ring->id = id;

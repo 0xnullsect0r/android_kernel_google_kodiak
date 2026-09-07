@@ -22,6 +22,9 @@
 
 #include <gcip/gcip-dma-fence.h>
 
+/* Disable the macro magic in the header file. */
+#undef gcip_dma_fence_manager_create
+
 #define to_gfence(fence) container_of(fence, struct gcip_dma_fence, fence)
 
 int gcip_signal_dma_fence_with_status(struct dma_fence *fence, int error, bool ignore_signaled)

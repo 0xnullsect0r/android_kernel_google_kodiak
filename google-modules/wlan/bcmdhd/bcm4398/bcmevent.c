@@ -1,7 +1,7 @@
 /*
  * bcmevent read-only data shared by kernel or app layers
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -258,6 +258,13 @@ static const bcmevent_name_str_t bcmevent_names[] = {
 	BCMEVENT_NAME(WLC_E_VLPTPC),
 	BCMEVENT_NAME(WLC_E_SBI_SC_EVENT),
 	BCMEVENT_NAME(WLC_E_SCHED_PM)
+#if defined(D11FRAME)
+	BCMEVENT_NAME(WLC_E_D11FRAME),
+	BCMEVENT_NAME(WLC_E_D11FRAME_RX),
+	BCMEVENT_NAME(WLC_E_D11FRAME_COMPLETE),
+	BCMEVENT_NAME(WLC_E_D11FRAME_OFF_CHAN_COMPLETE),
+	BCMEVENT_NAME(WLC_E_D11FRAME_OFF_CHAN_DWELL_COMPLETE),
+#endif /* D11FRAME */
 };
 
 const char *bcmevent_get_name(uint event_type)

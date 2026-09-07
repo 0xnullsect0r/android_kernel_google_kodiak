@@ -5682,76 +5682,6 @@ bool policy_mgr_is_mlo_sta_disconnected(struct wlan_objmgr_psoc *psoc,
 	return disconnected;
 }
 
-void
-policy_mgr_check_and_disconnect_gc_on_last_dfs_freq(struct wlan_objmgr_psoc *psoc)
-{
-	uint32_t gc_freq_list[MAX_NUMBER_OF_CONC_CONNECTIONS];
-	uint8_t gc_vdev_id[MAX_NUMBER_OF_CONC_CONNECTIONS];
-	uint32_t gc_count, i, j;
-	struct wlan_objmgr_vdev *vdev;
-	struct qdf_mac_addr bssid = {0};
-	struct policy_mgr_psoc_priv_obj *pm_ctx;
-	uint32_t sta_freq_list[MAX_NUMBER_OF_CONC_CONNECTIONS] = {0};
-	uint32_t sta_freq_count = 0;
-	bool scc_sta_present = false;
-
-	pm_ctx = policy_mgr_get_context(psoc);
-	if (!pm_ctx) {
-		policy_mgr_err("Invalid Context");
-		return;
-	}
-
-	if (!pm_ctx->cfg.cfg_sta_dfs_ch_peer_scc)
-		return;
-
-	gc_count = policy_mgr_get_mode_specific_conn_info(psoc, gc_freq_list,
-							  gc_vdev_id,
-							  PM_P2P_CLIENT_MODE);
-	if (!policy_mgr_is_hw_dbs_capable(psoc) &&
-	    policy_mgr_is_mlo_sta_present(psoc)) {
-		policy_mgr_get_sta_connected_frequencies(psoc, sta_freq_list,
-							 &sta_freq_count);
-	} else {
-		sta_freq_count =
-			policy_mgr_get_mode_specific_conn_info(psoc,
-							       sta_freq_list,
-							       NULL,
-							       PM_STA_MODE);
-	}
-
-	for (i = 0; i < gc_count; i++) {
-		if (!wlan_reg_is_dfs_for_freq(pm_ctx->pdev, gc_freq_list[i]))
-			continue;
-
-		/* check if SCC sta present on DFS channel */
-		scc_sta_present = false;
-		for (j = 0; j < sta_freq_count; j++) {
-			if (gc_freq_list[i] == sta_freq_list[j])
-				scc_sta_present = true;
-		}
-		if (scc_sta_present)
-			continue;
-
-		policy_mgr_debug("CLI vdev %d, was on DFS freq %d, issuing silent disconnect",
-				 gc_vdev_id[i], gc_freq_list[i]);
-
-		vdev = wlan_objmgr_get_vdev_by_id_from_psoc(psoc,
-							    gc_vdev_id[i],
-							    WLAN_POLICY_MGR_ID);
-		if (!vdev) {
-			policy_mgr_err("Failed to get vdev object vdev %d)",
-				       gc_vdev_id[i]);
-			continue;
-		}
-
-		wlan_vdev_get_bss_peer_mac(vdev, &bssid);
-		wlan_cm_disconnect(vdev, CM_MLME_DISCONNECT,
-				   REASON_OPER_CHANNEL_USER_DISABLED,
-				   &bssid);
-		wlan_objmgr_vdev_release_ref(vdev, WLAN_POLICY_MGR_ID);
-	}
-}
-
 void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,
 				    enum QDF_OPMODE mode, uint8_t session_id,
 				    bool update_flow_pool_map)
@@ -5859,9 +5789,6 @@ void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,
 	    wlan_reg_is_dfs_for_freq(pm_ctx->pdev, cur_freq) &&
 	    pm_ctx->conc_cbacks.ap_assist_dfs_group_notify)
 		pm_ctx->conc_cbacks.ap_assist_dfs_group_notify(true);
-
-	if (mode == QDF_STA_MODE)
-		policy_mgr_check_and_disconnect_gc_on_last_dfs_freq(psoc);
 }
 
 /**
@@ -6129,9 +6056,6 @@ QDF_STATUS policy_mgr_decr_active_session(struct wlan_objmgr_psoc *psoc,
 	    wlan_reg_is_dfs_for_freq(pm_ctx->pdev, cur_freq) &&
 	    pm_ctx->conc_cbacks.ap_assist_dfs_group_notify)
 		pm_ctx->conc_cbacks.ap_assist_dfs_group_notify(false);
-
-	if (mode == QDF_STA_MODE)
-		policy_mgr_check_and_disconnect_gc_on_last_dfs_freq(psoc);
 
 	return qdf_status;
 }
@@ -6687,7 +6611,7 @@ bool policy_mgr_is_6ghz_conc_mode_supported(
 	struct wlan_objmgr_psoc *psoc, enum policy_mgr_con_mode mode)
 {
 	if (mode == PM_STA_MODE || mode == PM_P2P_CLIENT_MODE ||
-	    policy_mgr_is_beaconing_mode(mode))
+	    mode == PM_PASSTHRU_MODE || policy_mgr_is_beaconing_mode(mode))
 		return true;
 	else
 		return false;
@@ -6701,7 +6625,7 @@ bool policy_mgr_is_6ghz_conc_mode_supported(
  * @mode: new connection mode
  * @ch_freq: channel freq
  *
- * 1. Only STA/SAP are allowed on 6Ghz.
+ * 1. Only STA/SAP/PASSTHRU are allowed on 6Ghz.
  * 2. If there is DFS beacon entity existing on 5G band, 5G+6G MCC is not
  * allowed.
  *
@@ -6724,7 +6648,7 @@ static bool policy_mgr_is_6g_channel_allowed(
 	if (!WLAN_REG_IS_6GHZ_CHAN_FREQ(ch_freq))
 		return true;
 
-	/* Only STA/SAP is supported on 6Ghz currently */
+	/* Only STA/SAP/PASSTHRU is supported on 6Ghz currently */
 	if (!policy_mgr_is_6ghz_conc_mode_supported(psoc, mode)) {
 		policy_mgr_rl_debug("mode %d for 6ghz not supported", mode);
 		return false;

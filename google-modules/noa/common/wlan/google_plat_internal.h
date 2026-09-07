@@ -33,7 +33,7 @@ struct sta_info {
 	/* private */
 	u8 encrypt_type : 4, encap_type : 2, lmac_id : 2;
 	u8 bmid;
-	u8 reserved1[2];
+	u16 fw_metadata;
 	u32 search_idx : 20, search_type : 2, dscp_tid_map_id : 6, addry_en : 1, addrx_en : 1,
 		reserved2 : 2;
 } __attribute__((packed, aligned(4)));
@@ -58,6 +58,7 @@ struct platform_bus_ops {
 	void (*update_flowid_lkup_entry)(struct flow_id_entry_update *entry);
 	void (*sync_pci_link_state)(int32_t state, bool is_to_shm);
 	void (*notify_station_state)(uint8_t state, void *dhd_pub, int iflist_idx);
+	int (*rx_handover)(void *priv);
 };
 
 #endif // GOOGLE_PLAT_INTERNAL_H_

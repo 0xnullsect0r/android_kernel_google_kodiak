@@ -17,6 +17,9 @@
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
+
 #include "pe26100_regs.h"
 #include "pe26100_driver.h"
 #include "pe26100_cp_charger.h"

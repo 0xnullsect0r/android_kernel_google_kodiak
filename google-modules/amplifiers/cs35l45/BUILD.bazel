@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "headers",
@@ -90,19 +95,5 @@ ddk_module(
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
-    ],
-)
-
-kernel_module_group(
-    name = "cs35l45",
-    srcs = [
-        ":cs35l45-cs-dsp",
-        ":snd-soc-cs35l45",
-        ":snd-soc-cs35l45-i2c",
-        ":snd-soc-cs35l45-spi",
-        ":snd-soc-cs35l45-wm-adsp",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

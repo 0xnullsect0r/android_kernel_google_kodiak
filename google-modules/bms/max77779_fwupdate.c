@@ -17,6 +17,9 @@
 #include <linux/regmap.h>
 #include <linux/debugfs.h>
 
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
+
 #include "google_bms.h"
 #include "max77779_regs.h"
 #include "max77779.h"

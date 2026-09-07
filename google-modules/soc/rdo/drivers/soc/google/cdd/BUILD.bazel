@@ -2,12 +2,10 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",

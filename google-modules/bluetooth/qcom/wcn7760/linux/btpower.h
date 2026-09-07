@@ -11,7 +11,7 @@
 #include <linux/mailbox/qmp.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/types.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 /*
  * voltage regulator information required for configuring the

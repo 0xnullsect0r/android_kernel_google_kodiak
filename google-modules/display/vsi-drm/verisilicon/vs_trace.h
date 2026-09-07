@@ -381,38 +381,36 @@ TRACE_EVENT(disp_qos_boost_fab_clk,
 		__entry->display_id, __entry->fab_khz, __entry->core_khz));
 
 DECLARE_EVENT_CLASS(disp_commit_wait,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending),
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending),
 	TP_STRUCT__entry(
 		__field(int, display_id)
-		__field(u32, old_plane_mask)
-		__field(u32, new_plane_mask)
 		__field(u32, swapped_plane_mask)
+		__field(u32, enabling_secure_mask)
 		__field(int, frames_pending)
 	),
 	TP_fast_assign(
 		__entry->display_id = display_id;
-		__entry->old_plane_mask = old_plane_mask;
-		__entry->new_plane_mask = new_plane_mask;
 		__entry->swapped_plane_mask = swapped_plane_mask;
+		__entry->enabling_secure_mask = enabling_secure_mask;
 		__entry->frames_pending = frames_pending;
 	),
-	TP_printk("display_id: %d old_plane_mask: %#x new_plane_mask: %#x swapped_plane_mask: %#x frames_pending: %d",
-		__entry->display_id, __entry->old_plane_mask, __entry->new_plane_mask,
-		__entry->swapped_plane_mask, __entry->frames_pending)
+	TP_printk("display_id: %d swapped_plane_mask: %#x enabling_secure_mask: %#x frames_pending: %d",
+		__entry->display_id, __entry->swapped_plane_mask,
+		__entry->enabling_secure_mask, __entry->frames_pending)
 );
 
 DEFINE_EVENT(disp_commit_wait, disp_commit_wait_begin,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending)
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending)
 );
 
 DEFINE_EVENT(disp_commit_wait, disp_commit_wait_done,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending)
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending)
 );
 
 /* Specific HW Programming Traces */

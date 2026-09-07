@@ -33,6 +33,8 @@
 #include <linux/usb/pd.h>
 #include <linux/usb/tcpm.h>
 #include <linux/alarmtimer.h>
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
 #include "google_dc_pps.h"
@@ -97,6 +99,15 @@
 #define MIN_BD_TEMP	0
 
 #define MAX_BD_PAUSE_SOC (95)
+
+enum adv_defend_state {
+	ADV_STATE_USER_STOP = -2, /* User manually stops using adv_defender */
+	ADV_STATE_DISABLE = -1,   /* HLOS disables via AConfig flag */
+	ADV_STATE_NONE = 0,       /* Feature is enabled and monitoring, but not triggered */
+	ADV_STATE_1 = 1,          /* Long-term protection is active (Stage 1) */
+	ADV_STATE_2 = 2,          /* Long-term protection is active (Stage 2) */
+	ADV_STATE_COUNT
+};
 
 #define FCC_OF_CDEV_NAME "google,charger"
 #define FCC_CDEV_NAME "fcc"
@@ -234,6 +245,8 @@ struct bd_data {
 
 	/* dwell_defend */
 	int dwell_state;
+	int adv_state;
+	int adv_temp_dry_run;
 
 	/* dock_defend */
 	u32 dd_triggered;
@@ -352,6 +365,9 @@ struct chg_drv {
 	struct pd_pps_data pps_data;
 	unsigned int pps_cc_tolerance_pct;
 	union gbms_charger_state chg_state;
+
+	int chg_vin_mv;
+	int chg_iin_ma;
 
 	/* override voltage and current */
 	bool enable_user_fcc_fv;
@@ -662,6 +678,7 @@ static void chg_stats_update(struct chg_drv *chg_drv, struct gbms_ce_tier_stats 
 	int ibatt_ma, temp;
 	int cc, soc_in;
 	ktime_t elap, now = get_boot_sec();
+	int vbatt_uv, vbatt_mv = 0;
 	int ioerr;
 
 	mutex_lock(&chg_drv->stats_lock);
@@ -693,8 +710,13 @@ static void chg_stats_update(struct chg_drv *chg_drv, struct gbms_ce_tier_stats 
 	if (ioerr != 0)
 		soc_in = -1; /* Still allows for tier updates */
 
-	gbms_stats_update_tier(0, ibatt_ma, temp, elap, cc, &chg_drv->chg_state, -1,
-				soc_in << 8, tier);
+	vbatt_uv = GPSY_GET_INT_PROP(chg_drv->bat_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &ioerr);
+	if (ioerr == 0 && vbatt_uv > 0)
+		vbatt_mv = vbatt_uv / 1000;
+
+	gbms_stats_update_tier(now, 0, ibatt_ma, temp, elap, cc, &chg_drv->chg_state, -1,
+				soc_in << 8, chg_drv->chg_vin_mv, chg_drv->chg_iin_ma,
+				vbatt_mv, tier);
 stats_update_unlock:
 	mutex_unlock(&chg_drv->stats_lock);
 }
@@ -1474,6 +1496,8 @@ static int chg_work_roundtrip(struct chg_drv *chg_drv,
 	int voted_cc_max;
 	int update_interval, rc;
 	bool wlc_on, usb_on, ext_on;
+	int vin_mv = 0, iin_ma = 0, v = 0, i = 0;
+	union gbms_propval pval;
 
 	rc = gbms_read_charger_state(chg_state, chg_psy);
 	if (rc < 0)
@@ -1522,6 +1546,40 @@ static int chg_work_roundtrip(struct chg_drv *chg_drv,
 
 	dev_info_ratelimited(chg_drv->device, "%s: wlc_on=%d usb_on=%d chg_state=%llx batt_chg_state=%llx\n",
 			     __func__, wlc_on, usb_on, chg_state->v, batt_chg_state.v);
+
+	if (usb_on) {
+		struct power_supply *usb_psy = chg_drv->tcpm_psy ?
+					chg_drv->tcpm_psy : chg_drv->usb_psy;
+		v = PSY_GET_PROP(usb_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		i = PSY_GET_PROP(usb_psy, POWER_SUPPLY_PROP_CURRENT_NOW);
+		if (v > 0)
+			vin_mv = v / 1000;
+		if (i > 0)
+			iin_ma = i / 1000;
+	} else if (wlc_on) {
+		v = GPSY_GET_PROP(chg_drv->wlc_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		i = GPSY_GET_PROP(chg_drv->wlc_psy, POWER_SUPPLY_PROP_CURRENT_NOW);
+		if (v > 0)
+			vin_mv = v / 1000;
+		if (i > 0)
+			iin_ma = i / 1000;
+	} else if (ext_on) {
+		v = PSY_GET_PROP(chg_drv->ext_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		i = PSY_GET_PROP(chg_drv->ext_psy, POWER_SUPPLY_PROP_CURRENT_NOW);
+		if (v > 0)
+			vin_mv = v / 1000;
+		if (i > 0)
+			iin_ma = i / 1000;
+	}
+
+	chg_drv->chg_vin_mv = vin_mv;
+	chg_drv->chg_iin_ma = iin_ma;
+
+	/* Push to battery */
+	pval.prop.intval = vin_mv;
+	gbms_set_property(chg_drv->bat_psy, GBMS_PROP_INPUT_VOLTAGE_NOW, &pval);
+	pval.prop.intval = iin_ma;
+	gbms_set_property(chg_drv->bat_psy, GBMS_PROP_INPUT_CURRENT_NOW, &pval);
 
 	/* might return negative values in fv_uv and cc_max */
 	rc = chg_work_batt_roundtrip(&batt_chg_state, chg_drv->bat_psy,
@@ -2033,8 +2091,11 @@ static int bd_update_stats(struct chg_drv *chg_drv, const ktime_t now, bool onli
 		return ret;
 
 	/* not over vbat and !triggered, nothing to see here */
-	if (vbatt < bd_state->bd_trigger_voltage && !triggered)
+	if (vbatt < bd_state->bd_trigger_voltage && !triggered) {
+		/* reset baseline to avoid large elap time when vbatt drops below trigger */
+		bd_state->last_update = 0;
 		return 0;
+	}
 
 	reset_reason = chg_bd_can_reset(chg_drv, now, &rv, online);
 	if (reset_reason < 0) {
@@ -2710,11 +2771,21 @@ int chg_switch_profile(struct pd_pps_data *pps, struct power_supply *tcpm_psy,
 }
 
 
+static inline int get_effective_adv_state(struct chg_drv *chg_drv)
+{
+	int state = chg_drv->bd_state.adv_state;
+
+	if (chg_drv->bd_state.adv_temp_dry_run != ADV_STATE_COUNT)
+		state = chg_drv->bd_state.adv_temp_dry_run;
+	return state;
+}
+
 static void chg_update_csi(struct chg_drv *chg_drv)
 {
 	const bool is_policy = chg_drv->charging_policy == CHARGING_POLICY_VOTE_LONGLIFE;
 	const bool is_dwell = !is_policy && chg_drv->bd_state.dwell_state >= STATE_ACTIVE_1;
 	const bool is_visible_dwell = is_dwell && chg_drv->bd_state.dwell_state >= STATE_ACTIVE_2;
+	const bool is_advd = get_effective_adv_state(chg_drv) > 0;
 	const bool is_disconnected = chg_state_is_disconnected(&chg_drv->chg_state);
 	const bool is_full = (chg_drv->chg_state.f.flags & GBMS_CS_FLAG_DONE) != 0;
 	const bool is_dock = chg_drv->bd_state.dd_state == DOCK_DEFEND_ACTIVE;
@@ -2756,7 +2827,7 @@ static void chg_update_csi(struct chg_drv *chg_drv)
 	/* Longlife is set on TEMP, DWELL and TRICKLE */
 	gvotable_cast_long_vote(chg_drv->csi_type_votable, "CSI_TYPE_DEFEND",
 				CSI_TYPE_LongLife,
-				is_temp || is_visible_dwell || is_dock || is_policy);
+				is_temp || is_visible_dwell || is_dock || is_policy || is_advd);
 
 	/* Set to normal if the device docked */
 	if (is_dock)
@@ -3458,6 +3529,78 @@ static ssize_t set_dwell_state(struct device *dev, struct device_attribute *attr
 }
 
 static DEVICE_ATTR(dwell_state, 0660, show_dwell_state, set_dwell_state);
+
+static ssize_t show_adv_state(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct chg_drv *chg_drv = dev_get_drvdata(dev);
+	int state = get_effective_adv_state(chg_drv);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", state);
+}
+
+static ssize_t set_adv_state(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct chg_drv *chg_drv = dev_get_drvdata(dev);
+	int ret, val;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	if (val < ADV_STATE_USER_STOP || val >= ADV_STATE_COUNT)
+		return -EINVAL;
+
+	if (chg_drv->bd_state.adv_state != val) {
+		dev_info(chg_drv->device, "ADV_DEFEND: state %d -> %d\n",
+			 chg_drv->bd_state.adv_state, val);
+		chg_drv->bd_state.adv_state = val;
+
+		/* Notify battery driver to update UI and charging behavior */
+		if (chg_drv->bat_psy)
+			power_supply_changed(chg_drv->bat_psy);
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR(adv_state, 0660, show_adv_state, set_adv_state);
+
+static ssize_t show_adv_temp_dry_run(struct device *dev, struct device_attribute *attr,
+				     char *buf)
+{
+	struct chg_drv *chg_drv = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", chg_drv->bd_state.adv_temp_dry_run);
+}
+
+static ssize_t set_adv_temp_dry_run(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct chg_drv *chg_drv = dev_get_drvdata(dev);
+	int ret, val;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret < 0)
+		return ret;
+
+	/* Any out-of-bounds value disables the dryrun */
+	if (val < ADV_STATE_USER_STOP || val >= ADV_STATE_COUNT)
+		val = ADV_STATE_COUNT;
+
+	if (chg_drv->bd_state.adv_temp_dry_run != val) {
+		dev_info(chg_drv->device, "ADV_DEFEND_DRY_RUN: %d -> %d\n",
+			 chg_drv->bd_state.adv_temp_dry_run, val);
+		chg_drv->bd_state.adv_temp_dry_run = val;
+		if (chg_drv->bat_psy)
+			power_supply_changed(chg_drv->bat_psy);
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR(adv_temp_dry_run, 0660, show_adv_temp_dry_run, set_adv_temp_dry_run);
 
 static ssize_t
 show_bd_temp_enable(struct device *dev,
@@ -4573,6 +4716,18 @@ static int chg_init_fs(struct chg_drv *chg_drv)
 	ret = device_create_file(chg_drv->device, &dev_attr_dwell_state);
 	if (ret != 0) {
 		pr_err("Failed to create dwell_state files, ret=%d\n", ret);
+		return ret;
+	}
+
+	ret = device_create_file(chg_drv->device, &dev_attr_adv_state);
+	if (ret != 0) {
+		pr_err("Failed to create adv_state file, ret=%d\n", ret);
+		return ret;
+	}
+
+	ret = device_create_file(chg_drv->device, &dev_attr_adv_temp_dry_run);
+	if (ret != 0) {
+		pr_err("Failed to create adv_temp_dry_run file, ret=%d\n", ret);
 		return ret;
 	}
 
@@ -6375,6 +6530,7 @@ static int google_charger_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	chg_drv->device = &pdev->dev;
+	chg_drv->bd_state.adv_temp_dry_run = ADV_STATE_COUNT;
 
 	ret = of_property_read_string(pdev->dev.of_node,
 				      "google,chg-power-supply",

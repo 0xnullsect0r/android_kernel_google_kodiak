@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -54,10 +59,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         ":bcmdhd_headers",
         "//private/google-modules/soc/gs/drivers/pci/controller/dwc-whi:pcie-exynos-gs",

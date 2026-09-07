@@ -1112,8 +1112,6 @@ extern unsigned long osl_spin_lock(void *lock);
 extern void osl_spin_unlock(void *lock, unsigned long flags);
 extern unsigned long osl_spin_lock_irq(void *lock);
 extern void osl_spin_unlock_irq(void *lock, unsigned long flags);
-extern unsigned long osl_spin_lock_bh(void *lock);
-extern void osl_spin_unlock_bh(void *lock, unsigned long flags);
 extern void osl_bpt_chk_rreg_status(bool read_st);
 
 extern void *osl_mutex_lock_init(osl_t *osh);

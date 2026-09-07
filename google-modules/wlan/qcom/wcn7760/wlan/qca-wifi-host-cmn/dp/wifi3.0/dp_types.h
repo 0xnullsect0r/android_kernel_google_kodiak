@@ -2514,6 +2514,10 @@ struct dp_swlm_ops {
  *			   throughput did not meet session threshold
  * @tcl.coalesce_success: Num of TCL HP writes coalesced successfully.
  * @tcl.coalesce_fail: Num of TCL HP writes coalesces failed
+ * @tcl.timer_dom_coalesce_dis: Num times coalescing disabled by
+ *				timer-dominance monitor
+ * @tcl.timer_dom_coalesce_ena: Num times coalescing re-enabled by
+ *				timer-dominance monitor
  */
 struct dp_swlm_stats {
 	struct {
@@ -2527,6 +2531,8 @@ struct dp_swlm_stats {
 		uint32_t tput_criteria_fail;
 		uint32_t coalesce_success;
 		uint32_t coalesce_fail;
+		uint32_t timer_dom_coalesce_dis;
+		uint32_t timer_dom_coalesce_ena;
 	} tcl[MAX_TCL_DATA_RINGS];
 };
 
@@ -2545,6 +2551,16 @@ struct dp_swlm_stats {
  * @prev_rx_bytes: Previous RX bytes accounted
  * @expire_time: expiry time for sample
  * @tput_pass_cnt: threshold throughput pass counter
+ * @consec_timer_flush_cnt: consecutive sessions ended via time threshold or
+ *		flush timer without an intervening bytes-threshold flush;
+ *		reset to 0 when a session ends via the bytes threshold
+ * @mon_win_ts: start timestamp (us) of the current monitor window
+ * @mon_bytes_flush_cnt: total bytes-thresh flush events in the window
+ * @mon_timer_flush_cnt: total timer-triggered flush events in the window
+ * @coalesce_disable: 1 if timer-dominance monitor has disabled coalescing
+ * @consec_timer_dom_cnt: consecutive windows with timer-dominance
+ *			  above threshold
+ * @coalesce_last_dis_ts: timestamp (us) when coalescing was last disabled
  */
 struct dp_swlm_tcl_params {
 	struct dp_soc *soc;
@@ -2559,6 +2575,13 @@ struct dp_swlm_tcl_params {
 	uint32_t prev_rx_bytes;
 	uint64_t expire_time;
 	uint32_t tput_pass_cnt;
+	uint32_t consec_timer_flush_cnt;
+	uint64_t mon_win_ts;
+	uint32_t mon_bytes_flush_cnt;
+	uint32_t mon_timer_flush_cnt;
+	uint8_t  coalesce_disable;
+	uint32_t consec_timer_dom_cnt;
+	uint64_t coalesce_last_dis_ts;
 };
 
 /**
@@ -3170,6 +3193,7 @@ struct dp_arch_ops {
  * @vdev_tx_nss_support: FW supports vdev Tx NSS report.
  * @dyn_resource_mgr_support: Dynamic RX buffer allocation support
  * @dal_d3_wow_support: DAL D3 WOW support
+ * @passthru_ampdu_support: passthru_ampdu_support
  */
 struct dp_soc_features {
 	uint8_t pn_in_reo_dest:1,
@@ -3185,6 +3209,9 @@ struct dp_soc_features {
 	bool vdev_tx_nss_support;
 	bool dyn_resource_mgr_support;
 	bool dal_d3_wow_support;
+#ifdef DRIVER_PASSTHRU_MODE
+	bool passthru_ampdu_support;
+#endif
 };
 
 enum sysfs_printing_mode {
@@ -4075,6 +4102,7 @@ struct dp_soc {
 #ifdef DP_RX_MSDU_DONE_FAIL_HISTORY
 	struct dp_msdu_done_fail_history *msdu_done_fail_hist;
 #endif
+	uint8_t stale_link_desc;
 #ifdef DP_RX_PEEK_MSDU_DONE_WAR
 	struct dp_rx_msdu_done_fail_desc_list msdu_done_fail_desc_list;
 #endif
@@ -6168,6 +6196,9 @@ struct dp_peer {
 	bool txpt_classify_idx_valid;
 	uint8_t txpt_classify_idx;
 #endif
+#ifdef DRIVER_PASSTHRU_MODE
+	uint8_t is_peer_assoc_done;
+#endif
 };
 
 /**
@@ -6495,4 +6526,16 @@ void dp_rx_err_update_protocol_stats(struct dp_soc *soc, struct dp_pdev *pdev,
 				     qdf_nbuf_t nbuf,
 				     union hal_wbm_err_info_u *wbm_err,
 				     uint8_t *rx_tlv_hdr);
+
+#ifdef DRIVER_PASSTHRU_MODE
+static inline bool dp_get_passthru_ampdu_support(struct dp_soc *soc)
+{
+	return soc->features.passthru_ampdu_support;
+}
+#else
+static inline bool dp_get_passthru_ampdu_support(struct dp_soc *soc)
+{
+	return false;
+}
+#endif
 #endif /* _DP_TYPES_H_ */

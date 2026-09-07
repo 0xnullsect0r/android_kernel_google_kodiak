@@ -39,8 +39,6 @@
 
 	irm: irm@5360000 {
 		compatible = "google,irm";
-		mboxes = <&goog_mba_cpm_iface>;
-		mba-dest-channel = <MBOX_DEST_CHAN_IRM>;
 		reg = <0x0 0xeb60000 0x0 0x17a8>;
 		google,irm-commom-prop = <&irm_common>;
 		client-prop = <0x1000 IRM_IDX_APC GOOGLE_ICC_UPDATE_ASYNC>,
@@ -81,7 +79,6 @@
 		compatible = "google,apc-irm";
 		mboxes = <&goog_mba_cpm_iface>;
 		mba-dest-channel = <MBOX_DEST_CHAN_IRM>;
-		google,disable-sync-clients;
 	};
 
 	google_icc_helper_mock_client: google_icc_helper_mock_client {

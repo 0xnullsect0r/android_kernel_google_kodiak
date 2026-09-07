@@ -53,7 +53,6 @@ static int list_transactions(struct lwis_client *client, char *buffer, size_t bu
 	unsigned long flags;
 	struct lwis_transaction_event_list *transaction_list;
 	struct lwis_transaction *transaction;
-	struct list_head *it_tran;
 	struct lwis_transaction_history *trans_hist;
 
 	spin_lock_irqsave(&client->transaction_lock, flags);
@@ -69,8 +68,7 @@ static int list_transactions(struct lwis_client *client, char *buffer, size_t bu
 					   transaction_list->event_id);
 			continue;
 		}
-		list_for_each(it_tran, &transaction_list->list) {
-			transaction = list_entry(it_tran, struct lwis_transaction, event_list_node);
+		list_for_each_entry(transaction, &transaction_list->list, event_list_node) {
 			count += scnprintf(
 				buffer + count, buffer_size - count,
 				"ID: %#llx Trigger Event: %#llx Count: %#llx Submitted: %lld\n"
@@ -99,14 +97,15 @@ static int list_transactions(struct lwis_client *client, char *buffer, size_t bu
 					  trans_hist->info.emit_error_event_id);
 			/* Process timestamp not recorded */
 			if (trans_hist->process_timestamp == -1) {
-				count += scnprintf(buffer + count, buffer_size - count,
-						   "     Num Entries: %zu\n",
-						   trans_hist->info.num_io_entries);
+				count += scnprintf(
+					buffer + count, buffer_size - count,
+					"     Num Entries: %llu\n",
+					(unsigned long long)trans_hist->info.num_io_entries);
 			} else {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"     Num Entries: %zu Processed @ %lld for %lldns\n",
-					trans_hist->info.num_io_entries,
+					"     Num Entries: %llu Processed @ %lld for %lldns\n",
+					(unsigned long long)trans_hist->info.num_io_entries,
 					trans_hist->process_timestamp,
 					trans_hist->process_duration_ns);
 			}
@@ -141,7 +140,6 @@ static int list_allocated_buffers(struct lwis_client *client, char *buffer, size
 static int list_enrolled_buffers(struct lwis_client *client, char *buffer, size_t buffer_size)
 {
 	struct lwis_buffer_enrollment_list *enrollment_list;
-	struct list_head *it_enrollment;
 	struct lwis_enrolled_buffer *enrolled_buffer;
 	dma_addr_t end_dma_vaddr;
 	int i;
@@ -153,9 +151,7 @@ static int list_enrolled_buffers(struct lwis_client *client, char *buffer, size_
 
 	count = scnprintf(buffer, buffer_size, "Enrolled buffers:\n");
 	hash_for_each(client->enrolled_buffers, i, enrollment_list, node) {
-		list_for_each(it_enrollment, &enrollment_list->list) {
-			enrolled_buffer =
-				list_entry(it_enrollment, struct lwis_enrolled_buffer, list_node);
+		list_for_each_entry(enrolled_buffer, &enrollment_list->list, list_node) {
 			if (IS_ERR_VALUE(enrolled_buffer->info.dma_vaddr)) {
 				count += scnprintf(buffer + count, buffer_size - count,
 						   "Enrolled buffers: dma_vaddr %pad is invalid\n",
@@ -350,10 +346,10 @@ static int generate_register_io_history(struct lwis_device *lwis_dev, char *buff
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_READ_BATCH) {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"READ_BATCH: bid %d, offset %llu, size_in_bytes %lu, access_size %lu, start_timestamp %llu\n",
+					"READ_BATCH: bid %d, offset %llu, size_in_bytes %llu, access_size %lu, start_timestamp %llu\n",
 					reg_io->io_entry.rw_batch.bid,
 					reg_io->io_entry.rw_batch.offset,
-					reg_io->io_entry.rw_batch.size_in_bytes,
+					(unsigned long long)reg_io->io_entry.rw_batch.size_in_bytes,
 					reg_io->access_size, reg_io->start_timestamp);
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_WRITE) {
 				count += scnprintf(
@@ -365,10 +361,10 @@ static int generate_register_io_history(struct lwis_device *lwis_dev, char *buff
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_WRITE_BATCH) {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"WRITE_BATCH: bid %d, offset %llu, size_in_bytes %lu, access_size %lu, start_timestamp %llu\n",
+					"WRITE_BATCH: bid %d, offset %llu, size_in_bytes %llu, access_size %lu, start_timestamp %llu\n",
 					reg_io->io_entry.rw_batch.bid,
 					reg_io->io_entry.rw_batch.offset,
-					reg_io->io_entry.rw_batch.size_in_bytes,
+					(unsigned long long)reg_io->io_entry.rw_batch.size_in_bytes,
 					reg_io->access_size, reg_io->start_timestamp);
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_MODIFY) {
 				count += scnprintf(
@@ -386,26 +382,28 @@ static int generate_register_io_history(struct lwis_device *lwis_dev, char *buff
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_READ_BATCH_V2) {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"READ_BATCH: bid %d, offset %llu, size_in_bytes %lu, speed_hz %u, access_size %lu, start_timestamp %llu\n",
+					"READ_BATCH: bid %d, offset %llu, size_in_bytes %llu, speed_hz %u, access_size %lu, start_timestamp %llu\n",
 					reg_io->io_entry.rw_batch_v2.bid,
 					reg_io->io_entry.rw_batch_v2.offset,
-					reg_io->io_entry.rw_batch_v2.size_in_bytes,
+					(unsigned long long)
+						reg_io->io_entry.rw_batch_v2.size_in_bytes,
 					reg_io->io_entry.rw_batch_v2.speed_hz, reg_io->access_size,
 					reg_io->start_timestamp);
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_WRITE_V2) {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"WRITE: bid %d, offset %llu, val %llu, speed_hz %u,  access_size %lu, start_timestamp %llu\n",
+					"WRITE: bid %d, offset %llu, val %llu, speed_hz %u, access_size %lu, start_timestamp %llu\n",
 					reg_io->io_entry.rw_v2.bid, reg_io->io_entry.rw_v2.offset,
 					reg_io->io_entry.rw_v2.val, reg_io->io_entry.rw_v2.speed_hz,
 					reg_io->access_size, reg_io->start_timestamp);
 			} else if (reg_io->io_entry.type == LWIS_IO_ENTRY_WRITE_BATCH_V2) {
 				count += scnprintf(
 					buffer + count, buffer_size - count,
-					"WRITE_BATCH: bid %d, offset %llu, size_in_bytes %lu, speed_hz %u, access_size %lu, start_timestamp %llu\n",
+					"WRITE_BATCH: bid %d, offset %llu, size_in_bytes %llu, speed_hz %u, access_size %lu, start_timestamp %llu\n",
 					reg_io->io_entry.rw_batch_v2.bid,
 					reg_io->io_entry.rw_batch_v2.offset,
-					reg_io->io_entry.rw_batch_v2.size_in_bytes,
+					(unsigned long long)
+						reg_io->io_entry.rw_batch_v2.size_in_bytes,
 					reg_io->io_entry.rw_batch_v2.speed_hz, reg_io->access_size,
 					reg_io->start_timestamp);
 			}

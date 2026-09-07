@@ -2099,6 +2099,9 @@ static ssize_t change_pwr_mode_store(struct device *dev,
 	if (kstrtouint(buf, 0, &value) || value != 1)
 		return -EINVAL;
 
+	ufshcd_rpm_get_sync(hba);
+	ufshcd_hold(hba);
+
 	shost_for_each_device(sdev, shost)
 		blk_mq_freeze_queue(sdev->request_queue);
 
@@ -2107,6 +2110,9 @@ static ssize_t change_pwr_mode_store(struct device *dev,
 
 	shost_for_each_device(sdev, shost)
 		blk_mq_unfreeze_queue(sdev->request_queue);
+
+	ufshcd_release(hba);
+	ufshcd_rpm_put(hba);
 
 	return ret ?: count;
 }

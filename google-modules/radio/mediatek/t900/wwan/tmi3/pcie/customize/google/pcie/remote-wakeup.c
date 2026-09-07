@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
+#include <linux/workqueue.h>
 
 #include "radio-utils.h"
 #include "remote-wakeup.h"
@@ -16,6 +17,16 @@
 #endif
 
 #define PEWAKE_GPIO_NAME "pe-wake"
+
+static void modem_runtime_resume_work(struct work_struct *work)
+{
+	struct remote_wakeup *remote_wakeup = container_of(work, struct remote_wakeup, resume_work);
+	int ret;
+
+	ret = pm_runtime_resume(remote_wakeup->goog->mdev->dev);
+	if (ret < 0)
+		LOG_ERR("Failed to runtime resume modem: %d\n", ret);
+}
 
 static irqreturn_t modem_pewake_handler(int irq, void *arg)
 {
@@ -29,7 +40,11 @@ static irqreturn_t modem_pewake_handler(int irq, void *arg)
 #endif
 
 	pm_wakeup_event(dev, 0);
-	pm_request_resume(dev);
+	/*
+	 * If we're waking in early system suspend, runtime PM may be disabled.
+	 * Defer to pm_wq, which will be unfrozen later.
+	 */
+	queue_work(pm_wq, &remote_wakeup->resume_work);
 
 	return IRQ_HANDLED;
 }
@@ -108,6 +123,8 @@ int remote_wakeup_init(struct radio_google *goog)
 	remote_wakeup->ready = false;
 	remote_wakeup->enabled = false;
 
+	INIT_WORK(&remote_wakeup->resume_work, modem_runtime_resume_work);
+
 	ret = remote_wakeup_request_gpio(remote_wakeup);
 	if (ret)
 		return ret;
@@ -126,6 +143,7 @@ void remote_wakeup_exit(struct radio_google *goog)
 	struct remote_wakeup *remote_wakeup = goog->remote_wakeup;
 
 	remote_wakeup_free_irq(remote_wakeup);
+	cancel_work_sync(&remote_wakeup->resume_work);
 	devm_kfree(goog->mdev->dev, remote_wakeup);
 }
 

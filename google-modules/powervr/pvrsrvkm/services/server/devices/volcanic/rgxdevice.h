@@ -530,12 +530,14 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 	DEVMEM_MEMDESC			*psFirmwareCCBMemDesc;      /*!< memdesc for Firmware CCB */
 	IMG_UINT8				*psFirmwareCCB;             /*!< kernel mapping for Firmware CCB */
 
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 	/* Workload Estimation Firmware CCB */
 	DEVMEM_MEMDESC			*psWorkEstFirmwareCCBCtlMemDesc;   /*!< memdesc for Workload Estimation Firmware CCB control */
 	RGXFWIF_CCB_CTL			*psWorkEstFirmwareCCBCtl;          /*!< kernel mapping for Workload Estimation Firmware CCB control */
 	RGXFWIF_CCB_CTL			*psWorkEstFirmwareCCBCtlLocal;     /*!< cpu local copy of Workload Estimation Firmware CCB control */
 	DEVMEM_MEMDESC			*psWorkEstFirmwareCCBMemDesc;      /*!< memdesc for Workload Estimation Firmware CCB */
 	IMG_UINT8				*psWorkEstFirmwareCCB;             /*!< kernel mapping for Workload Estimation Firmware CCB */
+#endif
 
 #if defined(SUPPORT_POWER_SAMPLING_VIA_DEBUGFS)
 	/* Counter dumping */

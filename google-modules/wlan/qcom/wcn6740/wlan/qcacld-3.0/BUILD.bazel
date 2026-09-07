@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "qcacld_headers",
@@ -1396,10 +1401,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         ":qcacld_headers",
         "//private/google-modules/soc/gs:headers",
@@ -1416,16 +1417,5 @@ ddk_module(
         "//private/google-modules/wlan/qcom/wcn6740/cnss2:cnss2_wlan_firmware_service",
         "//private/google-modules/wlan/qcom/wcn6740/wlan/fw-api:fw-api_headers",
         "//private/google-modules/wlan/qcom/wcn6740/wlan/qcacld-3.0/cmn:qcacmn_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "wlan",
-    srcs = [
-        ":qcacld-3.0",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
     ],
 )

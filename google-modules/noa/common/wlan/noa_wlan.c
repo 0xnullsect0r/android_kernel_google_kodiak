@@ -608,6 +608,14 @@ static int noa_wlan_ncp_start(struct noa_wlan_client *client)
 	return noa_wlan_fw_request_send(NOA_WLAN_CMD_FW_START, &req, sizeof(req));
 }
 
+static int noa_wlan_hw_rx_handover(struct noa_wlan_client *client)
+{
+	if (!client || !client->ops || !client->ops->rx_handover)
+		return 0;
+
+	return client->ops->rx_handover(client->bus);
+}
+
 static int noa_wlan_hw_start(struct noa_wlan_client *client)
 {
 	int ret;
@@ -615,6 +623,12 @@ static int noa_wlan_hw_start(struct noa_wlan_client *client)
 	ret = noa_wlan_bm_init(&client->vendor_rx_bm, client->rx_pkt_max + 1);
 	if (ret)
 		return ret;
+
+	ret = noa_wlan_hw_rx_handover(client);
+	if (ret) {
+		dev_err(client->dev, "handover failed, err: %d\n", ret);
+		return ret;
+	}
 
 	ret = noa_wlan_bm_init(&client->noa_tx_bm, client->tx_bm_sz);
 	if (ret)
@@ -696,6 +710,23 @@ static int noa_wlan_hw_rxbm_sync(struct noa_wlan_client *client, void *_bufs, in
 					     num, to_dev);
 }
 
+static int noa_wlan_hw_rx_handover_sync(struct noa_wlan_client *client, u64 handover_addr, u32 count)
+{
+	struct noa_wlan_cmd_rx_handover_sync req = {
+		.handover_table_dpa_addr = handover_addr,
+		.count = count,
+	};
+	int ret = 0;
+
+	dev_info(client->dev, "%s: handover_addr=0x%llx, count=%u\n", __func__, handover_addr, count);
+
+	ret = noa_wlan_fw_request_send(NOA_WLAN_CMD_RX_HANDOVER_SYNC, &req, sizeof(req));
+	if (ret)
+		dev_err(client->dev, "hw rx handover sync failed: %d\n", ret);
+
+	return ret;
+}
+
 static int noa_wlan_hw_txq_active(struct noa_wlan_client *client, u16 ring_id, bool enable)
 {
 	struct {
@@ -744,6 +775,7 @@ static int noa_wlan_hw_sta_active(struct noa_wlan_client *client, void *info, bo
 	noa_sta_info.dscp_tid_map_id = sta_info->dscp_tid_map_id;
 	noa_sta_info.addry_en = sta_info->addry_en;
 	noa_sta_info.addrx_en = sta_info->addrx_en;
+	noa_sta_info.fw_metadata = sta_info->fw_metadata;
 
 	/* updates the sta info subsection in the shared memory */
 	if ((ret = noa_wlan_cfg_update_noa_wlan_sta_info(client, &noa_sta_info)) >= 0) {
@@ -942,6 +974,7 @@ static struct noa_wlan_fw_ops fw_ops = {
 	.update_flowid_lkup_entry = noa_wlan_hw_update_flowid_lkup_entry,
 	.sync_pci_link_state = noa_wlan_hw_sync_pci_link_state,
 	.notify_station_state = noa_wlan_hw_notify_station_state,
+	.rx_handover_sync = noa_wlan_hw_rx_handover_sync,
 };
 
 static int noa_wlan_fw_event_doorbell(struct noa_wlan_client *client, void *msg)
@@ -1177,7 +1210,11 @@ EXPORT_SYMBOL_GPL(noa_wlan_client_alloc);
 
 void noa_wlan_client_free(struct noa_wlan_client *client)
 {
+	if (!client)
+		return;
+
 	noa_wlan_cmd_wq_exit(client);
+
 	/* exit client */
 	wlan_debug_entry_unregister(client->dbg_entry);
 	noa_entry_unregister(client);
@@ -1220,9 +1257,9 @@ int noa_wlan_client_register(struct noa_wlan_client *client)
 		return ret;
 	}
 
-	wlan_debug_component_client_init_shared_mem_info(client);
-
 	client->tx_bm_sz = MAX_TXBM_BUF_NUM;
+
+	wlan_debug_component_client_init_shared_mem_info(client);
 
 	noa_wlan_cfg_space_global_write(client, CHIP_TYPE, sizeof(client->type),
 					(void *)&client->type);
@@ -1234,11 +1271,23 @@ int noa_wlan_client_register(struct noa_wlan_client *client)
 					(void *)&client->tx_pkt_max);
 	noa_wlan_cfg_space_global_write(client, NOA_TX_PACKET_NUM, sizeof(client->tx_bm_sz),
 					(void *)&client->tx_bm_sz);
+	noa_wlan_cfg_space_global_write(client, RX_PKT_TLV_SIZE, sizeof(client->rx_pkt_tlv_size),
+					(void *)&client->rx_pkt_tlv_size);
 
 	pci_save_state(to_pci_dev(client->dev));
 	noa_wlan_client_pcie_config_write(client, pci_store_saved_state(to_pci_dev(client->dev)));
 
-	return noa_wlan_fw_request_send(NOA_WLAN_CMD_FW_INIT, &req, sizeof(req));
+	ret = noa_wlan_fw_request_send(NOA_WLAN_CMD_FW_INIT, &req, sizeof(req));
+	if (ret) {
+		dev_err(client->dev, "%s(): FW_INIT failed, err: %d\n", __func__, ret);
+		goto err_rpc_deinit;
+	}
+
+	return 0;
+
+err_rpc_deinit:
+	noa_wlan_rpc_deinit();
+	return ret;
 }
 EXPORT_SYMBOL_GPL(noa_wlan_client_register);
 

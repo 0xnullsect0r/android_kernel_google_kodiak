@@ -2,7 +2,7 @@
 /*
  * Edge TPU driver common internal definitions.
  *
- * Copyright (C) 2019 Google, Inc.
+ * Copyright (C) 2019-2026 Google LLC
  */
 #ifndef __EDGETPU_INTERNAL_H__
 #define __EDGETPU_INTERNAL_H__
@@ -26,6 +26,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include <gcip/gcip-coresight-remote.h>
 #include <gcip/gcip-firmware.h>
 #include <gcip/gcip-memory.h>
 #include <gcip/gcip-telemetry.h>
@@ -58,13 +59,11 @@
 
 typedef u64 tpu_addr_t;
 
+struct edgetpu_client;
 struct edgetpu_device_group;
 struct edgetpu_dev_iface;
 struct edgetpu_soc_data;
-
-#define EDGETPU_NUM_PERDIE_EVENTS	2
-#define perdie_event_id_to_num(event_id)				      \
-	(event_id - EDGETPU_PERDIE_EVENT_LOGS_AVAILABLE)
+struct gcip_event_mgr;
 
 /* Internal eventlog event codes. */
 enum edgetpu_eventlog_eventcode {
@@ -98,41 +97,6 @@ struct edgetpu_eventlog {
 	struct edgetpu_eventlog_event event[EDGETPU_EVENTLOG_SLOTS];
 };
 
-struct edgetpu_client {
-	/* Unique ID number of this client. */
-	uint client_id;
-	pid_t tgid;
-	char name[40];
-	/*
-	 * true if client has been identified via EDGETPU_IDENTIFY_CLIENT.
-	 * TODO(b/489208801): Remove when EDGETPU_IDENTIFY_CLIENT in use for all targets.
-	 */
-	bool runtime_identified_client;
-	/* Reference count */
-	refcount_t count;
-	/* protects group. */
-	struct mutex group_lock;
-	/*
-	 * The virtual device group this client belongs to. Can be NULL if the
-	 * client doesn't belong to any group.
-	 */
-	struct edgetpu_device_group *group;
-	/* the device opened by this client */
-	struct edgetpu_dev *etdev;
-	/* the interface from which this client was opened */
-	struct edgetpu_dev_iface *etiface;
-	/* Per-client request to keep device active */
-	struct edgetpu_wakelock wakelock;
-	/* Bit field of registered per die events */
-	u64 perdie_events;
-	/* Protects @limited_interface */
-	struct mutex limited_interface_lock;
-	/* Pointer to the limited interface to this client, if any. */
-	struct file *limited_interface;
-	/* Pixel trim currently enabled/disabled for this client. */
-	bool trim_enabled;
-};
-
 /*
  * The internal state of a limited driver interface, opened from the *-limited device node and
  * paired to a full interface's client using EDGETPU_ADD_LIMITED_INTERFACE.
@@ -155,16 +119,6 @@ struct edgetpu_iface_params {
 	bool limited;
 };
 
-/* edgetpu_dev#clients list entry. */
-struct edgetpu_list_device_client {
-	struct list_head list;
-	struct edgetpu_client *client;
-};
-
-/* loop through etdev->clients (hold clients_lock prior). */
-#define for_each_list_device_client(etdev, c)                                  \
-	list_for_each_entry(c, &etdev->clients, list)
-
 struct edgetpu_iommu_domain;
 struct edgetpu_mapping;
 struct edgetpu_mailbox_manager;
@@ -172,6 +126,7 @@ struct edgetpu_kci;
 struct edgetpu_ikv;
 struct edgetpu_pm;
 struct edgetpu_mempool;
+struct edgetpu_msi;
 struct gcip_kci_response_element;
 
 #define EDGETPU_DEVICE_NAME_MAX	64
@@ -207,7 +162,7 @@ struct edgetpu_dev_prop {
 #define EDGETPU_INVALID_KCI_VERSION (~0u)
 
 struct edgetpu_dev {
-	struct device *dev;	   /* platform/pci bus device */
+	struct device *dev; /* Linux device subsystem device */
 	uint num_ifaces;		   /* Number of device interfaces */
 	uint num_cores; /* Number of cores */
 	uint num_telemetry_buffers; /* Number of log+trace telemetry buffers */
@@ -241,12 +196,15 @@ struct edgetpu_dev {
 	struct list_head groups;
 	uint n_groups;		   /* number of entries in @groups */
 	bool group_create_lockout; /* disable group creation while reinit */
-	u32 vcid_pool;		   /* bitmask of VCID to be allocated */
 
 	/* end of fields protected by @groups_lock */
 
-	struct mutex clients_lock; /* protects clients */
+	struct mutex vcid_pool_lock;
+	u32 vcid_pool; /* bitmask of VCID to be allocated */
+
+	struct mutex clients_lock; /* protects clients and exited_clients */
 	struct list_head clients;
+	struct list_head exited_clients;
 	void *mmu_cookie;	   /* mmu driver private data */
 	struct edgetpu_mailbox_manager *mailbox_manager;
 	struct edgetpu_kci *etkci;
@@ -256,7 +214,7 @@ struct edgetpu_dev {
 	struct gcip_fw_tracing *fw_tracing; /* firmware tracing */
 	struct gcip_telemetry *telemetry_log; /* array of @num_telemetry_buffers entries */
 	struct gcip_telemetry *telemetry_trace; /* array of @num_telemetry_buffers entries */
-	struct gcip_telemetry telemetry_hwtrace; /* single hardware trace buffer entry. */
+	struct gcip_event_mgr *event_mgr;
 
 	struct gcip_thermal *thermal;
 	struct gcip_devfreq *devfreq;
@@ -309,8 +267,14 @@ struct edgetpu_dev {
 	 */
 	size_t max_concurrent_clients;
 
+	/* Coresight remote tracing */
+	struct gcip_coresight_remote *coresight_remote;
+
 	/* true if running on emulation where the TPU is much slower than AP */
 	bool emulation_slow_tpu;
+
+	/* MSI management */
+	struct edgetpu_msi *msi;
 };
 
 struct edgetpu_dev_iface {
@@ -388,7 +352,7 @@ void edgetpu_handle_client_fatal_error_notify(struct edgetpu_dev *etdev, u32 cli
 /* Handle a client inactivity timeout notification from firmware */
 void edgetpu_handle_client_inactivity_timeout(struct edgetpu_dev *etdev, u32 client_id);
 
-/* Bus (Platform/PCI) <-> Core API */
+/* Platform device <-> Core API */
 
 int __init edgetpu_init(void);
 void __exit edgetpu_exit(void);
@@ -413,30 +377,8 @@ struct dentry *edgetpu_fs_debugfs_dir(void);
 
 /* Device -> Core API */
 
-/* Add current thread as new TPU client */
-struct edgetpu_client *
-edgetpu_client_add(struct edgetpu_dev_iface *etiface);
-
-/* Remove TPU client */
-void edgetpu_client_remove(struct edgetpu_client *client);
-
-/* Set client name based on comm field of the supplied process task_id. */
-void edgetpu_client_update_name(struct edgetpu_client *client, pid_t task_id);
-
-/* Set client tgid and update client name via edgetpu_client_update_name. */
-void edgetpu_client_set_tgid(struct edgetpu_client *client, pid_t task_id);
-
 /* mmap() device/queue memory */
 int edgetpu_mmap(struct edgetpu_client *client, struct vm_area_struct *vma);
-
-/* Increase reference count of @client. */
-struct edgetpu_client *edgetpu_client_get(struct edgetpu_client *client);
-
-/* Decrease reference count and free @client if count reaches zero */
-void edgetpu_client_put(struct edgetpu_client *client);
-
-/* Enable/disable Pixel trim for @client. @enable = non-zero enables, zero disables. */
-void edgetpu_client_trim_enable(struct edgetpu_client *client, u32 enable);
 
 /*
  * Get error code corresponding to @etdev state. Caller holds

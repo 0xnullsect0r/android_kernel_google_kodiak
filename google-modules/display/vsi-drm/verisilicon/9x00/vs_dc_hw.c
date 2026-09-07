@@ -994,6 +994,8 @@ void dc_hw_update_plane(struct dc_hw *hw, u8 id, struct dc_hw_fb *fb)
 	}
 
 	trace_update_hw_layer_feature_en_dirty("FB", hw_id, plane->fb.enable, plane->fb.dirty);
+	trace_update_hw_layer_feature_en_dirty("SECURE_FB", hw_id, plane->fb.secure,
+					       plane->fb.secure_dirty);
 }
 
 void dc_hw_update_plane_sram(struct dc_hw *hw, u8 id, struct dc_hw_sram_pool *sram)
@@ -1483,6 +1485,24 @@ void dc_hw_enable_wb_irqs(struct dc_hw *hw, u8 wb_hw_id, bool enable)
 	}
 	spin_unlock_irqrestore(&hw->be_irq_slock, flags);
 	DPU_ATRACE_END("%s id %u, en:%u", __func__, wb_hw_id, enable);
+}
+
+bool dc_hw_writeback_is_active(struct dc_hw *hw)
+{
+	int i;
+	unsigned long flags;
+	bool is_wb_active = false;
+
+	spin_lock_irqsave(&hw->be_irq_slock, flags);
+	for (i = 0; i < HW_WB_NUM; i++) {
+		if (hw->wb_irq_refcnt[i] > 0) {
+			is_wb_active = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&hw->be_irq_slock, flags);
+
+	return is_wb_active;
 }
 
 void dc_hw_config_plane_status(struct dc_hw *hw, u8 id, bool config)
@@ -3269,13 +3289,11 @@ static void toggle_secure(struct dc_hw *hw, u8 layer, bool secure)
 	}
 
 	mutex_lock(&hw->secure_lock);
-	if (test_bit(plane_info->id, hw->secured_layers_mask) == secure)
+	if (test_bit(plane_info->id, hw->secured_layers_mask) == secure) {
 		dev_warn(dev, "layer %d already has secure %d, double enable or disable",
 			 plane_info->id, secure);
-
-	if (secure)
-		set_bit(plane_info->id, hw->secured_layers_mask);
-	mutex_unlock(&hw->secure_lock);
+		goto exit;
+	}
 
 	DPU_ATRACE_BEGIN("trusty_protect_ip");
 	ret = trusty_protect_ip(&(dc->tzprot_pdev->dev), sid, secure);
@@ -3285,13 +3303,14 @@ static void toggle_secure(struct dc_hw *hw, u8 layer, bool secure)
 			__func__, sid, secure, ret);
 	DPU_ATRACE_END("trusty_protect_ip");
 
-	if (!secure) {
-		mutex_lock(&hw->secure_lock);
+	if (secure)
+		set_bit(plane_info->id, hw->secured_layers_mask);
+	else
 		clear_bit(plane_info->id, hw->secured_layers_mask);
-		mutex_unlock(&hw->secure_lock);
-	}
 
 	trace_disp_trusty_protect_ip(plane_info->id, sid, hw->secured_layers_mask, secure);
+exit:
+	mutex_unlock(&hw->secure_lock);
 }
 
 static void plane_set_secure(struct dc_hw *hw, u8 layer, struct dc_hw_fb *fb)
@@ -5171,7 +5190,7 @@ static void wb_ex_set_fb(struct dc_hw *hw, u8 hw_id, struct dc_hw_wb *wb)
 	fb->dirty = false;
 }
 
-static void plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_bit_en)
+void dc_hw_plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_bit_en)
 {
 	struct dc_hw_plane *plane;
 	u8 layer_num = hw->info->layer_num;
@@ -5300,7 +5319,7 @@ static void plane_commit_non_shadow(struct dc_hw *hw, u8 display_id)
 
 void dc_hw_disable_plane_features(struct dc_hw *hw, u8 display_id)
 {
-	plane_set_secure_bits(hw, display_id, false);
+	dc_hw_plane_set_secure_bits(hw, display_id, false);
 }
 
 static void display_commit(struct dc_hw *hw, u8 display_id)
@@ -5450,9 +5469,6 @@ void dc_hw_display_commit(struct dc_hw *hw, u8 display_id)
 	hw->func->display_commit(hw, display_id);
 	DPU_ATRACE_END(__func__);
 
-	/* Only update secure bit here if it is being enabled */
-	plane_set_secure_bits(hw, display_id, true);
-
 	for (i = 0; i < SW_RESET_NUM; i++)
 		hw->reset_status[i] = false;
 }
@@ -5478,7 +5494,7 @@ void dc_hw_display_frame_done(struct dc_hw *hw, u8 display_id)
 void dc_hw_display_flip_done(struct dc_hw *hw, u8 display_id)
 {
 	/* Disable secure bit after frame transfer is done to prevent b/415715428 */
-	plane_set_secure_bits(hw, display_id, false);
+	dc_hw_plane_set_secure_bits(hw, display_id, false);
 	/* histogram channels + rgb */
 	vs_dc_hist_flip_done(hw, display_id);
 }

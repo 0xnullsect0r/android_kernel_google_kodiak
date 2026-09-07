@@ -8,6 +8,8 @@
 #include "aoc.h"
 #include "aoc_firmware.h"
 #include "aoss_ssr.h"
+#include "aoc_ramdump_regions.h"
+
 #include "aoc-interface.h"
 #include <linux/debugfs.h>
 #include <linux/kthread.h>
@@ -28,9 +30,9 @@
 #define LPCM_START_OFFSET 0x4104
 #define LPCM_STATUS_OFFSET 0x4108
 
-#define NON_WAKING_CELLS_NUM 1
-#define DISABLE_INTERRUPT_MASK 0x0
-#define ENABLE_INTERRUPT_MASK 0xFFFF
+#define NON_WAKING_CELLS_NUM 2
+#define MBA_DOORBELL_STATUS_OFFSET 0x28
+#define MBA_DOORBELL_STATUS_SIZE sizeof(u32)
 
 #define DEBUGFS_AOC_DRAM_ARENA "aoc_dram_arena"
 #define DEBUGFS_AOC_DRAM_ARENA_OFFSET "aoc_dram_arena_offset"
@@ -95,6 +97,7 @@ enum mbu_power_domain {
 struct non_waking_reg {
 	void __iomem *mbox_vaddr;
 	size_t offset;
+	uint32_t mask;
 };
 
 struct non_waking_data {
@@ -110,6 +113,10 @@ struct aoc_mbu_prvdata {
 	struct gdmc_iface *gdmc_iface;
 	struct non_waking_data non_waking_data;
 	struct delayed_work sc_liveness_work;
+	struct work_struct ambss_vote_failed_ssr_work;
+	struct workqueue_struct *aoc_freezable_wq;
+	void __iomem *coredump_mbox_status_reg;
+	u32 coredump_mbox_channel_bit;
 };
 
 /* Register dump structure for aarch32 targets. */
@@ -145,6 +152,11 @@ struct gdmc_mba_aarch32_register_dump {
 struct aoc_mbu_prvdata *mbu_prvdata;
 
 static bool pg_torn_down;
+
+static void ambss_vote_work_fn(struct work_struct *work)
+{
+	trigger_aoc_ssr(true, "AMBSS enable vote failed");
+}
 
 static void sc_liveness_check_work(struct work_struct *work)
 {
@@ -374,6 +386,13 @@ static void gdmc_callback(void *reg_dump, unsigned int reg_dump_len, void *priv_
 	trigger_aoc_ssr(false, "AOC watchdog interrupt from GDMC");
 }
 
+static void destroy_wq_action(void *data)
+{
+	struct workqueue_struct *wq = data;
+
+	destroy_workqueue(wq);
+}
+
 int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *prvdata)
 {
 	struct device *dev = &pdev->dev;
@@ -391,10 +410,18 @@ int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *pr
 		platform_get_resource_byname(pdev, IORESOURCE_MEM, "lpcm");
 
 	INIT_DELAYED_WORK(&mbu_prvdata->sc_liveness_work, sc_liveness_check_work);
+	INIT_WORK(&mbu_prvdata->ambss_vote_failed_ssr_work, ambss_vote_work_fn);
+
+	mbu_prvdata->aoc_freezable_wq = alloc_workqueue("aoc_mbu_wq", WQ_FREEZABLE, 0);
+	if (!mbu_prvdata->aoc_freezable_wq)
+		return -ENOMEM;
+
+	rc = devm_add_action_or_reset(dev, destroy_wq_action, mbu_prvdata->aoc_freezable_wq);
+	if (rc)
+		return rc;
 
 	if (!mbu_prvdata->aoc_lpcm_resource) {
-		dev_err(dev,
-			"failed to get memory resources for lpcm\n");
+		dev_err(dev, "failed to get memory resources for lpcm\n");
 		return -ENOMEM;
 	}
 
@@ -427,15 +454,54 @@ int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *pr
 	rc = sysfs_create_groups(&dev->kobj, aoc_mbu_groups);
 	if (rc)
 		return rc;
+
 	aoc_node = dev->of_node;
+
+	/*
+	 * Map the coredump MBA status register to directly inspect
+	 * pending coredump hardware state during SSR checks.
+	 */
+	if (aoc_node && prvdata &&
+	    prvdata->aoc_coredump_mbox != DT_PROPERTY_NOT_FOUND) {
+		struct of_phandle_args coredump_args;
+		struct resource mbox_res;
+
+		if (!of_parse_phandle_with_args(aoc_node, "mboxes",
+						"#mbox-cells",
+						prvdata->aoc_coredump_mbox,
+						&coredump_args)) {
+			mbu_prvdata->coredump_mbox_channel_bit = (1U << coredump_args.args[0]);
+
+			if (!of_address_to_resource(coredump_args.np, 0,
+						    &mbox_res)) {
+				mbu_prvdata->coredump_mbox_status_reg =
+					devm_ioremap(dev,
+						     mbox_res.start + MBA_DOORBELL_STATUS_OFFSET,
+						     MBA_DOORBELL_STATUS_SIZE);
+				if (mbu_prvdata->coredump_mbox_status_reg)
+					dev_info(dev, "%s: Successfully mapped coredump MBA status register at %#x (channel bit %#x)\n",
+						 __func__,
+						 (unsigned int)(mbox_res.start +
+						 MBA_DOORBELL_STATUS_OFFSET),
+						 mbu_prvdata->coredump_mbox_channel_bit);
+				else
+					dev_err(dev, "%s: Failed to map coredump MBA status register\n",
+						__func__);
+			}
+			of_node_put(coredump_args.np);
+		}
+	}
+
 	num_elems = of_count_phandle_with_args(aoc_node, "mbox-non-waking",
 		"#non-waking-cells");
 	if (num_elems <= 0)
 		goto non_waking_err;
+
 	mbu_prvdata->non_waking_data.non_waking_reg = devm_kcalloc(dev, num_elems,
 		sizeof(struct non_waking_reg), GFP_KERNEL);
 	if (!mbu_prvdata->non_waking_data.non_waking_reg)
 		return -ENOMEM;
+
 	for (i = 0; i < num_elems; i++) {
 		struct of_phandle_args args;
 		struct resource mbox_resource;
@@ -444,7 +510,7 @@ int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *pr
 		if (ret) {
 			dev_err(dev,
 				"failed to find mbox-non-waking in the device tree\n");
-				goto non_waking_err;
+			goto non_waking_err;
 		} else if (args.args_count != NON_WAKING_CELLS_NUM) {
 			of_node_put(args.np);
 			dev_err(dev, "non-waking cells mismatch\n");
@@ -458,6 +524,8 @@ int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *pr
 		} else {
 			mbu_prvdata->non_waking_data.non_waking_reg[i].offset =
 				args.args[0];
+			mbu_prvdata->non_waking_data.non_waking_reg[i].mask =
+				args.args[1];
 			mbu_prvdata->non_waking_data.non_waking_reg[i].mbox_vaddr =
 				devm_ioremap(dev, mbox_resource.start,
 				resource_size(&mbox_resource));
@@ -472,6 +540,7 @@ int platform_specific_probe(struct platform_device *pdev, struct aoc_prvdata *pr
 	}
 	prvdata->print_wakeup_irq = true;
 	return rc;
+
 non_waking_err:
 	mbu_prvdata->non_waking_data.count = 0;
 	return rc;
@@ -640,6 +709,7 @@ int configure_watchdog_interrupt(struct platform_device *pdev, struct aoc_prvdat
 void platform_specific_remove(struct platform_device *pdev, struct aoc_prvdata *prvdata)
 {
 	cancel_delayed_work_sync(&mbu_prvdata->sc_liveness_work);
+	cancel_work_sync(&mbu_prvdata->ambss_vote_failed_ssr_work);
 	debugfs_remove(debugfs_lookup(DEBUGFS_AOC_DRAM_ARENA_SIZE, NULL));
 	debugfs_remove(debugfs_lookup(DEBUGFS_AOC_DRAM_ARENA_OFFSET, NULL));
 	debugfs_remove(debugfs_lookup(DEBUGFS_AOC_DRAM_ARENA, NULL));
@@ -694,13 +764,116 @@ u32 aoc_chip_get_product_id(void)
 	return product_id;
 }
 
+static bool aoc_is_ssr_pending_or_active(struct aoc_prvdata *prvdata)
+{
+	if (!prvdata)
+		return false;
+
+	if (aoc_state == AOC_STATE_SSR || atomic_read(&prvdata->ssr_requested_flag))
+		return true;
+
+	if (mbu_prvdata && mbu_prvdata->coredump_mbox_status_reg) {
+		u32 int_status = ioread32(mbu_prvdata->coredump_mbox_status_reg);
+
+		if ((int_status & mbu_prvdata->coredump_mbox_channel_bit) != 0)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Send command to SC to acquire (enable=true) or release (enable=false) AMBSS vote.
+ * Returns 0 on success, negative errno on failure.
+ */
+static int aoc_set_ambss_vote(struct aoc_prvdata *prvdata, bool enable)
+{
+	struct aoc_service_dev *sc_service_dev;
+	struct CMD_CORE_GENERIC cmd = { 0 };
+	u32 cmd_id;
+	const char *action_str;
+	int ret;
+
+	if (!prvdata)
+		return -EINVAL;
+
+	if (!prvdata->aoc_module_params ||
+	    !*(prvdata->aoc_module_params->aoc_en_kernel_ambss_voting))
+		return 0;
+
+	/*
+	 * CRITICAL: If an SSR recovery or coredump is actively in progress
+	 * or pending, we must bypass AMBSS voting to avoid 1,000ms mailbox
+	 * timeouts and Synchronous External Aborts.
+	 */
+	if (aoc_is_ssr_pending_or_active(prvdata))
+		return 0;
+
+	cmd_id = enable ? CMD_KERNEL_ENABLE_AMBSS_ID : CMD_KERNEL_DISABLE_AMBSS_ID;
+	action_str = enable ? "acquire" : "release";
+
+	sc_service_dev = service_dev_by_name(prvdata, "sc_control");
+	if (!sc_service_dev) {
+		dev_err(prvdata->dev,
+			"%s: Failed to find 'sc_control' service for AMBSS vote\n",
+			__func__);
+		return -ENODEV;
+	}
+
+	AocCmdHdrSet(&cmd.parent, cmd_id, sizeof(cmd));
+	ret = aoc_service_write_timeout(sc_service_dev, (void *)&cmd, sizeof(cmd),
+					msecs_to_jiffies(1000));
+	if (ret != sizeof(cmd)) {
+		dev_err(prvdata->dev, "%s: Failed to send AMBSS %s vote command, ret=%d\n",
+			__func__, action_str, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	ret = aoc_service_read_timeout(sc_service_dev, (void *)&cmd, sizeof(cmd),
+				       msecs_to_jiffies(1000));
+	if (ret != sizeof(cmd)) {
+		dev_err(prvdata->dev, "%s: Failed to read AMBSS %s vote response, ret=%d\n",
+			__func__, action_str, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	return 0;
+}
+
+static inline int aoc_acquire_ambss_vote(struct aoc_prvdata *prvdata)
+{
+	return aoc_set_ambss_vote(prvdata, true);
+}
+
+static inline int aoc_release_ambss_vote(struct aoc_prvdata *prvdata)
+{
+	return aoc_set_ambss_vote(prvdata, false);
+}
+
 int platform_specific_aoc_online(void)
 {
+	struct aoc_prvdata *prvdata;
+	int ret;
+
+	if (!mbu_prvdata)
+		return -ENODEV;
+
+	prvdata = dev_get_drvdata(mbu_prvdata->aoc_dev);
+
+	ret = aoc_acquire_ambss_vote(prvdata);
+	if (ret) {
+		dev_err(prvdata->dev, "%s: FAILED to acquire AMBSS vote (%d) on online boot! Queuing SSR recovery work...\n",
+			__func__, ret);
+		queue_work(mbu_prvdata->aoc_freezable_wq,
+			   &mbu_prvdata->ambss_vote_failed_ssr_work);
+	}
+
 	aoss_ssr_notify(AOSS_SSR_ONLINE);
 
 	if (aoc_enable_sc_liveness_check)
 		schedule_delayed_work(&mbu_prvdata->sc_liveness_work,
 			msecs_to_jiffies(SC_LIVENESS_CHECK_INTERVAL_MS));
+
 	return 0;
 }
 
@@ -711,10 +884,14 @@ int platform_specific_aoc_offline(void)
 
 void platform_specific_aoc_core_suspend(void)
 {
+	struct aoc_prvdata *prvdata;
 	int i;
 
 	if (!mbu_prvdata)
 		return;
+
+	prvdata = dev_get_drvdata(mbu_prvdata->aoc_dev);
+
 	for (i = 0; i < mbu_prvdata->non_waking_data.count; i++) {
 		u32 current_mask, new_mask;
 
@@ -723,20 +900,34 @@ void platform_specific_aoc_core_suspend(void)
 
 		current_mask = ioread32(mbu_prvdata->non_waking_data.non_waking_reg[i].mbox_vaddr +
 			mbu_prvdata->non_waking_data.non_waking_reg[i].offset);
-		new_mask = current_mask & DISABLE_INTERRUPT_MASK;
+		new_mask = current_mask & ~(mbu_prvdata->non_waking_data.non_waking_reg[i].mask);
 		iowrite32(new_mask, mbu_prvdata->non_waking_data.non_waking_reg[i].mbox_vaddr +
 			mbu_prvdata->non_waking_data.non_waking_reg[i].offset);
 	}
 
 	cancel_delayed_work_sync(&mbu_prvdata->sc_liveness_work);
+	cancel_work_sync(&mbu_prvdata->ambss_vote_failed_ssr_work);
+
+	/*
+	 * We log failures in aoc_release_ambss_vote but do not trigger SSR.
+	 * Consistent with the acquire path, we rely on error logs to avoid
+	 * polluting the crash reason during potential subsystem restarts.
+	 * While a release failure may result in higher power consumption,
+	 * it is not a stability-critical event.
+	 */
+	aoc_release_ambss_vote(prvdata);
 }
 
 void platform_specific_aoc_core_resume(void)
 {
-	int i;
+	struct aoc_prvdata *prvdata;
+	int i, ret;
 
 	if (!mbu_prvdata)
 		return;
+
+	prvdata = dev_get_drvdata(mbu_prvdata->aoc_dev);
+
 	for (i = 0; i < mbu_prvdata->non_waking_data.count; i++) {
 		u32 current_mask, new_mask;
 
@@ -745,7 +936,7 @@ void platform_specific_aoc_core_resume(void)
 
 		current_mask = ioread32(mbu_prvdata->non_waking_data.non_waking_reg[i].mbox_vaddr +
 			mbu_prvdata->non_waking_data.non_waking_reg[i].offset);
-		new_mask = current_mask | ENABLE_INTERRUPT_MASK;
+		new_mask = current_mask | mbu_prvdata->non_waking_data.non_waking_reg[i].mask;
 		iowrite32(new_mask, mbu_prvdata->non_waking_data.non_waking_reg[i].mbox_vaddr +
 			mbu_prvdata->non_waking_data.non_waking_reg[i].offset);
 	}
@@ -753,6 +944,18 @@ void platform_specific_aoc_core_resume(void)
 	if (aoc_enable_sc_liveness_check)
 		schedule_delayed_work(&mbu_prvdata->sc_liveness_work,
 			msecs_to_jiffies(SC_LIVENESS_CHECK_INTERVAL_MS));
+
+	/*
+	 * Using a WQ_FREEZABLE workqueue ensures SSR recovery runs immediately
+	 * but strictly after active system resume loops complete.
+	 */
+	ret = aoc_acquire_ambss_vote(prvdata);
+	if (ret) {
+		dev_err(prvdata->dev, "%s: FAILED to acquire AMBSS vote (%d) during resume! Queuing background SSR recovery work...\n",
+			__func__, ret);
+		queue_work(mbu_prvdata->aoc_freezable_wq,
+			   &mbu_prvdata->ambss_vote_failed_ssr_work);
+	}
 }
 
 u64 aoc_get_timer_ticks(void)

@@ -46,6 +46,8 @@
 /* Max hold time in micro seconds, 0 to disable detection*/
 #ifdef VCPU_TIMESTOLEN
 #define QDF_MAX_HOLD_TIME_ALOWED_SPINLOCK_IRQ         400000
+#elif defined(GOOGLE_MAX_HOLD_TIME_ALLOWED_SPINLOCK_IRQ)
+#define QDF_MAX_HOLD_TIME_ALOWED_SPINLOCK_IRQ      GOOGLE_MAX_HOLD_TIME_ALLOWED_SPINLOCK_IRQ
 #else
 #define QDF_MAX_HOLD_TIME_ALOWED_SPINLOCK_IRQ         10000
 #endif

@@ -312,7 +312,8 @@ static void hif_rtpm_alloc_last_busy_hist(void)
 	int i;
 
 	for (i = 0; i < CE_COUNT_MAX; i++) {
-		if (i != CE_ID_1 && i != CE_ID_2 && i != CE_ID_7) {
+		if (i != CE_ID_1 && i != CE_ID_2 && i != CE_ID_3 &&
+		    i != CE_ID_7) {
 			gp_hif_rtpm_ctx->busy_hist[i] = NULL;
 			continue;
 		}
@@ -329,7 +330,8 @@ static void hif_rtpm_free_last_busy_hist(void)
 	int i;
 
 	for (i = 0; i < CE_COUNT_MAX; i++) {
-		if (i != CE_ID_1 && i != CE_ID_2 && i != CE_ID_7)
+		if (i != CE_ID_1 && i != CE_ID_2 && i != CE_ID_3 &&
+		    i != CE_ID_7)
 			continue;
 
 		qdf_mem_free(gp_hif_rtpm_ctx->busy_hist[i]);
@@ -639,8 +641,8 @@ static bool hif_rtpm_enabled(void)
 	if (qdf_unlikely(!gp_hif_rtpm_ctx))
 		return false;
 
-	if (gp_hif_rtpm_ctx->enable_rpm)
-		return true;
+	if (!gp_hif_rtpm_ctx->enable_rpm)
+		return false;
 
 	return __hif_rtpm_enabled(gp_hif_rtpm_ctx->dev);
 }
@@ -872,7 +874,7 @@ int hif_pm_runtime_prevent_suspend(struct hif_pm_runtime_lock *lock)
 	if (!hif_rtpm_enabled() || !lock)
 		return -EINVAL;
 
-	if (in_irq())
+	if (qdf_in_irq())
 		WARN_ON(1);
 
 	qdf_spin_lock_bh(&gp_hif_rtpm_ctx->prevent_list_lock);
@@ -936,7 +938,7 @@ int hif_pm_runtime_prevent_suspend_sync(struct hif_pm_runtime_lock *lock)
 	if (!lock)
 		return -EINVAL;
 
-	if (in_irq())
+	if (qdf_in_irq())
 		WARN_ON(1);
 
 	__hif_pm_runtime_prevent_suspend_sync(lock);
@@ -957,7 +959,7 @@ int hif_pm_runtime_allow_suspend(struct hif_pm_runtime_lock *lock)
 	if (!lock)
 		return -EINVAL;
 
-	if (in_irq())
+	if (qdf_in_irq())
 		WARN_ON(1);
 
 	qdf_spin_lock_bh(&gp_hif_rtpm_ctx->prevent_list_lock);

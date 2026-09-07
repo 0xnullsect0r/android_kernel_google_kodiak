@@ -2,7 +2,7 @@
 /*
  * EdgeTPU firmware loader.
  *
- * Copyright (C) 2019-2025 Google LLC
+ * Copyright (C) 2019-2026 Google LLC
  */
 
 #ifndef __EDGETPU_FIRMWARE_H__
@@ -15,6 +15,7 @@
 #include <gcip/gcip-firmware.h>
 #include <gcip/gcip-image-config.h>
 
+#include "edgetpu-config.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-mmu.h"
 
@@ -91,8 +92,7 @@ edgetpu_firmware_get_img_cfg_parser(struct edgetpu_firmware *et_fw);
 int edgetpu_firmware_create(struct edgetpu_dev *etdev);
 
 void edgetpu_firmware_destroy(struct edgetpu_dev *etdev);
-void edgetpu_firmware_mappings_show(struct edgetpu_dev *etdev,
-				    struct seq_file *s);
+void edgetpu_firmware_mappings_show(struct edgetpu_dev *etdev, struct seq_file *s);
 
 /*
  * These functions grab and release the internal firmware lock and must be used before calling the
@@ -125,8 +125,7 @@ void edgetpu_firmware_set_status_locked(struct edgetpu_dev *etdev, enum gcip_fw_
  * reload from the file system.
  * Optionally, force a CPU reset to recover from a bad firmware state.
  */
-int edgetpu_firmware_restart_locked(struct edgetpu_dev *etdev,
-				    bool force_reset);
+int edgetpu_firmware_restart_locked(struct edgetpu_dev *etdev, bool force_reset);
 
 /*
  * Called on software watchdog timeout or crash/lockup recovery to restart firmware.
@@ -136,8 +135,7 @@ int edgetpu_firmware_restart_locked(struct edgetpu_dev *etdev,
 void edgetpu_firmware_watchdog_restart(struct edgetpu_dev *etdev, bool in_powerdown);
 
 /* Returns the current firmware image name. */
-ssize_t edgetpu_firmware_get_name(struct edgetpu_dev *etdev, char *buf,
-				  size_t buflen);
+ssize_t edgetpu_firmware_get_name(struct edgetpu_dev *etdev, char *buf, size_t buflen);
 
 /* Returns the changelist ID of the image loaded on the device. */
 uint32_t edgetpu_firmware_get_cl(struct edgetpu_firmware *et_fw);
@@ -162,6 +160,9 @@ void edgetpu_firmware_shared_mappings_context_unmap(struct edgetpu_dev *etdev,
  * or a call into GSA.
  */
 int edgetpu_firmware_reset_cpu(struct edgetpu_dev *etdev, bool assert_reset);
+
+/* Assert or release the reset signal of the TPU's CPU by a direct register write. */
+void edgetpu_firmware_reset_cpu_ns(struct edgetpu_dev *etdev, bool assert_reset);
 
 /*
  * Setup firmware carveout and (initial) iremap pool for device.
@@ -197,6 +198,15 @@ size_t edgetpu_firmware_fw_region_size(struct edgetpu_dev *etdev);
 
 /* Tell firmware to log state. */
 void edgetpu_firmware_log_state(struct edgetpu_dev *etdev);
+
+#if EDGETPU_USE_CMF
+/* Initialize firmware metadata before firmware start under CMF. */
+void edgetpu_firmware_metadata_init_cmf(struct edgetpu_dev *etdev);
+#else
+static inline void edgetpu_firmware_metadata_init_cmf(struct edgetpu_dev *etdev)
+{
+}
+#endif /* EDGETPU_USE_CMF */
 
 #if IS_ENABLED(CONFIG_EDGETPU_TEST)
 /* Used by unit tests to set a mocked GSA device. */

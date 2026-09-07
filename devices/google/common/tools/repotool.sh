@@ -30,6 +30,8 @@ COMMANDS:
     --abort             Abort the in-progress merge and abandon the local topic branches.
                         Requires --topic.
     --bug-id=<id>       Append "Bug: <id>" to all generated commit messages.
+    --continue-with-conflicts
+                        Commit conflicts with "[conflict]" subject prefix and continue.
     --by-commit         Merge by commit using gittool.
     --cherry-pick       Merge by cherry-picking each commit using gittool.
                         Implies --by-commit and --flatten.
@@ -50,6 +52,9 @@ COMMANDS:
   download [<options>] --topic=<topic>
     Download a Gerrit topic across multiple repo projects and store as a local topic.
 
+    --query=<query>       Use a custom Gerrit query. Please copy the string from the gerrit host URL
+                          after /q/. e.g. http://android-review.googlesource.com/q/<copy-query-here>
+                          Defaults to "topic:<topic>+status:open".
     -c, --cherry-pick     Cherry-pick instead of checkout.
     -x, --record-origin   Pass -x when cherry-picking.
     -r, --revert          Revert instead of checkout.
@@ -63,6 +68,7 @@ export GIT_PAGER=""
 PROJECTS=()
 
 function _curl() {
+  echo "curl" "$@" >&2
   if command -v gob-curl >/dev/null 2>&1; then
     gob-curl "$@"
   else
@@ -91,6 +97,7 @@ readonly STATUS_DEFS=(
   STATUS_SKIP_NOBRANCH   "SKIPPED (Not on a branch)"
   STATUS_SKIP_NOREBASE   "SKIPPED (No rebase in progress)"
   STATUS_MERGED          "MERGED"
+  STATUS_MERGED_WITH_CONFLICTS "MERGED (Conflict)"
   STATUS_REBASED         "REBASED"
   STATUS_DOWNLOADED      "DOWNLOADED"
   STATUS_ABORTED         "ABORTED"
@@ -136,11 +143,15 @@ function _wait_and_report_results() {
 
 function download() {
   local topic=""
+  local query=""
   local -a forward_args=()
   while (( $# > 0 )); do
     case "$1" in
       --topic=*)
         topic="${1#*=}"
+        ;;
+      --query=*)
+        query="${1#*=}"
         ;;
       -c|--cherry-pick|-x|--record-origin|-r|--revert|-f|--ff-only)
         forward_args+=("$1")
@@ -176,7 +187,11 @@ function download() {
   fi
 
   local encoded_topic
-  encoded_topic=$(_url_encode "${topic}")
+  encoded_topic="$(_url_encode "${topic}")"
+
+  if [[ -z "${query}" ]]; then
+    query="topic:${encoded_topic}+status:open"
+  fi
 
   local -A project_to_changes=()
   local review_url
@@ -184,7 +199,7 @@ function download() {
     logging::info "Querying ${review_url} for topic: ${topic}..."
     local json
     local base_url="${review_url%/}"
-    json=$(_curl -s "${base_url}/changes/?q=topic:${encoded_topic}+status:open" \
+    json=$(_curl -s "${base_url}/changes/?q=${query}" \
           | sed '1d')
 
     local results
@@ -222,7 +237,7 @@ function download() {
       local change
       for change in "${changes[@]}"; do
         # Download the change (detaches HEAD)
-        if ! repo download . "${change}" >/dev/null 2>&1; then
+        if ! repo download . "${change}" "${forward_args[@]}" >/dev/null 2>&1; then
           logging::error "Download failed for change: ${change}"
           return "${STATUS_FAILURE}"
         fi
@@ -511,6 +526,11 @@ function merge() {
       if (( exit_code == 1 )); then
         logging::error "Merge conflict!"
         return "${STATUS_CONFLICT}"
+      fi
+
+      if (( exit_code == 2 )); then
+        logging::warning "Merged with conflicts."
+        return "${STATUS_MERGED_WITH_CONFLICTS}"
       fi
 
       if (( exit_code != 0 )); then

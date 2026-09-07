@@ -1,7 +1,7 @@
 /*
  * Linux DHD Bus Module for PCIE
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -610,6 +610,9 @@ typedef struct dhd_bus {
 #ifdef OEM_ANDROID
 	bool chk_pm;	/* To avoid counting of wake up from Runtime PM */
 #endif /* OEM_ANDROID */
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+	struct work_struct l1ss_enable_work;
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #if defined(PCIE_INB_DW)
 	bool calc_ds_exit_latency;
 	bool deep_sleep; /* Indicates deep_sleep set or unset by the DHD IOVAR deep_sleep */

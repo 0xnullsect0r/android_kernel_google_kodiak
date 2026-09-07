@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -34,15 +39,5 @@ ddk_module(
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "uwb.u100",
-    srcs = [
-        ":u100",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 Vendor Extension Code
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -51,7 +51,8 @@ enum brcm_vendor_attr {
 	BRCM_ATTR_DRIVER_RAND_MAC	= 3,
 	BRCM_ATTR_SAE_PWE		= 4,
 	BRCM_ATTR_TD_POLICY		= 5,
-	BRCM_ATTR_DRIVER_MAX		= 6
+	BRCM_ATTR_DRIVER_KEY_PMKID	= 6,
+	BRCM_ATTR_DRIVER_MAX		= 7
 };
 
 enum brcm_wlan_vendor_features {

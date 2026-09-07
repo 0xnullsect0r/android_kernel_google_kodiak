@@ -160,6 +160,102 @@ def copy_files_test(name):
     )
     tests.append("{}/conflict_test".format(name))
 
+    copy_files(
+        name = "{}/include".format(name),
+        srcs = [
+            "{}/filegroup_1".format(name),
+            "{}/filegroup_2".format(name),
+        ],
+        prefix = "include",
+        include = ["**/file1.txt", "**/dir4/*"],
+    )
+
+    files_test(
+        name = "{}/include_test".format(name),
+        target_under_test = "{}/include".format(name),
+        expected_files = [
+            "include/data/filegroup_1/file1.txt",
+            "include/data/filegroup_2/dir4/file4.txt",
+        ],
+        size = "small",
+    )
+    tests.append("{}/include_test".format(name))
+
+    copy_files(
+        name = "{}/exclude".format(name),
+        srcs = [
+            "{}/filegroup_1".format(name),
+            "{}/filegroup_2".format(name),
+        ],
+        prefix = "exclude",
+        exclude = ["**/file2.txt", "**/file3.txt"],
+    )
+
+    files_test(
+        name = "{}/exclude_test".format(name),
+        target_under_test = "{}/exclude".format(name),
+        expected_files = [
+            "exclude/data/filegroup_1/file1.txt",
+            "exclude/data/filegroup_2/dir4/file4.txt",
+        ],
+        size = "small",
+    )
+    tests.append("{}/exclude_test".format(name))
+
+    copy_files(
+        name = "{}/include_exclude".format(name),
+        srcs = [
+            "{}/filegroup_1".format(name),
+            "{}/filegroup_2".format(name),
+        ],
+        prefix = "include_exclude",
+        include = ["**/*.txt"],
+        exclude = ["**/dir*/*"],
+    )
+
+    files_test(
+        name = "{}/include_exclude_test".format(name),
+        target_under_test = "{}/include_exclude".format(name),
+        expected_files = [
+            "include_exclude/data/filegroup_1/file1.txt",
+            "include_exclude/data/filegroup_2/file3.txt",
+        ],
+        size = "small",
+    )
+    tests.append("{}/include_exclude_test".format(name))
+
+    copy_files(
+        name = "{}/empty_allow".format(name),
+        srcs = [
+            "{}/filegroup_1".format(name),
+        ],
+        include = ["non_existent_file"],
+        allow_empty = True,
+    )
+
+    files_test(
+        name = "{}/empty_allow_test".format(name),
+        target_under_test = "{}/empty_allow".format(name),
+        expected_files = [],
+        size = "small",
+    )
+    tests.append("{}/empty_allow_test".format(name))
+
+    copy_files(
+        name = "{}/empty_fail".format(name),
+        srcs = [
+            "{}/filegroup_1".format(name),
+        ],
+        include = ["non_existent_file"],
+    )
+
+    failure_test(
+        name = "{}/empty_fail_test".format(name),
+        target_under_test = "{}/empty_fail".format(name),
+        size = "small",
+    )
+    tests.append("{}/empty_fail_test".format(name))
+
     native.test_suite(
         name = name,
         tests = tests,

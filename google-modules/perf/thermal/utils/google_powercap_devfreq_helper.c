@@ -19,6 +19,10 @@
 #include "google_thermal_odpm_helper.h"
 #include "perf/core/google_pm_qos.h"
 
+#define GPC_CSV_LEAF_DEVFREQ_FMT \
+	"GPC_CSV_LEAF_DEVFREQ:%s,id=%llu,limit=%llu,userspace_lim=%llu," \
+	"parent_lim=%llu,freq=%lu,opp=%d\n"
+
 void gpc_devfreq_of_node_put(struct device_node *node)
 {
 	KUNIT_STATIC_STUB_REDIRECT(gpc_devfreq_of_node_put, node);
@@ -97,8 +101,13 @@ static void __gpc_devfreq_apply_limit(struct gpowercap_devfreq *gpowercap_devfre
 		gpc_stats_update(&gpowercap_devfreq->gpowercap, GPC_STAT_QOS, target_freq);
 		gpc_stats_update(&gpowercap_devfreq->gpowercap, GPC_STAT_POWER_LIMIT,
 				 gpowercap_devfreq->gpowercap.power_limit);
-		pr_debug("Devfreq:%s Mitigation is removed.\n",
-			 dev_name(&gpowercap_devfreq->cdev.devfreq->dev));
+		pr_debug(GPC_CSV_LEAF_DEVFREQ_FMT,
+			 dev_name(&gpowercap_devfreq->cdev.devfreq->dev),
+			 gpowercap_devfreq->gpowercap.decision_id,
+			 gpowercap_devfreq->gpowercap.power_limit,
+			 gpowercap_devfreq->gpowercap.userspace_power_limit,
+			 gpowercap_devfreq->gpowercap.parent_power_limit,
+			 target_freq, gpowercap_devfreq->target_opp_idx);
 		return;
 	}
 
@@ -114,14 +123,15 @@ static void __gpc_devfreq_apply_limit(struct gpowercap_devfreq *gpowercap_devfre
 	gpowercap_devfreq->target_opp_idx = i - 1;
 	target_freq = gpowercap_devfreq->cdev.opp_table[gpowercap_devfreq->target_opp_idx].freq;
 
+	pr_debug(GPC_CSV_LEAF_DEVFREQ_FMT,
+		 dev_name(&gpowercap_devfreq->cdev.devfreq->dev),
+		 gpowercap_devfreq->gpowercap.decision_id,
+		 gpowercap_devfreq->gpowercap.power_limit,
+		 gpowercap_devfreq->gpowercap.userspace_power_limit,
+		 gpowercap_devfreq->gpowercap.parent_power_limit,
+		 target_freq, gpowercap_devfreq->target_opp_idx);
+
 	if (last_opp_idx != gpowercap_devfreq->target_opp_idx) {
-		pr_debug("%s PL:%llu util:%llu opp:%d => %d freq:%u => %lu\n",
-			 dev_name(&gpowercap_devfreq->cdev.devfreq->dev),
-			 gpowercap_devfreq->gpowercap.power_limit,
-			 gpowercap_devfreq->util_percentage, last_opp_idx,
-			 gpowercap_devfreq->target_opp_idx,
-			 gpowercap_devfreq->cdev.opp_table[last_opp_idx].freq,
-			 target_freq);
 		gpc_cdev_pm_qos_update_request(&gpowercap_devfreq->cdev, target_freq);
 		gpc_stats_update(&gpowercap_devfreq->gpowercap, GPC_STAT_QOS, target_freq);
 		gpc_stats_update(&gpowercap_devfreq->gpowercap, GPC_STAT_POWER_LIMIT,
@@ -237,7 +247,7 @@ int __gpc_devfreq_odpm_notifier_call(struct notifier_block *nb, unsigned long ev
 	u64 power_uw = (uintptr_t)data;
 
 	gpowercap_devfreq->last_power_uw = power_uw;
-	mod_delayed_work(system_highpri_wq, &gpowercap_devfreq->odpm_work, 0);
+	mod_delayed_work(gpowercap_wq ? : system_unbound_wq, &gpowercap_devfreq->odpm_work, 0);
 
 	return NOTIFY_OK;
 }
@@ -281,6 +291,7 @@ int __gpc_devfreq_set_time_window_us(struct gpowercap *gpowercap, u64 time_windo
 		__gpc_devfreq_apply_limit(gpowercap_devfreq);
 	}
 	gpowercap->time_window_us = time_window_us;
+	gpowercap_propagate_time_window(gpowercap);
 
 set_time_window_exit:
 	mutex_unlock(&gpowercap->lock);

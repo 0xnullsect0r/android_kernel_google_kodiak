@@ -24,7 +24,7 @@
 
 #include <dsim_cal.h>
 #if IS_ENABLED(CONFIG_DSIM_LOGBUFF)
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 #endif
 #include "exynos_drm_drv.h"
 

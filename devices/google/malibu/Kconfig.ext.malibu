@@ -32,8 +32,6 @@ source "$(KCONFIG_SOC_RDO_PREFIX)drivers/i3c/master/Kconfig"
 
 source "$(KCONFIG_SOC_RDO_PREFIX)drivers/i3c/master_thi/Kconfig"
 
-source "$(KCONFIG_SOC_RDO_PREFIX)drivers/input/Kconfig"
-
 source "$(KCONFIG_SOC_RDO_PREFIX)drivers/irqchip/Kconfig"
 
 source "$(KCONFIG_SOC_RDO_PREFIX)drivers/mailbox/Kconfig"
@@ -130,8 +128,6 @@ source "$(KCONFIG_SOC_GS_PREFIX)drivers/power/reset/Kconfig"
 
 source "$(KCONFIG_SOC_GS_PREFIX)drivers/regulator/Kconfig"
 
-source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/debug/Kconfig"
-
 source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/Kconfig"
 
 source "$(KCONFIG_SOC_GS_PREFIX)drivers/spmi/Kconfig"
@@ -179,6 +175,8 @@ source "$(KCONFIG_EXT_MODULES_PREFIX)private/google-modules/power/mitigation/Kco
 source "$(KCONFIG_EXT_MODULES_PREFIX)private/google-modules/powervr/Kconfig"
 
 source "$(KCONFIG_EXT_MODULES_PREFIX)private/google-modules/radio/common/metrics_collection/Kconfig"
+
+source "$(KCONFIG_EXT_MODULES_PREFIX)private/google-modules/radio/common/radio-bridge/Kconfig"
 
 source "$(KCONFIG_EXT_MODULES_PREFIX)private/google-modules/soc/gs/drivers/soc/google/gsa/Kconfig"
 

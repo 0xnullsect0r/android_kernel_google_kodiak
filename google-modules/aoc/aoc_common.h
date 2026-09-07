@@ -70,6 +70,7 @@ struct aoc_prvdata {
 	bool ap_triggered_reset;
 	bool force_release_aoc;
 	atomic_t ssr_requested_flag;
+	struct aoc_module_parameters *aoc_module_params;
 	char ap_reset_reason[AP_RESET_REASON_LENGTH];
 	wait_queue_head_t aoc_reset_wait_queue;
 	unsigned int acpm_async_id;

@@ -2590,7 +2590,8 @@ void hif_log_ce_info(struct hif_softc *scn, uint8_t *data,
 #endif
 
 #if defined(HIF_CPU_PERF_AFFINE_MASK) || \
-	defined(FEATURE_ENABLE_CE_DP_IRQ_AFFINE)
+	defined(FEATURE_ENABLE_CE_DP_IRQ_AFFINE) || \
+	(defined(WLAN_DP_AFFINITY_OVERRIDE_FEATURE) && IS_ENABLED(CONFIG_WCN_GOOGLE))
 /**
  * hif_config_irq_set_perf_affinity_hint() - API to set affinity
  * @hif_ctx: hif opaque handle

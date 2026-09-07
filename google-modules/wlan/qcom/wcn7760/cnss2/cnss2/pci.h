@@ -41,6 +41,8 @@
 
 #include "main.h"
 
+#define CNSS_BDF_MAP_FILE     "wlan_pci_subsys_bdf_map.ini"
+
 #define PM_OPTIONS_DEFAULT		0
 #define PCI_LINK_DOWN			0
 
@@ -175,6 +177,11 @@ struct cnss_pci_data {
 	const struct pci_device_id *pci_device_id;
 	u32 device_id;
 	u16 revision_id;
+	u16 pci_vendor_id;
+	u16 pci_subsystem_vendor;
+	u16 pci_subsystem_device;
+	u32 pcie_board_id;
+	bool pcie_board_id_valid;
 	u64 dma_bit_mask;
 	struct cnss_wlan_driver *driver_ops;
 	u8 pci_link_state;
@@ -215,6 +222,9 @@ struct cnss_pci_data {
 	atomic_t rddm_timeout_cnt;
 	struct timer_list boot_debug_timer;
 	struct delayed_work time_sync_work;
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	struct work_struct wake_work;
+#endif
 	u8 disable_pc;
 	struct mutex bus_lock; /* mutex for suspend and resume bus */
 	struct cnss_pci_debug_reg *debug_reg;
@@ -353,6 +363,7 @@ int cnss_pci_load_tme_patch(struct cnss_pci_data *pci_priv);
 int cnss_pci_load_tme_opt_file(struct cnss_pci_data *pci_priv,
 				enum wlfw_tme_lite_file_type_v01 file);
 int cnss_pci_load_m3(struct cnss_pci_data *pci_priv);
+int cnss_pci_lookup_board_id(struct cnss_pci_data *pci_priv, u32 *board_id);
 void cnss_pci_free_blob_mem(struct cnss_pci_data *pci_priv);
 int cnss_pci_load_aux(struct cnss_pci_data *pci_priv);
 int cnss_pci_handle_dev_sol_irq(struct cnss_pci_data *pci_priv);

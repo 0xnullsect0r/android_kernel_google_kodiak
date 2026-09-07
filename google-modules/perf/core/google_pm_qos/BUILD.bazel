@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 _COMMON_COPTS = [
     "-Werror",
 ]
@@ -82,17 +87,6 @@ alias(
         ":google_pm_qos_enabled": ":google_pm_qos_real",
         "//conditions:default": ":google_pm_qos_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/image/cnm:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/power/mitigation:__pkg__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-        "//private/google-modules/video/cnm:__subpackages__",
-    ],
 )
 
 ddk_headers(
@@ -154,11 +148,4 @@ alias(
         ":google_vote_manager_enabled": ":google_vote_manager_real",
         "//conditions:default": ":google_vote_manager_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/power/mitigation:__pkg__",
-        "//private/google-modules/powervr:__pkg__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
 )

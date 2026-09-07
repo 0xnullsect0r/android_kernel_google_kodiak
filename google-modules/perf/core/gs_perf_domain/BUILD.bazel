@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "trace_headers",
     hdrs = [
@@ -78,15 +83,4 @@ alias(
         ":perf_domain_enabled": ":perf_domain_real",
         "//conditions:default": ":perf_domain_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/image/cnm:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/soc/rdo:__pkg__",
-        "//private/google-modules/soc/rdo/drivers/ufs:__pkg__",
-        "//private/google-modules/video/cnm:__subpackages__",
-    ],
 )

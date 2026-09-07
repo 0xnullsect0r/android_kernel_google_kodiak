@@ -122,9 +122,9 @@ int lwis_io_buffer_write(struct lwis_device *lwis_dev, struct lwis_io_entry *ent
 		kernel_address = pdma_buffer->io_sys_map.vaddr;
 
 	if (lwis_io_buffer_debug) {
-		dev_info(lwis_dev->dev, "kernel_address %p offset %llu size_in_bytes %lu\n",
+		dev_info(lwis_dev->dev, "kernel_address %p offset %llu size_in_bytes %llu\n",
 			 kernel_address, entry->write_to_buffer.offset,
-			 entry->write_to_buffer.size_in_bytes);
+			 (unsigned long long)entry->write_to_buffer.size_in_bytes);
 
 		print_hex_dump_bytes("data dump: ", DUMP_PREFIX_NONE,
 				     entry->write_to_buffer.bytes,

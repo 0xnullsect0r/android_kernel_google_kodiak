@@ -88,6 +88,7 @@ enum {
 	NOA_WLAN_CMD_PACKET_SNIFFER_RESET,
 	NOA_WLAN_CMD_UPDATE_UP_2_FLOW,
 	NOA_WLAN_CMD_UPDATE_FLOWID_LOOK_UP_ENTRY,
+	NOA_WLAN_CMD_RX_HANDOVER_SYNC,
 	NOA_WLAN_CMD_MAX,
 };
 
@@ -112,6 +113,20 @@ struct noa_wlan_cmd_fw_init {
 	u32 type;
 	u64 noa_shared_mem_addr;
 	u32 noa_shared_mem_size;
+};
+
+struct noa_wlan_rx_handover_item {
+	u16 tkid;
+	u16 buf_size;
+	u32 rsvd;
+	u64 host_pa;
+	u64 dpa_addr;
+};
+
+struct noa_wlan_cmd_rx_handover_sync {
+	u64 handover_table_dpa_addr;
+	u32 count;
+	u32 rsvd;
 };
 
 struct noa_wlan_msi_desc_t {
@@ -215,6 +230,33 @@ struct noa_qca_txd {
 	u8 frag;
 	u32 search_index : 30, addry_en : 1, addrx_en : 1;
 } __attribute__((packed, aligned(4)));
+
+struct noa_qca_wcn7760_txd {
+	/* DW 0: Control & Priority */
+	uint8_t set_hlos_tid   : 4, // Priority (TID)
+	        to_fw          : 1, // Route to Firmware instead of Air
+	        l3_checksum_en : 1, // IPv4 Checksum offload
+	        l4_checksum_en : 1, // TCP/UDP Checksum offload
+	        rsvd1          : 1;
+
+	uint8_t ring_id;            // Target TCL ring index
+	uint8_t bmid;               // Buffer Manager ID
+	uint8_t frag;               // Fragmentation indicator
+
+	/* DW 1: Peer Context & QoS */
+	uint32_t search_index    : 20, // AST index for peer lookup
+	         cache_set_num   :  4, // AST Cache Set (ast_hash & 0xF)
+	         bank_id         :  6, // Beryllium DSCP-to-TID mapping bank
+	         rsvd2           :  2;
+
+	/* DW 2: Interface & Alignment */
+	uint8_t vdev_id;               // Virtual Device ID (for AP+STA)
+	uint8_t tx_notify_frame : 3,   // Hardware notification control
+	        pmac_id         : 2,
+	        rsvd3           : 3;
+	uint16_t fw_metadata;          // exception metadata
+} __attribute__((packed, aligned(4)));
+
 
 struct noa_wlan_cmd_pm_state_notify {
 	u32 power_state;

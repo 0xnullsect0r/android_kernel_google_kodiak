@@ -7,6 +7,7 @@
 #ifndef _GOOGLE_RST_CPM_H
 #define _GOOGLE_RST_CPM_H
 
+#include <linux/kconfig.h>
 #include <linux/mailbox_client.h>
 #include <linux/reset-controller.h>
 
@@ -62,5 +63,21 @@ int goog_cpm_rst_send_mba_mail(struct goog_cpm_rst *cpm_rst, unsigned long rst_i
 
 void goog_cpm_init_payload(struct goog_cpm_rst *cpm_rst, struct cpm_msg *msg,
 			   unsigned long rst_id, int op_id);
+
+struct cpm_peri_rst_map {
+	unsigned long id;
+	unsigned long clk_id;
+	unsigned long cfg_clk_id;
+};
+
+#if IS_ENABLED(CONFIG_SOC_MBU)
+const struct cpm_peri_rst_map *goog_cpm_rst_find_peri_map(u32 lpcm_id, unsigned long id);
+#else
+static inline const struct cpm_peri_rst_map *goog_cpm_rst_find_peri_map(u32 lpcm_id,
+									unsigned long id)
+{
+	return NULL;
+}
+#endif
 
 #endif //_GOOGLE_RST_CPM_H

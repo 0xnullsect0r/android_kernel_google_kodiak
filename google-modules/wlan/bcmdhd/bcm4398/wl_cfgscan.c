@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 driver scan related code
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -1766,9 +1766,11 @@ wl_cfgscan_populate_scan_channels(struct bcm_cfg80211 *cfg,
 #endif /* WL_HOST_BAND_MGMT */
 
 		if (is_p2p_scan) {
+			{
 				if (CHSPEC_IS6G(chanspec)) {
 					continue;
 				}
+			}
 
 			if (CHSPEC_IS5G(chanspec)) {
 #ifdef P2P_SKIP_DFS
@@ -5049,7 +5051,6 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 			goto exit;
 		}
 #endif /* WL_CFG80211_SYNC_GON */
-
 		if (!cfg->p2p->on) {
 		/* In case of p2p_listen command, supplicant may send
 		* remain_on_channel without turning on P2P

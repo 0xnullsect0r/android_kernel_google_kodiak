@@ -15,6 +15,9 @@
 #ifndef WLAN_PKT_PAD
 #define WLAN_PKT_PAD (60U)
 #endif
+#ifndef WLAN_DP_RING_SVC_TASKLET_MAX_BUDGET
+#define WLAN_DP_RING_SVC_TASKLET_MAX_BUDGET (32U)
+#endif
 
 #define WLAN_DP_STATS_MUL_INC(dp, name, cnt) (dp->dp_stats.name += cnt)
 #define WLAN_DP_STATS_INC(dp, name) WLAN_DP_STATS_MUL_INC(dp, name, 1)
@@ -114,10 +117,8 @@ static void WlanDpSubTaskStop(WlanDp *wlan_dp)
 	wlan_dp->delayed_works.running_work_num--;
 	if (wlan_dp->delayed_works.running_work_num == 0) {
 		wlan_dp->delayed_works.running = false;
-		return;
+		SysIfCancelDelayedWork(&wlan_dp->delayed_works.shared_worker);
 	}
-
-	SysIfCancelDelayedWork(&wlan_dp->delayed_works.shared_worker);
 }
 
 static void WlanDpAcquireWakeLock(WlanDp *wlan_dp)
@@ -391,7 +392,8 @@ int32_t WlanDpInit(WlanDp *const wlan_dp, const WlanDpInitParams *const params)
 	wlan_dp->delayed_works.interval_msec = WLAN_DELAYED_WORK_INTERVAL_IN_MSEC;
 	WlanDpAddDelayedWork(wlan_dp, &wlan_dp->idle_detector.param);
 	WlanDpAddDelayedWork(wlan_dp, &wlan_dp->throughput_monitor.param);
-	SysIfInitDelayedWork(&wlan_dp->delayed_works.shared_worker, WlanDpDelayedWorkTask, wlan_dp);
+	SysIfInitDelayedWorkWithResource(&wlan_dp->delayed_works.shared_worker,
+					 WlanDpDelayedWorkTask, wlan_dp);
 
 	init_completion(&wlan_dp->drain_completion);
 
@@ -497,19 +499,15 @@ int32_t WlanDpWdevRequestIrqs(WlanDp *const wlan_dp, int32_t irq_nums,
 
 static int32_t WlanDpWdevRxIsrClassify(WlanDp *wlan_dp)
 {
-	uint32_t fw_trap_data;
-	if (!wlan_dp || !wlan_dp->fw_trap_addr) {
-		WLAN_LOG_ERROR(Dp, "%s(): Invalid wlan_dp or fw_trap_addr.", __func__);
+	if (!wlan_dp) {
+		WLAN_LOG_ERROR(Dp, "%s(): Invalid wlan_dp.", __func__);
 		return -EINVAL;
 	}
 
 	// 1. FW_TRAP Check
-	SysIfInvalidDCache(WLAN_STATIC_CAST(const PhyAddr, wlan_dp->fw_trap_addr),
-			   sizeof(uint32_t));
-	fw_trap_data = *(volatile uint32_t *)wlan_dp->fw_trap_addr;
-	if (fw_trap_data != 0) {
-		WLAN_LOG_ERROR(Dp, "%s(): FW trap data(0x%" PRIx32 ") is not zero.", __func__,
-			       fw_trap_data);
+
+	if (WdevIfFwTrapCheck(wlan_dp->wdev_if, wlan_dp->fw_trap_addr)) {
+		WLAN_LOG_ERROR(Dp, "%s(): FW trap data is not zero.", __func__);
 		return -EFAULT;
 	}
 
@@ -686,6 +684,8 @@ static bool WlanDpHandleWdevRxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 		goto DONE;
 	}
 
+	WlanDpAcquireWakeLock(wlan_dp);
+
 	for (; *budget && src_ring_read_count && prim_rx_dst_ring_write_count;
 	     *budget -= 1, src_ring_read_count -= 1, prim_rx_dst_ring_write_count -= 1) {
 		wdev_desc = WLAN_REINTERPRET_CAST(void *, WlanRingGetReadBase(src_ring));
@@ -697,7 +697,11 @@ static bool WlanDpHandleWdevRxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 			WLAN_DP_STATS_RX_ERR_INC(wlan_dp);
 			goto NEXT_DESC;
 		}
-		iif = FindOifFromBssIdx(wlan_dp->flow_id_table, desc_info.bss_idx);
+		if (wlan_dp->wdev_if->chip_id == kWlanDeviceChipIdWcn7760) {
+			iif = 0; //TODO: Check for flow id mapping in Wcn
+		} else {
+			iif = FindOifFromBssIdx(wlan_dp->flow_id_table, desc_info.bss_idx);
+		}
 		if (iif < 0) {
 			WLAN_LOG_ERROR(Rx, "%s(): invalid bss_idx: %" PRIu32, __func__,
 				       desc_info.bss_idx);
@@ -705,6 +709,13 @@ static bool WlanDpHandleWdevRxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 			goto NEXT_DESC;
 		}
 		SyncWdevCmplCoherenceInfo(wlan_dp, src_ring, val_method, &coherence_info);
+
+		if (wlan_dp->simulate_rx_drop) {
+			/* Dynamic test mode: intentionally drop received packets for simulation/testing */
+			BmRelease(kVendorRxBufferManager, desc_info.pktid);
+			WLAN_DP_STATS_RX_ERR_INC(wlan_dp);
+			goto NEXT_DESC;
+		}
 
 		if (BmFind(kVendorRxBufferManager, desc_info.pktid, &tkid_item) != 0) {
 			WLAN_LOG_WARN(Rx, "%s(): failed to find buffer for received tkid %u.",
@@ -853,6 +864,7 @@ static bool WlanDpHandleWdevRxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 	} else {
 		SysIfNotifyMailbox(kNcpWifiMailboxTypeNep, 0);
 	}
+	WlanDpReleaseWakeLock(wlan_dp);
 
 DONE:
 	return WlanRingGetReadCount(src_ring) > 0;
@@ -891,6 +903,8 @@ static bool WlanDpHandleWdevTxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 	if (src_ring_read_count == 0 || *budget == 0 || dst_ring_write_count == 0) {
 		goto DONE;
 	}
+
+	WlanDpAcquireWakeLock(wlan_dp);
 
 	for (; *budget && src_ring_read_count && dst_ring_write_count;
 	     *budget -= 1, src_ring_read_count -= 1, dst_ring_write_count -= 1) {
@@ -954,11 +968,16 @@ static bool WlanDpHandleWdevTxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 			}
 		} else {
 			dst_desc = WLAN_REINTERPRET_CAST(void *, WlanRingGetWriteBase(dst_ring));
-			memcpy(dst_desc, wdev_desc, dst_ring->desc_sz);
-			SysIfFlushDCache(WLAN_REINTERPRET_CAST(PhyAddr, dst_desc),
-					 dst_ring->desc_sz);
-			WlanRingUpdateSwWrite(dst_ring);
-			WLAN_DP_STATS_TXCPL_INC(wlan_dp);
+			if (dst_desc != NULL) {
+				memcpy(dst_desc, wdev_desc, dst_ring->desc_sz);
+				SysIfFlushDCache(WLAN_REINTERPRET_CAST(PhyAddr, dst_desc),
+						 dst_ring->desc_sz);
+				WlanRingUpdateSwWrite(dst_ring);
+				WLAN_DP_STATS_TXCPL_INC(wlan_dp);
+			} else {
+				WLAN_LOG_ERROR(Rx, "%s(): Null dst_desc for dst_ring", __func__);
+				WLAN_DP_STATS_TXCPL_ERR_INC(wlan_dp);
+			}
 		}
 	NEXT_DESC:
 		WlanRingUpdateSwRead(src_ring);
@@ -977,6 +996,7 @@ static bool WlanDpHandleWdevTxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint32_t
 	WlanRingUpdateHwRead(src_ring);
 	WlanRingUpdateHwWrite(dst_ring);
 	SysIfNotifyMailbox(kNcpWifiMailboxTypeNepToAp, kDoorbellRxEvent);
+	WlanDpReleaseWakeLock(wlan_dp);
 
 DONE:
 	return WlanRingGetReadCount(src_ring) > 0;
@@ -1209,11 +1229,13 @@ static bool WlanDpHandleRingSvcRxCmpl(WlanDp *wlan_dp, WlanRing *src_ring, uint3
 						       ntw_txd->info.oif, &sta_info) != 0) {
 					WLAN_LOG_ERROR(
 						Tx,
-						"%s(): The destination station"
-						"(%02X:%02X:%02X:%02X:%02X:%02X) is unknown.",
+						"%s(): The destination station "
+						"(%02X:%02X:%02X:%02X:%02X:%02X) on OIF %" PRIu32
+						" is unknown.",
 						__func__, ntw_txd->dest[0], ntw_txd->dest[1],
 						ntw_txd->dest[2], ntw_txd->dest[3],
-						ntw_txd->dest[4], ntw_txd->dest[5]);
+						ntw_txd->dest[4], ntw_txd->dest[5],
+						ntw_txd->info.oif);
 					WLAN_DP_STATS_TX_ERR_INC(wlan_dp);
 					goto NEXT_DESC;
 				}
@@ -1363,6 +1385,10 @@ DONE:
 
 void WlanDpRingSvcRxTask(WlanWorker *worker, uint32_t budget)
 {
+	// Cap batch budget per tasklet run to yield CPU time back to control IOCTLs
+	budget = (budget > WLAN_DP_RING_SVC_TASKLET_MAX_BUDGET) ?
+			 WLAN_DP_RING_SVC_TASKLET_MAX_BUDGET :
+			 budget;
 	WlanDp *wlan_dp = container_of(worker, WlanDp, ring_svc_dp_worker);
 	uint8_t i;
 	uintptr_t lock_flags = 0;
@@ -1498,6 +1524,11 @@ bool WlanDpWdevRxBufferRefillTask(WlanDp *wlan_dp, uint32_t *budget)
 		ComposeWdevRxPostCoherenceInfo(wlan_dp, dst_refill_ring, val_method,
 					       &coherence_info);
 		wdev_desc = WlanRingGetWriteBase(dst_refill_ring);
+		if (wdev_desc == NULL) {
+			WLAN_LOG_ERROR(Dp, "%s(): Null wdev_desc from dst_refill_ring.", __func__);
+			WLAN_DP_STATS_RX_REPLENISH_ERR_INC(wlan_dp);
+			goto NEXT_BUF;
+		}
 		SysIfInvalidDCache(WLAN_REINTERPRET_CAST(PhyAddr, wdev_desc),
 				   dst_refill_ring->desc_sz);
 		if (WdevIfPrepareRxPostDesc(wlan_dp->wdev_if, bm_desc->tkid,
@@ -1691,5 +1722,12 @@ void WlanDpIrqEnable(WlanDp *wlan_dp)
 	for (i = 0; i < wlan_dp->num_wlan_dev_irq; i++) {
 		struct WlanIntrContext *intr_ctx = &(wlan_dp->wlan_dev_intr_ctx_group[i]);
 		SysIfEnableIrq(intr_ctx->irq_num);
+	}
+}
+
+void WlanDpSetSimulateRxDrop(WlanDp *wlan_dp, bool drop)
+{
+	if (wlan_dp) {
+		wlan_dp->simulate_rx_drop = drop;
 	}
 }

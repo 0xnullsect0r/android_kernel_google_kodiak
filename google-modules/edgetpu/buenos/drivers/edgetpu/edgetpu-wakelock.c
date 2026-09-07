@@ -15,10 +15,11 @@
 #include <linux/time64.h>
 #include <linux/timekeeping.h>
 
-#include "edgetpu.h"
+#include "edgetpu-client.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-wakelock.h"
+#include "edgetpu.h"
 
 /*
  * Clients holding wakelocks with total active time longer than this number of seconds are

@@ -2514,6 +2514,11 @@ int hif_pci_bus_resume(struct hif_softc *scn)
 
 	hif_apps_irqs_enable(GET_HIF_OPAQUE_HDL(scn));
 
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	if (hif_affinity_override_enabled(scn))
+		hif_config_irq_affinity(scn);
+#endif
+
 	return 0;
 }
 
@@ -3379,7 +3384,11 @@ void hif_pci_config_irq_affinity(struct hif_softc *scn)
 	/* Set IRQ affinity for WLAN DP interrupts*/
 	for (i = 0; i < hif_state->hif_num_extgroup; i++) {
 		hif_ext_group = hif_state->hif_ext_group[i];
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+		hif_pci_irq_set_affinity_hint(hif_ext_group, BIT(4), true);
+#else
 		hif_pci_irq_set_affinity_hint(hif_ext_group, 0, true);
+#endif
 	}
 	/* Set IRQ affinity for CE interrupts*/
 	hif_pci_ce_irq_set_affinity_hint(scn);

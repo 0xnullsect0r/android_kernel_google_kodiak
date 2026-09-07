@@ -229,7 +229,7 @@ static struct gs_panel_brightness_desc dcsda_brightness_desc = {
 #define DCSDA_WRCTRLD_DIMMING_BIT 0x08
 #define DCSDA_WRCTRLD_BCTRL_BIT 0x20
 
-#define DCSDA_P1_1_DOE2_EXTINFO 0X1A058464
+#define DCSDA_P1_1_DOE2_EXTINFO 0x6484051A
 
 #define MIPI_DSI_FREQ_DEFAULT 756
 #define MIPI_DSI_FREQ_ALTERNATIVE 740
@@ -360,6 +360,8 @@ static void dcsda_change_frequency(struct gs_panel *ctx, const struct gs_panel_m
 	GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, test_key_disable);
 
 	notify_panel_te2_freq_changed(ctx, 0);
+
+	ctx->panel_settings_changed = true;
 
 	dev_info(dev, "dcsda_change_frequency: change to %uHz\n", vrefresh);
 }
@@ -593,12 +595,7 @@ static void dcsda_set_hbm_mode(struct gs_panel *ctx, enum gs_hbm_mode mode)
 			GS_DCS_BUF_ADD_CMD(dev, 0x68, 0xB0, 0x2C, 0x6A,
 						0x80, 0x00, 0x00, 0x99, 0x7A);
 		else if (ctx->panel_rev_id.id == PANEL_REVID_PROTO1_1) {
-			u32 id = 0;
-
-			if (kstrtou32(ctx->panel_extinfo, 16, &id))
-				dev_warn(ctx->dev, "failed to get panel extinfo, use default FGZ setting for P1.1\n");
-
-			if (id == DCSDA_P1_1_DOE2_EXTINFO)
+			if (ctx->panel_id == DCSDA_P1_1_DOE2_EXTINFO)
 				GS_DCS_BUF_ADD_CMD(dev, 0x68, 0xB0, 0x2C, 0x6A,
 						0x80, 0x00, 0x00, 0x94, 0x76);
 			else

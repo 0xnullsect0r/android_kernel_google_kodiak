@@ -4,6 +4,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "google_irm_devfreq",
     srcs = [
@@ -14,13 +19,9 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/soc/rdo:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
+        "//private/google-modules/perf/core/apc_irm:apc_irm_drv",
         "//private/google-modules/perf/core/google_pm_qos",
         "//private/google-modules/perf/core/google_pm_qos:google_vote_manager",
         "//private/google-modules/soc/gs:headers",

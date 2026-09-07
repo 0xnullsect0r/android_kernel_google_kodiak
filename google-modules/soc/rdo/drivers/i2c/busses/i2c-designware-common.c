@@ -500,6 +500,7 @@ u32 i2c_dw_clk_rate(struct dw_i2c_dev *dev)
 		return 0;
 	return dev->get_clk_rate_khz(dev);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_clk_rate);
 
 int i2c_dw_prepare_clk(struct dw_i2c_dev *dev, bool prepare)
 {
@@ -543,12 +544,14 @@ int i2c_dw_acquire_lock(struct dw_i2c_dev *dev)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_acquire_lock);
 
 void i2c_dw_release_lock(struct dw_i2c_dev *dev)
 {
 	if (dev->release_lock)
 		dev->release_lock();
 }
+EXPORT_SYMBOL_GPL(i2c_dw_release_lock);
 
 /*
  * Waiting for bus not busy

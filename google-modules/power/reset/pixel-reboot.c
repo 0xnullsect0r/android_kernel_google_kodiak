@@ -20,7 +20,7 @@
 
 #include <trace/hooks/reboot.h>
 
-#include "../../bms/google_bms.h"
+#include <gbms_storage.h>
 
 #define BMS_RSBM_VALID			BIT(31)
 
@@ -30,6 +30,7 @@
 #define PIXEL_REBOOT_VER_03_01		(0x0301)
 
 struct gpio_desc *power_gpio;
+// TODO: b/517433810 - Encapsulate global variables within a struct.
 static u32 pixel_shutdown_offset, pixel_shutdown_mask, pixel_shutdown_value;
 
 struct pixel_reboot_data {
@@ -106,6 +107,7 @@ static void pixel_power_off(void)
 			 */
 			pr_info("PWR Key is not released.\n");
 		}
+		// TODO: b/517437119 - Investigate and remove 1000ms infinite busy-wait loop.
 		mdelay(1000);
 	}
 }
@@ -337,6 +339,7 @@ static int pixel_reboot_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	// TODO: b/517435912 - Refactor gpio_keys node probing to use phandle.
 	np = of_find_node_by_path("/gpio_keys");
 	if (!np)
 		return -EINVAL;

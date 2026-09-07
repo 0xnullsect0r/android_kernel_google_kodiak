@@ -6572,15 +6572,48 @@ parse_both_tpe_present:
 		if (local_eirp_set && reg_eirp_set) {
 			local_tpe = tpe_ies[local_eirp_idx];
 			reg_tpe = tpe_ies[reg_eirp_idx];
+			if (local_tpe.max_tx_pwr_count >
+			    MAX_TX_PWR_COUNT_FOR_160MHZ) {
+				pe_debug("Invalid local EIRP max count: %d",
+					 local_tpe.max_tx_pwr_count);
+				local_tpe.max_tx_pwr_count =
+					MAX_TX_PWR_COUNT_FOR_160MHZ;
+			}
+			if (reg_tpe.max_tx_pwr_count >
+			    MAX_TX_PWR_COUNT_FOR_160MHZ) {
+				pe_debug("Invalid reg EIRP max count: %d",
+					 reg_tpe.max_tx_pwr_count);
+				reg_tpe.max_tx_pwr_count =
+					MAX_TX_PWR_COUNT_FOR_160MHZ;
+			}
 		} else if (local_psd_set && reg_psd_set) {
 			local_tpe = tpe_ies[local_psd_idx];
 			reg_tpe = tpe_ies[reg_psd_idx];
+			if (local_tpe.max_tx_pwr_count >
+			    MAX_TX_PWR_COUNT_FOR_160MHZ_PSD) {
+				pe_debug("Invalid local PSD max count: %d",
+					 local_tpe.max_tx_pwr_count);
+				local_tpe.max_tx_pwr_count =
+					MAX_TX_PWR_COUNT_FOR_160MHZ_PSD;
+			}
+			if (reg_tpe.max_tx_pwr_count >
+			    MAX_TX_PWR_COUNT_FOR_160MHZ_PSD) {
+				pe_debug("Invalid reg PSD max tx count: %d",
+					 reg_tpe.max_tx_pwr_count);
+				reg_tpe.max_tx_pwr_count =
+					MAX_TX_PWR_COUNT_FOR_160MHZ_PSD;
+			}
 		} else {
 			return;
 		}
 
 		min_count = QDF_MIN(local_tpe.max_tx_pwr_count,
 				    reg_tpe.max_tx_pwr_count);
+		if (non_psd_set && min_count >= MAX_NUM_EIRP_PWR_LEVEL) {
+			pe_debug("Clamp min_count %d to %d for chan_eirp_power",
+				 min_count, MAX_NUM_EIRP_PWR_LEVEL - 1);
+			min_count = MAX_NUM_EIRP_PWR_LEVEL - 1;
+		}
 		for (i = 0; i < min_count + 1; i++) {
 			if (vdev_mlme->reg_tpc_obj.tpe[i] !=
 			    QDF_MIN(local_tpe.tx_power[i], reg_tpe.tx_power[i]))
@@ -9945,6 +9978,19 @@ lim_process_sap_ch_width_update(struct mac_context *mac_ctx,
 						ch_params.center_freq_seg0;
 	session->gLimChannelSwitch.ch_center_freq_seg1 =
 						ch_params.center_freq_seg1;
+
+	/*
+	 * Follow VHT channel width encoding:
+	 * 0: 20/40 MHz， 1: 80/160/80+80 MHz
+	 */
+	if (req->ch_width > CH_WIDTH_40MHZ)
+		session->gLimWiderBWChannelSwitch.newChanWidth = 1;
+	else
+		session->gLimWiderBWChannelSwitch.newChanWidth = 0;
+	session->gLimWiderBWChannelSwitch.newCenterChanFreq0 =
+			ch_params.center_freq_seg0;
+	session->gLimWiderBWChannelSwitch.newCenterChanFreq1 =
+			ch_params.center_freq_seg1;
 
 	non_eht_ch_width = req->ch_width;
 	if (non_eht_ch_width >= CH_WIDTH_160MHZ &&

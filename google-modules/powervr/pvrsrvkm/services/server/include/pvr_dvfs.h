@@ -90,6 +90,9 @@ typedef struct _IMG_DVFS_DEVICE_CFG_
 	IMG_INT32       i32CapacityHeadroom;
 	IMG_UINT32      ui32UpThresholdInPct;
 	IMG_UINT32      ui32DownDifferentialInPct;
+#if defined(SUPPORT_PDVFS_OPS)
+	IMG_UINT32      ui32Governor;
+#endif
 	IMG_BOOL        bIdleReq;
 	IMG_BOOL        bDTConfig;
 	PFN_SYS_DEV_DVFS_SET_FREQUENCY  pfnSetFrequency;

@@ -115,6 +115,7 @@ typedef enum global_config_field {
 	WDEV_REG_SIZE,
 	INTS_ADDR,
 	INTM_ADDR,
+	RX_PKT_TLV_SIZE,
 	DOORBELL_ADDR,
 	FW_TRAP_ADDR,
 } global_config_field_t;
@@ -145,7 +146,7 @@ struct noa_wlan_sta_info {
 	u8 addr[MAC_ADDR_LEN];
 	u8 encrypt_type : 4, encap_type : 2, lmac_id : 2;
 	u8 bmid;
-	u8 reserved1[2];
+	u16 fw_metadata;
 	u32 search_idx : 20, search_type : 2, dscp_tid_map_id : 6, addry_en : 1, addrx_en : 1,
 		reserved2 : 2;
 	u8 enable;
@@ -539,6 +540,8 @@ static inline ssize_t noa_wlan_cfg_show_global_config_value(struct noa_wlan_clie
 					       "u");
 	WLAN_DBG_SHOW_MEMORY_MAP_SECTION_VALUE(noa_wlan_global_config_t, global_config, intm_addr,
 					       "u");
+	WLAN_DBG_SHOW_MEMORY_MAP_SECTION_VALUE(noa_wlan_global_config_t, global_config,
+					       rx_pkt_tlv_size, "u");
 
 	return cnt;
 }
@@ -614,7 +617,7 @@ static inline ssize_t noa_wlan_cfg_show_sta_info_value(struct noa_wlan_client *c
 			WLAN_DBG_SHOW_MEMORY_MAP_SECTION_VALUE(noa_wlan_sta_info_t, &sta_infos[i],
 							       bmid, "hhu");
 			bit_field_offset =
-				offsetof(noa_wlan_sta_info_t, reserved1) + sizeof(uint8_t) * 2;
+				offsetof(noa_wlan_sta_info_t, fw_metadata) + sizeof(uint8_t) * 2;
 			cnt += scnprintf(buf + cnt, len - cnt,
 					 "(0x%08x) search_idx %d, (0x%08x)search_type %d\n",
 					 bit_field_offset, sta_infos[i].search_idx,

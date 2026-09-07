@@ -15,7 +15,6 @@
 #include <linux/gpio/driver.h>
 #endif
 #include <linux/types.h>
-#include <misc/gvotable.h>
 #include <linux/mutex.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
@@ -57,7 +56,6 @@
 #define GOOGLE_WLC_EPP_MAX_POWER			10000
 #define GOOGLE_WLC_BPP_MAX_POWER			5000
 #define GOOGLE_WLC_PREAUTH_RAMP_TARGET			7500
-#define GOOGLE_WLC_RETAIL_RAMP_TARGET			5000
 #define GOOGLE_WLC_MPP_RAMP_MAX_RETRY_TIME		10000 /* 10 seconds */
 #define GOOGLE_WLC_RAMP_RETRY_INTERVAL			200 /* ms */
 #define GOOGLE_WLC_RAMP_DONE_CHECK_NUM			0
@@ -147,7 +145,8 @@
 #define GOOGLE_WLC_IOP_VOUT_MV				9000
 #define MPP25_CHECK_DELAY_MS				3000
 #define CHARGER_SWITCH_CHECK_TIMEOUT_S			300 /* 5 minutes */
-#define GOOGLE_WLC_ICL_STABLE_TIME_MS			(30 * 1000)
+#define GOOGLE_WLC_CHG_STABLE_TIME_MS			(30 * 1000)
+#define GOOGLE_WLC_DC_CHG_STABLE_TIME_MS		(60 * 1000)
 #define WLC_DC_XCE_THRESH_DEFAULT			1
 #define WLC_DC_DPLOSS_CALI_POWER_MIN			15000
 #define FSK_MISSING_COUNT_MAX				3
@@ -159,6 +158,8 @@
 #define RCS_LOAD_BACKOFF_IRQ_COUNT			50
 #define WLC_DISCONNECT_TIMEOUT				(5 * 1000)
 #define GOOGLE_WLC_MPP_NEGO_TIMEOUT_MS			(5 * 60 * 1000)
+#define GOOGLE_WLC_XID_DELAY_MS				100
+#define GOOGLE_WLC_XID_RETRY_COUNT			10
 
 #define FWUPDATE_DATA_MINSIZE				8
 #define FWUPDATE_DATA_MAXSIZE				12
@@ -181,6 +182,7 @@
 #define TXID_DD_TYPE2					0xA0
 #define IOP_MFG_NUM_MAX					10
 #define INCOMPAT_COUNT					5
+#define IOP_SOC_MAX					90
 
 #define FSK_MISSING_HISTORY_SIZE			20
 #define GOOGLE_WLC_BPP_MISCOMM_POWER			4500
@@ -188,6 +190,20 @@
 
 #define WLC_RETAIL_LOWSOC_THRESHOLD			20
 #define WLC_CLOAK_ERROR_COUNT_MAX			5
+#define MPP25_INIT_CLOAK_DELAY				(2 * 1000)
+
+#define PRESENT_RATELIMIT_INTERVAL			(30 * 60 * HZ)
+#define PRESENT_RATELIMIT_BURST				20
+
+#define GOOGLE_WLC_BPP_RAMP_DONE_CHECK_NUM		5
+#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_NUM		20
+#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_MS		(1 * 1000)
+#define GOOGLE_WLC_RAMP_DONE_ICL_MIN_UA			650000
+
+#define GOOGLE_WLC_READING_MAX_IOUT_MA			10000
+#define GOOGLE_WLC_READING_MAX_VOLT_MV			25000
+#define GOOGLE_WLC_READING_MAX_FREQ_KHZ			1000
+#define GOOGLE_WLC_READING_MAX_TEMP_C			1000
 
 struct wlc_chg_config {
 	u32 target_power_mode; /* target power mode */
@@ -207,11 +223,6 @@ struct wlc_chg_config {
 	bool exit_by_ept;
 
 };
-
-#define GOOGLE_WLC_BPP_RAMP_DONE_CHECK_NUM		5
-#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_NUM		20
-#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_MS		(1 * 1000)
-#define GOOGLE_WLC_RAMP_DONE_ICL_MIN_UA			650000
 
 struct google_wlc_platform_data {
 	struct gpio_desc				*irq_gpio;
@@ -288,6 +299,12 @@ enum google_wlc_status {
 	GOOGLE_WLC_STATUS_CLOAK,
 	GOOGLE_WLC_STATUS_CLOAK_ENTERING,
 	GOOGLE_WLC_STATUS_CLOAK_EXITING,
+};
+
+enum google_wlc_chg_stable_type {
+	CHG_STABLE_TYPE_NONE = 0,
+	CHG_STABLE_TYPE_CHARGING,
+	CHG_STABLE_TYPE_DC_CHARGING,
 };
 
 static const char * const google_wlc_status_str[] = {
@@ -428,6 +445,7 @@ enum wlc_feature {
 	WLCF_CHARGE_15W              = 0x08,
 	WLCF_QI_PASSED_FEATURE       = 0x10,
 	WLCF_RETAIL_CHARGE           = 0x20,
+	WLCF_DREAM_DEFER             = 0x40,
 };
 
 enum uevent_source {
@@ -436,10 +454,11 @@ enum uevent_source {
 	UEVENT_WLC_ON,
 	UEVENT_FAN,
 	UEVENT_FWUPDATE,
+	UEVENT_TXSRC,
 };
 
 static char *uevent_source_str[] = {
-	"N/A", "WLC_OFF", "WLC_ON", "FAN", "FWUPDATE"
+	"N/A", "WLC_OFF", "WLC_ON", "FAN", "FWUPDATE", "TXSRC"
 };
 
 enum gpio_mode {
@@ -743,6 +762,7 @@ struct mpp25_data {
 	struct mode_cap_data mode_capabilities;
 	int dploss_comp;
 	bool setup_done;
+	bool exit;
 };
 
 struct psy_info {
@@ -841,10 +861,11 @@ struct google_wlc_data {
 	struct delayed_work			check_iop_timeout_work;
 	struct delayed_work			set_iop_vout_work;
 	struct delayed_work			charger_switch_ready_work;
-	struct delayed_work			icl_stable_work;
+	struct delayed_work			chg_stable_work;
 	struct delayed_work			limit_reason_work;
 	struct delayed_work			cloak_err_work;
 	struct delayed_work			vdd_err_work;
+	struct delayed_work			xid_work;
 	/* buck charger icl ramp related */
 	int					icl_now;
 	int					icl_ramp_target_mw;
@@ -868,6 +889,8 @@ struct google_wlc_data {
 	struct wakeup_source			*icl_target_ws;
 	struct wakeup_source			*eds_tx_ws;
 	struct wakeup_source			*limit_reason_ws;
+	struct wakeup_source			*xid_ws;
+	struct wakeup_source			*chg_stable_ws;
 	struct logbuffer			*log;
 	struct logbuffer			*fw_log;
 	struct dentry				*debug_entry;
@@ -966,6 +989,7 @@ struct google_wlc_data {
 	bool					force_bpp;
 	bool					manual_force_bpp;
 	int					online_disable;
+	bool					online_disable_override;
 	bool					fwupdate_mode;
 	u32					addr_fw;
 	u16					addr;
@@ -983,6 +1007,7 @@ struct google_wlc_data {
 	int					de_rf_curr_n;
 	u8					de_rf_curr[GOOGLE_WLC_RF_CURR_NUM_MAX];
 	int					mdis_level;
+	int					pri_chg_mdis_lvl;
 	int					skip_nego;
 	int					pkt_ready;
 	int					wlc_dc_skip_qi_ver;
@@ -1022,6 +1047,7 @@ struct google_wlc_data {
 	int					ad_type;
 	int					vrect_count;
 	ktime_t					last_vrect;
+	ktime_t					this_vrect;
 	u8					fwupdate_state;
 	bool					mod_enable;
 	bool					wait_for_dd;
@@ -1034,6 +1060,12 @@ struct google_wlc_data {
 	int					mdis_limit;
 	bool					mode_ready;
 	u8					product_id;
+	bool					txsrc;
+	u16					ptmc;
+	u8					xid_retry_count;
+	bool					retail_power_limit;
+	int					chg_stable_type;
+	bool					tx_cloak;
 };
 
 struct google_wlc_bits {

@@ -4285,12 +4285,16 @@ PVRSRV_ERROR PVRSRVRGXCloseHWPerfClientStreamKM(HWPERF_STREAM_DESC *psSD)
 
 	PVR_ASSERT(psSD != NULL);
 
+	// Acquire lock before the decrement.
+	OSLockAcquire(psPVRSRVData->hClientStreamTableLock);
+
 	iOldRefCount = OSAtomicSubtractUnless(&psSD->iRefCount, 1, CLIENT_STREAM_REFCOUNT_MIN);
 	if (iOldRefCount == CLIENT_STREAM_REFCOUNT_MIN)
 	{
 		/* If the old value is 0 return error. This means that something went
 		 * wrong and the reference count was already 0 and resources were
 		 * freed. */
+		OSLockRelease(psPVRSRVData->hClientStreamTableLock);
 		return PVRSRV_ERROR_REFCOUNT_OVERFLOW;
 	}
 	else if (iOldRefCount != (CLIENT_STREAM_REFCOUNT_MIN + 1))
@@ -4298,12 +4302,11 @@ PVRSRV_ERROR PVRSRVRGXCloseHWPerfClientStreamKM(HWPERF_STREAM_DESC *psSD)
 		/* If the old value is not 1 then return ok, the stream is still used
 		 * by someone. If it's 1, then progress with the resources destruction
 		 * since the current value is 0. */
+		OSLockRelease(psPVRSRVData->hClientStreamTableLock);
 		return PVRSRV_OK;
 	}
 
 	PVR_ASSERT(iOldRefCount > 0);
-
-	OSLockAcquire(psPVRSRVData->hClientStreamTableLock);
 
 	psElement = (void *) HASH_Remove_Extended(psPVRSRVData->psClientStreamTable,
 	                                          psSD->psSD->psNode->psStream->szName);

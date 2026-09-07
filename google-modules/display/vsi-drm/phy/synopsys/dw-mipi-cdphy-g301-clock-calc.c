@@ -432,7 +432,6 @@ int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config
 
 	if (!pll_cfg)
 		return -EINVAL;
-	memset(pll_cfg, 0, sizeof(*pll_cfg));
 	if (datarate_mbps < MIN_DATA_RATE_Mbps || datarate_mbps > MAX_DATA_RATE_Mbps)
 		return -EINVAL;
 	/* find the N */
@@ -472,6 +471,8 @@ int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config
 				datarate_mbps);
 		return -EINVAL;
 	}
+
+	memset(pll_cfg, 0, sizeof(*pll_cfg));
 
 	if (!ssc && (f_vco_osc_khz % f_vco_in_khz == 0)) {
 		/* integral mode */
@@ -529,7 +530,6 @@ int32_t pll_calc_v2(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_con
 
 	if (!pll_cfg)
 		return -EINVAL;
-	memset(pll_cfg, 0, sizeof(*pll_cfg));
 	if (datarate_mbps < MIN_DATA_RATE_Mbps || datarate_mbps > MAX_DATA_RATE_Mbps)
 		return -EINVAL;
 	/* find the N */
@@ -569,6 +569,8 @@ int32_t pll_calc_v2(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_con
 				datarate_mbps);
 		return -EINVAL;
 	}
+
+	memset(pll_cfg, 0, sizeof(*pll_cfg));
 
 	if (!ssc && (f_vco_osc_khz % f_vco_in_khz == 0)) {
 		/* integral mode */

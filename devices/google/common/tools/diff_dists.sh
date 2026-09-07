@@ -23,7 +23,7 @@ IGNORE_FILES=(
 # Use with grep -w
 DIFF_FILES=(
   '\.config'
-  'kernel-uapi-headers\.tar\.gz'
+  '.*-uapi-headers\.tar\.gz'
   '.*modules\.load'
   '.*modules\.blocklist'
   '.*\.dtb'

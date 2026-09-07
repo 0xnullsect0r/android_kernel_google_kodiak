@@ -798,6 +798,7 @@ typedef enum
 	RGXFWIF_DVFS_POLLING_INTERVAL,       /*!< Polling interval update */
 	RGXFWIF_DVFS_UP_THRESHOLD,			 /*!< Up threshold update */
 	RGXFWIF_DVFS_DOWN_DIFFERENTIAL,		 /*!< Down differential update */
+	RGXFWIF_DVFS_GOVERNOR,				 /*!< Governor update */
 } RGXFWIF_DVFS_TYPE;
 
 
@@ -909,6 +910,8 @@ typedef struct
 	union {
 		/** @set_rate: data for @PIXEL_RGXFWIF_PLATFORM_CMD_DVFS_SET_RATE */
 		struct pixel_rgxfwif_dvfs_set_rate_data set_rate;
+		/** @max_deferral: data for @PIXEL_RGXFWIF_PLATFORM_CMD_SCHED_SET_MAX_DEFERRAL_LIMIT */
+		struct pixel_rgxfwif_sched_max_deferral_limit max_deferral;
 	} UNCACHED_ALIGN cmd_data;
 } UNCACHED_ALIGN RGXFWIF_PLATFORM_DATA;
 
@@ -1388,6 +1391,9 @@ typedef struct
 #if defined(SUPPORT_PDVFS)
 	IMG_UINT32      ui32UpThresholdInPct;
 	IMG_UINT32      ui32DownDifferentialInPct;
+#endif
+#if defined(SUPPORT_PDVFS_OPS)
+	IMG_UINT32      ui32Governor;                            /*!< Selected reactive DVFS governor index */
 #endif
 #endif /* SUPPORT_PDVFS && !SUPPORT_OPEN_SOURCE_DRIVER */
 #if defined(SUPPORT_OPEN_SOURCE_DRIVER_FIRMWARE)

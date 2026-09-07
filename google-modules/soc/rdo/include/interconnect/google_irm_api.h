@@ -14,7 +14,7 @@
 u32 irm_register_read(struct device *dev, u32 client_idx, u32 reg_offset);
 int irm_register_write(struct device *dev, u32 client_idx, u32 reg_offset, u32 val);
 bool irm_probing_completed(void);
-
+void google_irm_delegate_rx(u32 client_mask);
 #else
 
 u32 irm_register_read(struct device *dev, u32 client_idx, u32 reg_offset)
@@ -30,6 +30,11 @@ int irm_register_write(struct device *dev, u32 client_idx, u32 reg_offset, u32 v
 static inline bool irm_probing_completed(void)
 {
 	return true;
+}
+
+static inline void google_irm_delegate_rx(u32 client_mask)
+{
+
 }
 
 #endif /* CONFIG_GOOGLE_IRM */

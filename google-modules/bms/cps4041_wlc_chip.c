@@ -13,6 +13,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <misc/logbuffer.h>
 
 static const struct regmap_config cps4041_fwupdate_regmap_config = {
 	.reg_bits = 32,
@@ -25,8 +26,11 @@ static int cps4041_get_vout_set(struct google_wlc_data *chgr, u32 *mv)
 	int ret;
 
 	ret = chgr->chip->reg_read_adc(chgr, CPS4041_VOUT_SET_REG, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
@@ -270,12 +274,13 @@ static int cps4041_get_interrupts(struct google_wlc_data *chgr, u32 *int_val,
 		int_fields->cloak_error = 1;
 
 	if (*int_val & CPS4041_INTERRUPT_DEBUG_INFO_BIT) {
-		u32 val32;
+		u32 val32 = 0;
 
 		ret = chgr->chip->reg_read_n(chgr, CPS4041_DEBUG_INFO_REG, buf, 4);
-		chgr->chip->reg_write_8(chgr, CPS4041_DEBUG_INFO_REG, 0);
+		chgr->chip->reg_write_n(chgr, CPS4041_DEBUG_INFO_REG, &val32, 4);
 		if (ret != 0)
 			return ret;
+
 		val32 = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 		dev_info(chgr->dev, "CPS4041 DEBUG_INFO IRQ, val: 0x%08x", val32);
 
@@ -707,7 +712,6 @@ static int cps4041_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id, u32
 	int ret;
 	u8 buf[3];
 	u8 mode;
-	u16 ptmc = 0;
 
 	ret = chgr->chip->chip_get_sys_mode(chgr, &mode);
 	if (ret != 0 || !mode_is_mpp(mode))
@@ -724,10 +728,14 @@ static int cps4041_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id, u32
 		return ret;
 	*mfg_rsvd_id |= (buf[1] << 8) | buf[0];
 
-	chgr->chip->chip_get_ptmc_id(chgr, &ptmc);
-	if (ptmc == CPS8200_PTMC_ID) {
+	if (chgr->ptmc == CPS8200_PTMC_ID) {
 		*unique_id = *device_id << 12 | *mfg_rsvd_id >> 7;
-		*product_id = *mfg_rsvd_id & 0x7F;
+		*product_id = (*mfg_rsvd_id >> 1) & 0x3F;
+		chgr->txsrc = *mfg_rsvd_id & 0x1;
+	} else {
+		*unique_id = 0;
+		*product_id = 0;
+		chgr->txsrc = 0;
 	}
 
 	return 0;

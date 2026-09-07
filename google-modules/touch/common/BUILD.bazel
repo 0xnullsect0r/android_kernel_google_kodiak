@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "ddk_uapi_headers", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "ddk_uapi_headers")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -81,14 +86,9 @@ ddk_module(
         "//conditions:default": ["//private/google-modules/touch/common/v1:touch.common.touch_bus_negotiator"],
     }),
     out = "touch_bus_negotiator.ko",
-    defconfig = "defconfig_touch_bus_negotiator",
-    kconfig = ":touch.common.kconfig",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/touch:__subpackages__",
     ],
     deps = [
         ":ddk_headers",
@@ -107,14 +107,9 @@ ddk_module(
         "//conditions:default": ["//private/google-modules/touch/common/v1:touch.common.heatmap"],
     }),
     out = "heatmap.ko",
-    defconfig = "defconfig_heatmap",
-    kconfig = ":touch.common.kconfig",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/touch:__subpackages__",
     ],
     deps = [
         ":ddk_headers",
@@ -132,14 +127,9 @@ ddk_module(
         "//conditions:default": ["//private/google-modules/touch/common/v1:touch.common.touch_offload"],
     }),
     out = "touch_offload.ko",
-    defconfig = "defconfig_touch_offload",
-    kconfig = ":touch.common.kconfig",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/touch:__subpackages__",
     ],
     deps = [
         ":ddk_headers",
@@ -157,15 +147,9 @@ ddk_module(
         "//conditions:default": ["//private/google-modules/touch/common/v1:touch.common.goog_touch_interface"],
     }),
     out = "goog_touch_interface.ko",
-    defconfig = "defconfig_goog_touch_interface",
-    kconfig = ":touch.common.kconfig",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/fingerprint:__subpackages__",
-        "//private/google-modules/touch:__subpackages__",
     ],
     deps = [
         ":ddk_headers",
@@ -188,17 +172,4 @@ ddk_module(
         ],
         "//conditions:default": [],
     }),
-)
-
-kernel_module_group(
-    name = "touch.common",
-    srcs = [
-        ":goog_touch_interface",
-        ":heatmap",
-        ":touch_bus_negotiator",
-        ":touch_offload",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
 )

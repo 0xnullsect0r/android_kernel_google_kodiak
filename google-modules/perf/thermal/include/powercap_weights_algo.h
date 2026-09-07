@@ -8,12 +8,13 @@
 #define _POWERCAP_WEIGHTS_ALGO_H_
 
 #include <linux/mutex.h>
+#include <linux/workqueue.h>
 
 #include "google_powercap.h"
 
 #define GPC_WEIGHTS_ALGO_DEFAULT_WEIGHT 1
 #define GPC_WEIGHTS_ALGO_NUM_OPPS 2
-#define GPC_WEIGHTS_ALGO_RECEIVER_THRESHOLD_PERCENT 80
+#define GPC_WEIGHTS_ALGO_RECEIVER_THRESHOLD_PERCENT 85
 
 struct gpowercap_weight_child {
 	struct list_head node;
@@ -21,8 +22,10 @@ struct gpowercap_weight_child {
 	char *name;
 	u32 weight;
 	u64 limit_uw;
+	u64 base_limit_uw;
 	u64 current_power_uw;
 	bool is_receiver;
+	struct work_struct work;
 };
 
 struct gpowercap_weights_algo {
@@ -30,6 +33,7 @@ struct gpowercap_weights_algo {
 	struct mutex lock;
 	struct list_head weighted_children;
 	u32 total_weight;
+	u32 redistribution_threshold;
 };
 
 static inline struct gpowercap_weights_algo *to_gpowercap_weights_algo(struct gpowercap *gpowercap)
@@ -47,6 +51,10 @@ struct gpowercap *__gpc_weights_algo_setup(struct device_node *dn, struct gpower
 ssize_t power_distribution_weights_store(struct device *dev, struct device_attribute *attr,
 						const char *buf, size_t count);
 ssize_t power_distribution_weights_show(struct device *dev, struct device_attribute *attr,
+						char *buf);
+ssize_t power_redistribution_threshold_store(struct device *dev, struct device_attribute *attr,
+						const char *buf, size_t count);
+ssize_t power_redistribution_threshold_show(struct device *dev, struct device_attribute *attr,
 						char *buf);
 int gpc_weights_of_property_count_strings(struct device_node *np, const char *propname);
 int gpc_weights_of_property_read_string_index(struct device_node *np, const char *propname,

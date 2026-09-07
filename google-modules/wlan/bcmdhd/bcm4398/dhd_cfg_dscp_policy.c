@@ -12,7 +12,7 @@
  *
  * This file is used only if the DHD is built with the feature string "dscp_policy".
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -125,6 +125,7 @@ dhd_dscp_policy_attach(struct bcm_cfg80211 *cfg)
 
 	/* Setup policy spin lock */
 	policy_info->dscp_policy_lock = osl_spin_lock_init(cfg->osh);
+	OSL_LOCK_CLASS_SET(policy_info->dscp_policy_lock);
 	if (policy_info->dscp_policy_lock == NULL) {
 		ret_val = BCME_ERROR;
 		goto done;

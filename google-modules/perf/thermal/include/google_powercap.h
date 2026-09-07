@@ -9,6 +9,7 @@
 
 #include <dt-bindings/soc/google/google-thermal-def.h>
 #include <linux/powercap.h>
+#include <linux/workqueue.h>
 
 #include "cdev_helper.h"
 #include "thermal_cpm_mbox.h"
@@ -35,6 +36,8 @@ struct gpowercap {
 	u64 current_power_uw;
 	bool power_updated;
 	struct gpowercap_stats *stats;
+	u64 decision_id;
+	unsigned long last_report_jiffies;
 };
 
 struct gpowercap_ops {
@@ -93,8 +96,10 @@ int gpowercap_update_power(struct gpowercap *gpowercap);
 int gpowercap_release_zone(struct powercap_zone *pcz);
 void gpowercap_unregister(struct gpowercap *gpowercap);
 int gpowercap_register(const char *name, struct gpowercap *gpowercap, struct gpowercap *parent);
+void gpowercap_propagate_time_window(struct gpowercap *gpowercap);
 int gpowercap_create_hierarchy(struct of_device_id *gpowercap_match_table);
 void gpowercap_destroy_hierarchy(void);
+extern struct workqueue_struct *gpowercap_wq;
 
 bool gpowercap_report_power_uw(struct gpowercap *gpowercap, u64 power_uw);
 #define gpowercap_for_each_children(gpc, child_ptr) \

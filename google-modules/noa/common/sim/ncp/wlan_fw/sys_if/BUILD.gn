@@ -63,6 +63,7 @@ wlan_test("log_test") {
     ":log",
     ":log_test_lib",
   ]
+  defines = [ "PW_LOG_LEVEL=PW_LOG_LEVEL_DEBUG" ]
   sources = [ "$dir_wlan_fw/sys_if/log/sys_if_log_test.cc" ]
 }
 
@@ -173,9 +174,11 @@ wlan_source_set("types") {
 wlan_source_set("workqueue") {
   public = [ "$dir_wlan_fw/sys_if/workqueue/sys_if_workqueue.h" ]
   sources = [ "$dir_wlan_fw/sys_if/workqueue/sys_if_workqueue_pw.cc" ]
-  public_deps = [ ":types" ]
-  deps = [
+  public_deps = [
+    ":types",
     "$dir_noa_modules/linux_port:workqueue",
+  ]
+  deps = [
     "$dir_pw_chrono:system_clock",
     "$dir_pw_log",
   ]

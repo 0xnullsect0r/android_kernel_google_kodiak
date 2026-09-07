@@ -2,7 +2,12 @@
 
 # ASoC-based ALSA driver gluing all the audio amplifier drivers
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_uapi_headers", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_uapi_headers")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_uapi_headers(
     name = "uapi_headers",
@@ -106,9 +111,6 @@ ddk_module(
         "//conditions:default": [],
     }),
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/aoc/usb:__pkg__",
-    ],
     deps = [
         ":dp_module",
         "//common:all_headers_aarch64",
@@ -131,15 +133,4 @@ ddk_module(
         ],
         "//conditions:default": [],
     }),
-)
-
-kernel_module_group(
-    name = "alsa",
-    srcs = [
-        ":aoc_alsa_dev",
-        ":aoc_alsa_dev_util",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
 )

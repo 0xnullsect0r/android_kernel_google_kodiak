@@ -28,6 +28,9 @@
 #include <linux/completion.h>
 #include <linux/pm.h>
 
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
+
 #include "google_bms_usecase.h"
 #include "google_dc_pps.h"
 #include "google_psy.h"
@@ -70,6 +73,10 @@ static int google_wlc_round_icl_to_target(struct google_wlc_data *charger, int i
 static void google_wlc_wait_for_sending_ept(struct google_wlc_data *charger,
 					    enum ept_reason reason);
 static int google_wlc_update_adapter_type(struct google_wlc_data *charger);
+static int google_wlc_thermal_icl_vote(struct google_wlc_data *charger);
+
+static DEFINE_RATELIMIT_STATE(present_ratelimit, PRESENT_RATELIMIT_INTERVAL,
+			      PRESENT_RATELIMIT_BURST);
 
 /* Input buf should be len * 3 + 1, because: 2 hex character and then space and null at end */
 size_t google_wlc_hex_str(const u8 *data, size_t len, char *buf, size_t max_buf, bool msbfirst)
@@ -331,6 +338,39 @@ static int google_wlc_get_adapter_type(struct google_wlc_data *charger)
 	return charger->ad_type;
 }
 
+static void google_wlc_handle_retail_charge(struct google_wlc_data *charger)
+{
+	if (!charger->dc_avail_votable)
+		charger->dc_avail_votable = gvotable_election_get_handle("DC_AVAIL");
+
+	if (charger->feature & WLCF_RETAIL_CHARGE &&
+	    charger->status != GOOGLE_WLC_STATUS_NOT_DETECTED) {
+		if (!charger->mpp25_disabled) {
+			charger->mpp25_disabled = true;
+			logbuffer_devlog(charger->log, charger->dev,
+					 "MPP25: Disable due to retail mode");
+		}
+
+		if (charger->last_capacity < WLC_RETAIL_LOWSOC_THRESHOLD) {
+			charger->retail_power_limit = false;
+			if (charger->dc_avail_votable)
+				gvotable_cast_int_vote(charger->dc_avail_votable, WLC_RETAIL_VOTER,
+						       GBMS_ALL_CP_CHG_DISABLED, false);
+			google_wlc_thermal_icl_vote(charger);
+		} else {
+			charger->retail_power_limit = true;
+			if (charger->dc_avail_votable)
+				gvotable_cast_int_vote(charger->dc_avail_votable, WLC_RETAIL_VOTER,
+						       GBMS_ALL_CP_CHG_DISABLED, true);
+			google_wlc_thermal_icl_vote(charger);
+		}
+	} else {
+		if (charger->dc_avail_votable)
+			gvotable_cast_int_vote(charger->dc_avail_votable, WLC_RETAIL_VOTER,
+					       GBMS_ALL_CP_CHG_DISABLED, false);
+	}
+}
+
 static void google_wlc_vote_csi_auth(struct google_wlc_data *charger, bool enable)
 {
 	if (!charger->csi_status_votable)
@@ -364,15 +404,10 @@ static int feature_update(struct google_wlc_data *charger, u64 value)
 		charger->feature &= ~WLCF_DREAM_DEFEND;
 
 	/* keep until reboot */
-	if (value & WLCF_RETAIL_CHARGE || charger->feature & WLCF_RETAIL_CHARGE) {
+	if (value & WLCF_RETAIL_CHARGE)
 		charger->feature |= WLCF_RETAIL_CHARGE;
-		charger->mpp25_disabled = true;
-		logbuffer_devlog(charger->log, charger->dev, "MPP25: Disable due to retail mode");
-		gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
-					GOOGLE_WLC_RETAIL_RAMP_TARGET, true);
-		gvotable_cast_long_vote(charger->wlc_dc_power_votable, WLC_RETAIL_VOTER,
-					GOOGLE_WLC_RETAIL_RAMP_TARGET, true);
-	}
+
+	google_wlc_handle_retail_charge(charger);
 
 	if (charger->feature & WLCF_QI_PASSED_FEATURE) {
 		logbuffer_devlog(charger->log, charger->dev, "Auth passed");
@@ -385,6 +420,11 @@ static int feature_update(struct google_wlc_data *charger, u64 value)
 		google_wlc_vote_csi_auth(charger, false);
 		google_wlc_set_qi_id(charger);
 	}
+
+	if (value & WLCF_DREAM_DEFER)
+		charger->feature |= WLCF_DREAM_DEFER;
+	else
+		charger->feature &= ~WLCF_DREAM_DEFER;
 
 	return 0;
 }
@@ -402,17 +442,18 @@ static void google_wlc_uevent(struct google_wlc_data *charger, u8 id)
 	bool skip = false;
 
 	/*
-	 * skip on WLC_ON when eds not ready
-	 * and on repeated consecutive WLC_ON, WLC_OFF
+	 * allow first WLC_ON and skip on subsequent ones when eds not ready
+	 * and on repeated consecutive WLC_OFF
 	 */
 
-	if (id == UEVENT_WLC_OFF)
+	if (id == UEVENT_WLC_OFF) {
 		charger->eds_event = false;
-	else if (id == UEVENT_WLC_ON && !google_wlc_eds_ready(charger))
-		skip = true;
-
-	if (charger->last_charging_uevent == id)
-		skip = true;
+		if (charger->last_charging_uevent == id)
+			skip = true;
+	} else if (id == UEVENT_WLC_ON && charger->last_charging_uevent != UEVENT_WLC_OFF) {
+		if (charger->last_charging_uevent == id || !google_wlc_eds_ready(charger))
+			skip = true;
+	}
 
 	if (!skip) {
 		if (id == UEVENT_WLC_ON || id == UEVENT_WLC_OFF)
@@ -466,9 +507,35 @@ static int google_wlc_set_vdden(struct google_wlc_data *charger, int value)
 	return 0;
 }
 
+static bool google_wlc_defer_online(struct google_wlc_data *charger)
+{
+	u8 mode = charger->mode;
+	int ret = 0;
+
+	if (!(charger->feature & WLCF_DREAM_DEFER))
+		return false;
+
+	if (charger->txsrc) {
+		logbuffer_devlog(charger->log, charger->dev, "No online for battery mode");
+		return true;
+	}
+
+	if (mode == RX_MODE_AC_MISSING)
+		ret = charger->chip->chip_get_sys_mode(charger, &mode);
+
+	if ((mode_is_mpp(mode) || ret != 0 || mode == RX_MODE_AC_MISSING)
+	    && charger->last_opfreq < GOOGLE_WLC_OPFREQ_THRES && charger->tx_id == 0) {
+		logbuffer_devlog(charger->log, charger->dev, "Defer online for mpp mode");
+		return true;
+	}
+	return false;
+}
+
 static void google_wlc_set_online(struct google_wlc_data *charger)
 {
 	if (charger->online == 1)
+		return;
+	if (google_wlc_defer_online(charger))
 		return;
 	logbuffer_devlog(charger->log, charger->dev, "Set online");
 	if (!wpc_auth_passed(charger))
@@ -510,8 +577,12 @@ static void google_wlc_set_offline(struct google_wlc_data *charger)
 	charger->last_opfreq = 0;
 	charger->cloak_err_count = 0;
 	charger->run_fwupdate = 0;
-	gvotable_cast_int_vote(charger->dc_avail_votable, WLC_VOTER,
+	if (charger->dc_avail_votable) {
+		gvotable_cast_int_vote(charger->dc_avail_votable, WLC_VOTER,
 				       GBMS_ACTIVE_CHG_DISABLE, false);
+		gvotable_cast_int_vote(charger->dc_avail_votable, WLC_RETAIL_VOTER,
+				       GBMS_ALL_CP_CHG_DISABLED, false);
+	}
 	if (charger->mpp25_disabled && charger->status == GOOGLE_WLC_STATUS_NOT_DETECTED)
 		charger->mpp25_disabled = false;
 	google_wlc_update_psy(charger);
@@ -831,6 +902,28 @@ static int google_wlc_dploss_cal_ramp(struct google_wlc_data *charger)
 	return ret;
 }
 
+static void google_wlc_handle_chg_stable(struct google_wlc_data *charger,
+					 enum google_wlc_chg_stable_type type,
+					 int time)
+{
+	dev_info(charger->dev, "handle chg stable: count=%d, type=%d, time=%d\n",
+		 charger->disconnect_total_count, type, time);
+
+	if (charger->disconnect_total_count > 0) {
+		if (delayed_work_pending(&charger->chg_stable_work) &&
+		    charger->chg_stable_type == type) {
+			dev_info(charger->dev,
+				 "chg stable type %d unchanged and work pending, skip mod", type);
+			return;
+		}
+
+		charger->chg_stable_type = type;
+		__pm_stay_awake(charger->chg_stable_ws);
+		mod_delayed_work(system_wq, &charger->chg_stable_work,
+				 msecs_to_jiffies(time));
+	}
+}
+
 static void google_wlc_do_dploss_event(struct google_wlc_data *charger, int event)
 {
 	const int last_event = charger->mpp25.last_dploss_event;
@@ -923,7 +1016,6 @@ static void google_wlc_do_dploss_event(struct google_wlc_data *charger, int even
 			goto err;
 		mpp25->last_dploss_event = DPLOSS_CAL_CAPTURE;
 		charger->chip->chip_do_dploss_event(charger, event);
-		charger->disconnect_total_count = 0;
 		break;
 	case DPLOSS_CAL_COMMIT:
 		if (last_event != DPLOSS_CAL_CAPTURE || !mpp25->dploss_event_success)
@@ -1545,11 +1637,10 @@ done:
 			charger->icl_now, status.current_now);
 	cancel_delayed_work_sync(&charger->pla_ack_timeout_work);
 	cancel_delayed_work_sync(&charger->icl_ramp_timeout_work);
-	if (charger->disconnect_total_count > 0)
-		schedule_delayed_work(&charger->icl_stable_work,
-				      msecs_to_jiffies(GOOGLE_WLC_ICL_STABLE_TIME_MS));
-	else
-		__pm_relax(charger->icl_ramp_timeout_ws);
+	__pm_relax(charger->icl_ramp_timeout_ws);
+	if (charger->status == GOOGLE_WLC_STATUS_CHARGING)
+		google_wlc_handle_chg_stable(charger, CHG_STABLE_TYPE_CHARGING,
+					     GOOGLE_WLC_CHG_STABLE_TIME_MS);
 	if (charger->mode != RX_MODE_WPC_MPP_RESTRICTED)
 		set_inlim_enabled(charger, true);
 	__pm_relax(charger->icl_ramp_ws);
@@ -1715,10 +1806,15 @@ static int google_wlc_mdis_into_power_limit(struct google_wlc_data *charger, int
 		}
 		if (mpp_mdis_num <= 0)
 			wlc_pwr = -1;
-		else if (lvl >= mpp_mdis_num)
-			wlc_pwr = 0;
-		else
-			wlc_pwr = mpp_pwr_table[lvl];
+		else {
+			if (charger->retail_power_limit)
+				lvl = mpp_mdis_num - 1;
+
+			if (lvl >= mpp_mdis_num)
+				wlc_pwr = 0;
+			else
+				wlc_pwr = mpp_pwr_table[lvl];
+		}
 		break;
 	case RX_MODE_WPC_EPP_NEGO:
 	case RX_MODE_WPC_EPP:
@@ -1788,6 +1884,120 @@ static int google_wlc_mdis_into_cp_fcc(struct google_wlc_data *charger, int lvl)
 	return cp_fcc;
 }
 
+static void google_wlc_pri_chg_vote(struct google_wlc_data *charger)
+{
+	int wlc_dc_mdis_num = charger->pdata->wlc_dc_mdis_num;
+	int wlc_pwr = -1, cp_fcc, lvl = charger->pri_chg_mdis_lvl;
+	int ret, voltage_mv;
+	bool charging = google_wlc_is_present(charger);
+	bool active_fcc = false, active_icl = false;
+	bool targeting_dc = charger->output_chg_config &&
+		charger->output_chg_config->charger_type == CHARGER_TYPE_SWC;
+
+	if (!charger->pri_chg_min_pwr_votable)
+		charger->pri_chg_min_pwr_votable =
+			gvotable_election_get_handle(VOTABLE_PRI_CHG_MIN_PWR);
+	if (!charger->pri_chg_min_pwr_votable) {
+		dev_warn_ratelimited(charger->dev, "PriC Failed to get " VOTABLE_PRI_CHG_MIN_PWR
+				     " votable");
+		return;
+	}
+
+	if (charging && targeting_dc && wlc_dc_mdis_num > 0) {
+		if (!charger->pdata->batt_psy) {
+			dev_warn_ratelimited(charger->dev, "batt_psy not available yet");
+			return;
+		}
+		ret = GPSY_GET_PROP(charger->pdata->batt_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+
+		cp_fcc = google_wlc_mdis_into_cp_fcc(charger, lvl);
+		if (ret < 0) {
+			dev_warn_ratelimited(charger->dev, "PriC Failed to get max voltage - %d",
+					     ret);
+			return;
+		}
+		voltage_mv = ret / 1000;
+		if (cp_fcc == -1) {
+			wlc_pwr = -1;
+		} else {
+			wlc_pwr = (cp_fcc / 1000) * voltage_mv;
+			active_fcc = true;
+		}
+	} else if (charging) {
+		wlc_pwr = google_wlc_mdis_into_power_limit(charger, lvl, EXECUTION_MODE_DRY_RUN,
+							   charger->chg_config_index);
+		if (wlc_pwr != -1)
+			active_icl = true;
+	}
+
+	dev_info(charger->dev, "PriC MDIS lvl=%d icl=%d fcc=%d pwr=%d",
+		 lvl, active_icl, active_fcc, wlc_pwr);
+
+	gvotable_cast_int_vote(charger->pri_chg_min_pwr_votable,
+			       "DC_FCC",
+			       wlc_pwr,
+			       active_fcc);
+	gvotable_cast_int_vote(charger->pri_chg_min_pwr_votable,
+			       "DC_ICL",
+			       wlc_pwr,
+			       active_icl);
+}
+
+static void google_wlc_vote_csi_thermals(struct google_wlc_data *charger, int wlc_pwr, int cp_fcc)
+{
+	int wlc_dc_mdis_num = charger->pdata->wlc_dc_mdis_num;
+	bool charging = google_wlc_is_present(charger);
+	bool active_fcc = false, active_icl = false;
+	int fcc_pwr = -1, icl_pwr = -1;
+	int ret;
+	bool targeting_dc = charger->output_chg_config &&
+		charger->output_chg_config->charger_type == CHARGER_TYPE_SWC;
+
+	if (!charger->csi_status_votable)
+		charger->csi_status_votable = gvotable_election_get_handle(VOTABLE_CSI_STATUS);
+	if (!charger->csi_status_votable)
+		return;
+
+	if (charging && targeting_dc && wlc_dc_mdis_num > 0) {
+		int voltage_mv;
+
+		if (!charger->pdata->batt_psy) {
+			dev_warn_ratelimited(charger->dev, "batt_psy not available yet");
+			return;
+		}
+
+		ret = GPSY_GET_PROP(charger->pdata->batt_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+		if (ret < 0) {
+			dev_warn_ratelimited(charger->dev, "Failed to get max voltage - %d", ret);
+			return;
+		}
+		voltage_mv = ret / 1000;
+
+		if (cp_fcc == -1) {
+			fcc_pwr = -1;
+		} else {
+			fcc_pwr = (cp_fcc / 1000) * voltage_mv;
+			active_fcc = true;
+		}
+	} else if (charging) {
+		if (wlc_pwr != -1) {
+			icl_pwr = wlc_pwr;
+			active_icl = true;
+		}
+	}
+
+	gvotable_cast_compound_vote(charger->csi_status_votable,
+				    "CSI_STATUS_THERM_DC_ICL",
+				    icl_pwr,
+				    CSI_STATUS_System_Thermals,
+				    active_icl);
+	gvotable_cast_compound_vote(charger->csi_status_votable,
+				    "CSI_STATUS_THERM_DC_FCC",
+				    fcc_pwr,
+				    CSI_STATUS_System_Thermals,
+				    active_fcc);
+}
+
 static int google_wlc_thermal_icl_vote(struct google_wlc_data *charger)
 {
 	int wlc_pwr, cp_fcc, lvl = charger->mdis_level;
@@ -1829,8 +2039,17 @@ vote_pwr:
 		gvotable_cast_int_vote(charger->cp_fcc_votable,
 				       WLC_MDIS_VOTER, cp_fcc, cp_fcc >= 0);
 
-	gvotable_cast_long_vote(charger->icl_ramp_target_votable,
-				WLC_MDIS_VOTER, wlc_pwr / 1000, wlc_pwr >= 0);
+	if (charger->retail_power_limit) {
+		gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
+					wlc_pwr / 1000, wlc_pwr >= 0);
+		gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_MDIS_VOTER, 0,
+					false);
+	} else {
+		gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
+					0, false);
+		gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_MDIS_VOTER,
+					wlc_pwr / 1000, wlc_pwr >= 0);
+	}
 	if (charger->pdata->has_mpp25_wlc_dc || charger->pdata->has_mpp15_wlc_dc)
 		gvotable_cast_long_vote(charger->wlc_dc_power_votable,
 					WLC_MDIS_VOTER, wlc_pwr / 1000, wlc_pwr >= 0);
@@ -1867,6 +2086,9 @@ vote_pwr:
 	} else {
 		dev_info(charger->dev, "mdis=0");
 	}
+
+	google_wlc_vote_csi_thermals(charger, wlc_pwr, cp_fcc);
+	google_wlc_pri_chg_vote(charger);
 	google_wlc_update_psy(charger);
 
 	return 0;
@@ -2172,7 +2394,6 @@ static void google_wlc_exit_charging(struct google_wlc_data *charger)
 		complete(&charger->icl_ramp_done);
 	cancel_delayed_work_sync(&charger->icl_ramp_timeout_work);
 	cancel_delayed_work_sync(&charger->pla_ack_timeout_work);
-	cancel_delayed_work_sync(&charger->icl_stable_work);
 	cancel_delayed_work_sync(&charger->limit_reason_work);
 	/* not using sync because mpp_nego_timeout_work also takes status_lock (deadlock) */
 	cancel_delayed_work(&charger->mpp_nego_timeout_work);
@@ -2200,6 +2421,9 @@ static void google_wlc_exit_power_transfer(struct google_wlc_data *charger)
 	google_wlc_disable_csp(charger);
 	google_wlc_abort_transfers(charger);
 	gvotable_cast_long_vote(charger->icl_ramp_target_votable, MODE_VOTER, 0, true);
+	cancel_delayed_work(&charger->chg_stable_work);
+	charger->chg_stable_type = CHG_STABLE_TYPE_NONE;
+	__pm_relax(charger->chg_stable_ws);
 }
 
 static int google_wlc_count_fsk_missing_offline(struct google_wlc_data *charger)
@@ -2308,7 +2532,11 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		charger->mpp_initialized = false;
 		charger->mpp15_wlc_dc_ready = false;
 		charger->charger_switch_check_finished = false;
-		feature_update(charger, 0);
+		/* keep defer online */
+		if (charger->feature & WLCF_DREAM_DEFER)
+			feature_update(charger, WLCF_DREAM_DEFER);
+		else
+			feature_update(charger, 0);
 		google_wlc_external_boost_en(charger, false);
 		if (charger->last_opfreq > GOOGLE_WLC_OPFREQ_THRES && !charger->usb_connected) {
 			charger->fsk_missing_count = google_wlc_count_fsk_missing_offline(charger);
@@ -2325,10 +2553,11 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		cancel_delayed_work(&charger->mpp25_timeout_work);
 		cancel_delayed_work_sync(&charger->pla_ack_timeout_work);
 		cancel_delayed_work_sync(&charger->set_iop_vout_work);
-		cancel_delayed_work_sync(&charger->icl_stable_work);
 		cancel_delayed_work_sync(&charger->limit_reason_work);
 		/* not using sync because mpp_nego_timeout_work also takes status_lock (deadlock) */
 		cancel_delayed_work(&charger->mpp_nego_timeout_work);
+		if (cancel_delayed_work(&charger->xid_work))
+			__pm_relax(charger->xid_ws);
 		if (charger->mpp25.state != MPP25_OFF)
 			google_wlc_exit_mpp25(charger);
 		if (charger->wait_for_mode > 0)
@@ -2350,7 +2579,11 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		charger->bpp_ramp_done_check = false;
 		charger->qi_id = 0;
 		charger->limit_reason_retry_count = 0;
-		charger->product_id = 0;
+		if (charger->retail_power_limit)
+			gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
+						0, false);
+		charger->retail_power_limit = false;
+		charger->tx_cloak = false;
 		if (!charger->chg_mode_votable)
 			charger->chg_mode_votable =
 				gvotable_election_get_handle(GBMS_MODE_VOTABLE);
@@ -2359,11 +2592,14 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 				WLC_VOTER,
 				_bms_usecase_meta_async_set(GBMS_CHGR_MODE_WLC_RX, 1),
 				false);
+		ratelimit_state_init(&present_ratelimit, PRESENT_RATELIMIT_INTERVAL,
+				     PRESENT_RATELIMIT_BURST);
 
 		if (charger->online || charger->status == GOOGLE_WLC_STATUS_CLOAK) {
 			dev_info(charger->dev, "Schedule disconnect, status: %s",
 				 google_wlc_status_str[charger->status]);
 			__pm_stay_awake(charger->disconnect_ws);
+			pm_system_wakeup();
 			if (charger->wait_for_dd)
 				disconnect_debounce = GOOGLE_WLC_DISCONNECT_DEBOUNCE_MS * 2;
 			else
@@ -2376,6 +2612,7 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		break;
 	case GOOGLE_WLC_STATUS_CLOAK_ENTERING:
 		__pm_stay_awake(charger->presence_ws);
+		pm_system_wakeup();
 		schedule_delayed_work(&charger->present_check_work,
 				      msecs_to_jiffies(GOOGLE_WLC_PRESENT_CHECK_INTERVAL_MS));
 		ret = charger->chip->chip_set_cloak_mode(charger, true,
@@ -2400,6 +2637,7 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		charger->cloak_enter_reason = 0;
 		charger->chip->chip_set_cloak_mode(charger, false, 0);
 		__pm_stay_awake(charger->notifier_ws);
+		pm_system_wakeup();
 		break;
 	case GOOGLE_WLC_STATUS_CLOAK:
 		dev_info(charger->dev, "Detected Cloak Mode");
@@ -2409,11 +2647,13 @@ static int google_wlc_set_status(struct google_wlc_data *charger, enum google_wl
 		break;
 	case GOOGLE_WLC_STATUS_DETECTED:
 		__pm_stay_awake(charger->presence_ws);
+		pm_system_wakeup();
 		cancel_delayed_work(&charger->disconnect_work);
 		__pm_relax(charger->disconnect_ws);
 
 		schedule_delayed_work(&charger->present_check_work,
 					   msecs_to_jiffies(GOOGLE_WLC_PRESENT_CHECK_INTERVAL_MS));
+		google_wlc_uevent(charger, UEVENT_WLC_ON);
 		if (!charger->usb_connected)
 			google_wlc_set_online(charger);
 
@@ -2475,26 +2715,13 @@ static int google_wlc_handle_capacity(struct google_wlc_data *charger, int capac
 	if (charger->pdata->mod_soc > 0)
 		charger->mod_enable = charger->last_capacity >= charger->pdata->mod_soc;
 
+	google_wlc_handle_retail_charge(charger);
 	mutex_unlock(&charger->status_lock);
 
 	if (charger->fw_data.update_check_pending &&
 	    charger->last_capacity > WLC_FWUPDATE_SOC_THRESHOLD)
 		mod_delayed_work(system_wq, &charger->wlc_fw_update_work,
 				 msecs_to_jiffies(WLC_FW_CHECK_TIMEOUT_MS));
-
-	if (charger->feature & WLCF_RETAIL_CHARGE) {
-		if (charger->last_capacity < WLC_RETAIL_LOWSOC_THRESHOLD) {
-			gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
-						0, false);
-			gvotable_cast_long_vote(charger->wlc_dc_power_votable, WLC_RETAIL_VOTER,
-						0, false);
-		} else {
-			gvotable_cast_long_vote(charger->icl_ramp_target_votable, WLC_RETAIL_VOTER,
-						GOOGLE_WLC_RETAIL_RAMP_TARGET, true);
-			gvotable_cast_long_vote(charger->wlc_dc_power_votable, WLC_RETAIL_VOTER,
-						GOOGLE_WLC_RETAIL_RAMP_TARGET, true);
-		}
-	}
 
 	if (!charger->send_csp)
 		return 0;
@@ -2513,7 +2740,7 @@ static void google_wlc_notifier_check_dc(struct google_wlc_data *charger)
 
 	mutex_lock(&charger->status_lock);
 	dc_in = google_wlc_has_dc_in(charger);
-	if (dc_in < 0) {
+	if (dc_in < 0 || (charger->online_disable && dc_in == 1)) {
 		dev_info(&charger->client->dev, "reschedule notifier(%d)\n",
 			 dc_in);
 		schedule_delayed_work(&charger->psy_notifier_work,
@@ -2533,10 +2760,6 @@ static void google_wlc_notifier_check_dc(struct google_wlc_data *charger)
 				charger->online, dc_in);
 
 	if (dc_in) {
-		if (charger->online_disable) {
-			dev_info(charger->dev, "Ignore dc_in during online_disable");
-			goto exit;
-		}
 		cancel_delayed_work(&charger->present_check_work);
 		__pm_relax(charger->presence_ws);
 		cancel_delayed_work(&charger->disconnect_work);
@@ -2629,8 +2852,9 @@ static void google_wlc_present_check_work(struct work_struct *work)
 		}
 		goto exit;
 	}
-	dev_info(charger->dev, "present_check: online=%d mode=%s",
-		 charger->online, sys_op_mode_str[mode]);
+	if (__ratelimit(&present_ratelimit))
+		dev_info(charger->dev, "present_check: online=%d mode=%s", charger->online,
+			 sys_op_mode_str[mode]);
 	/* Continue to check present status */
 	mod_delayed_work(system_wq, &charger->present_check_work,
 			 msecs_to_jiffies(GOOGLE_WLC_PRESENT_CHECK_INTERVAL_MS));
@@ -2723,7 +2947,7 @@ static void google_wlc_notifier_work(struct work_struct *work)
 	if (charger->shutdown_notify)
 		goto out;
 
-	if (charger->online_disable) {
+	if (charger->online_disable_override) {
 		dev_info(&charger->client->dev, "online disabled: ignore notifier\n");
 		goto out;
 	}
@@ -2754,6 +2978,7 @@ static int google_wlc_notifier_cb(struct notifier_block *nb,
 		charger->chgr_psy = psy;
 		cancel_delayed_work_sync(&charger->psy_notifier_work);
 		__pm_stay_awake(charger->notifier_ws);
+		pm_system_wakeup();
 		mod_delayed_work(system_wq, &charger->psy_notifier_work,
 					msecs_to_jiffies(GOOGLE_WLC_NOTIFIER_DELAY_MS));
 	} else if (batt_name && strcmp(psy->desc->name, batt_name) == 0) {
@@ -2779,7 +3004,8 @@ static void google_wlc_wait_for_cloak(struct google_wlc_data *charger, const cha
 	/* if already in desired state or not one of mpp/cloak, just cast vote and return */
 	if ((cloak_en && mode == RX_MODE_MPP_CLOAK) ||
 	    (!cloak_en && mode != RX_MODE_MPP_CLOAK) ||
-	    (!mode_is_mpp(mode) && mode != RX_MODE_MPP_CLOAK)) {
+	    (!mode_is_mpp(mode) && mode != RX_MODE_MPP_CLOAK) ||
+	    (!cloak_en && charger->tx_cloak)) {
 		gvotable_cast_int_vote(charger->wlc_disable_votable, reason,
 		WLC_CLOAK_ONLY, cloak_en);
 		return;
@@ -2973,6 +3199,15 @@ static void google_wlc_usecase_setup_cb(void *d, enum gsu_usecases from_uc,
 	mutex_lock(&charger->status_lock);
 	charger->usecase_ready = false;
 	charger->wlc_charge_enabled = false;
+
+	if (is_usecase_wlc_dc(to_uc) && !charger->wlc_dc_psy)
+		charger->wlc_dc_psy = power_supply_get_by_name("wlcin-mains");
+
+	if (bms_usecase_is_uc_wireless(from_uc)) {
+		cancel_delayed_work(&charger->chg_stable_work);
+		charger->chg_stable_type = CHG_STABLE_TYPE_NONE;
+		__pm_relax(charger->chg_stable_ws);
+	}
 	if (bms_usecase_is_uc_wired(to_uc) && !charger->usb_connected) {
 		if (charger->online &&
 		    (mode_is_mpp(charger->mode) || charger->mode == RX_MODE_MPP_CLOAK)) {
@@ -3105,9 +3340,15 @@ static void google_wlc_usecase_transition_cb(void *d, enum gsu_usecases from_uc,
 	if (config_index == charger->chg_config_index)
 		goto setup_charging;
 	if (was_mpp25) {
-		charger->mpp25_disabled = true;
-		google_wlc_exit_mpp25(charger);
-		logbuffer_devlog(charger->log, charger->dev, "MPP25: Disable due to exit usecase");
+		if (charger->tx_cloak) {
+			logbuffer_devlog(charger->log, charger->dev,
+					 "MPP25: Defer exit usecase due to tx cloak");
+		} else {
+			charger->mpp25_disabled = true;
+			google_wlc_exit_mpp25(charger);
+			logbuffer_devlog(charger->log, charger->dev,
+					 "MPP25: Disable due to exit usecase");
+		}
 	}
 	dev_info(charger->dev, "USECASE chg index: %d->%d", charger->chg_config_index,
 			config_index);
@@ -3281,6 +3522,7 @@ static void google_wlc_usecase_cb(void *d, enum gsu_usecases from_uc,
 		google_wlc_set_status(charger, GOOGLE_WLC_STATUS_DC_CHARGING);
 	} else if (!is_usecase_wlc_dc(to_uc) && is_usecase_wlc_dc(from_uc)) {
 		__pm_stay_awake(charger->notifier_ws);
+		pm_system_wakeup();
 		schedule_delayed_work(&charger->psy_notifier_work,
 				msecs_to_jiffies(GOOGLE_WLC_NOTIFIER_DELAY_MS));
 		memset(&charger->dc_data, 0, sizeof(struct wlc_dc_data));
@@ -3292,13 +3534,14 @@ static void google_wlc_usecase_cb(void *d, enum gsu_usecases from_uc,
 		gvotable_cast_int_vote(charger->chg_mode_votable, WLCFW_VOTER,
 				       _bms_usecase_meta_async_set(GBMS_CHGR_MODE_WLC_FWUPDATE, 1),
 				       false);
-		charger->online_disable = false;
 		__pm_relax(charger->fwupdate_ws);
 		break;
 	case GSU_MODE_STANDBY:
 		/* wait for internal boost disabled */
-		if (from_uc == GSU_MODE_WLC_FWUPDATE)
+		if (from_uc == GSU_MODE_WLC_FWUPDATE) {
 			msleep(200);
+			charger->online_disable = false;
+		}
 		if (!is_fwtag_allow_update(charger))
 			break;
 		if (charger->fw_data.update_check_pending)
@@ -4138,10 +4381,11 @@ static ssize_t ptmc_id_show(struct device *dev,
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct google_wlc_data *charger = i2c_get_clientdata(client);
-	u16 ptmc_id = 0;
 
-	charger->chip->chip_get_ptmc_id(charger, &ptmc_id);
-	return scnprintf(buf, PAGE_SIZE, "%04x\n", ptmc_id);
+	if (charger->ptmc == 0)
+		charger->chip->chip_get_ptmc_id(charger, &charger->ptmc);
+
+	return scnprintf(buf, PAGE_SIZE, "%04x\n", charger->ptmc);
 }
 
 static DEVICE_ATTR_RO(ptmc_id);
@@ -4720,6 +4964,18 @@ static ssize_t product_id_show(struct device *dev,
 
 static DEVICE_ATTR_RO(product_id);
 
+static ssize_t txsrc_show(struct device *dev,
+			    struct device_attribute *attr,
+			    char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct google_wlc_data *charger = i2c_get_clientdata(client);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", charger->txsrc);
+}
+
+static DEVICE_ATTR_RO(txsrc);
+
 static struct attribute *google_wlc_attributes[] = {
 	&dev_attr_addr.attr,
 	&dev_attr_data.attr,
@@ -4757,6 +5013,7 @@ static struct attribute *google_wlc_attributes[] = {
 	&dev_attr_negopower.attr,
 	&dev_attr_txlimitreason.attr,
 	&dev_attr_product_id.attr,
+	&dev_attr_txsrc.attr,
 	NULL
 };
 
@@ -4900,6 +5157,26 @@ static int google_wlc_inhibit_show(void *data, u64 *val)
 }
 
 DEFINE_SIMPLE_ATTRIBUTE(debug_inhibit_fops, google_wlc_inhibit_show, NULL, "%lld\n");
+
+static int google_wlc_online_disable_show(void *data, u64 *val)
+{
+	struct google_wlc_data *charger = data;
+	*val = charger->online_disable;
+	return 0;
+}
+
+static int google_wlc_online_disable_store(void *data, u64 val)
+{
+	struct google_wlc_data *charger = data;
+
+	charger->online_disable = val;
+	charger->online_disable_override = val > 0;
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(online_disable_fops, google_wlc_online_disable_show,
+			google_wlc_online_disable_store, "%lld\n");
 
 static int google_wlc_auth_disable_store(void *data, u64 val)
 {
@@ -6209,6 +6486,7 @@ static void google_wlc_disable_work(struct work_struct *work)
 	if (disable_vote != WLC_HARD_DISABLE && charger->disable_state == WLC_HARD_DISABLE) {
 		gpiod_set_value_cansleep(charger->pdata->inhibit_gpio, 0);
 		__pm_stay_awake(charger->notifier_ws);
+		pm_system_wakeup();
 		schedule_delayed_work(&charger->psy_notifier_work, 0);
 	}
 
@@ -6462,6 +6740,71 @@ static void google_wlc_vdd_err_work(struct work_struct *work)
 			      GOOGLE_WLC_NOTIFIER_DELAY_MS);
 }
 
+static int google_wlc_get_xid(struct google_wlc_data *charger)
+{
+	u32 device_id, mfg_id, unique_id;
+	int ret;
+
+	ret = charger->chip->chip_get_mpp_xid(charger, &device_id, &mfg_id,
+					      &unique_id, &charger->product_id);
+	if (ret < 0)
+		return ret;
+
+	charger->tx_id = unique_id ? unique_id : device_id;
+	if (charger->tx_id) {
+		google_wlc_set_online(charger);
+
+		if (charger->last_tx_id != charger->tx_id) {
+			charger->last_tx_id = charger->tx_id;
+
+			/* reset once tx change is identified */
+			charger->disconnect_total_count = 0;
+		}
+	}
+
+	return 0;
+}
+
+static void google_wlc_xid_work(struct work_struct *work)
+{
+	struct google_wlc_data *charger = container_of(work,
+			struct google_wlc_data, xid_work.work);
+	int ret;
+
+	mutex_lock(&charger->status_lock);
+	charger->xid_retry_count++;
+	if (charger->xid_retry_count > GOOGLE_WLC_XID_RETRY_COUNT) {
+		__pm_relax(charger->xid_ws);
+		mutex_unlock(&charger->status_lock);
+		return;
+	}
+	/* ensure ptmc before xid */
+	ret = charger->chip->chip_get_ptmc_id(charger, &charger->ptmc);
+	if (ret || charger->ptmc == 0)
+		goto reschedule;
+
+	google_wlc_get_xid(charger);
+
+	if (charger->tx_id) {
+		if (charger->txsrc)
+			google_wlc_uevent(charger, UEVENT_TXSRC);
+		__pm_relax(charger->xid_ws);
+		mutex_unlock(&charger->status_lock);
+		return;
+	}
+
+	if (charger->online || charger->status == GOOGLE_WLC_STATUS_NOT_DETECTED) {
+		__pm_relax(charger->xid_ws);
+		mutex_unlock(&charger->status_lock);
+		return;
+	}
+
+reschedule:
+	schedule_delayed_work(&charger->xid_work,
+			      msecs_to_jiffies(GOOGLE_WLC_XID_DELAY_MS));
+	mutex_unlock(&charger->status_lock);
+}
+
 static void google_wlc_mode_change_irq(struct google_wlc_data *charger)
 {
 	int ret;
@@ -6505,7 +6848,10 @@ static void google_wlc_mode_change_irq(struct google_wlc_data *charger)
 			if (charger->mpp25.fod_cloak == FOD_CLOAK_STARTED)
 				charger->mpp25.fod_cloak = FOD_CLOAK_ENTERED;
 		} else if (ret == 0 && val8 == CLOAK_TX_INITIATED) {
-			dev_info(charger->dev, "TX initiated cloak");
+			dev_info(charger->dev, "TX initiated cloak for mode %d",
+				 charger->wait_for_mode);
+			if (charger->wait_for_mode <= 0)
+				charger->tx_cloak = true;
 		} else if (charger->disable_state == WLC_NOT_DISABLED) {
 			dev_info(charger->dev, "RX initiated Cloak irq unexpectedly; exit cloak\n");
 			google_wlc_set_status(charger, GOOGLE_WLC_STATUS_CLOAK_EXITING);
@@ -6546,6 +6892,10 @@ static void google_wlc_mode_change_irq(struct google_wlc_data *charger)
 	case RX_MODE_WPC_EPP_NEGO:
 	case RX_MODE_WPC_EPP:
 	case RX_MODE_WPC_BPP:
+		if (charger->feature & WLCF_DREAM_DEFER)
+			google_wlc_set_online(charger);
+		if (mode == RX_MODE_WPC_BPP)
+			charger->vrect_count = 0;
 		if (charger->eds_event)
 			google_wlc_uevent(charger, UEVENT_WLC_ON);
 		charger->chip->chip_write_fod(charger, mode);
@@ -6568,6 +6918,17 @@ static void google_wlc_mode_change_irq(struct google_wlc_data *charger)
 					charger->pwrmode_switch_renego_done)
 				complete(&charger->pwrmode_switch);
 		}
+		if (charger->tx_cloak) {
+			charger->tx_cloak = false;
+			if (charger->mpp25.state != MPP25_OFF) {
+				charger->mpp25.exit = true;
+				schedule_delayed_work(&charger->mpp25_init_work,
+						      msecs_to_jiffies(MPP25_INIT_CLOAK_DELAY));
+				logbuffer_devlog(charger->log, charger->dev,
+						 "MPP25: Exit after tx cloak");
+			}
+		}
+
 		if (charger->eds_event)
 			google_wlc_uevent(charger, UEVENT_WLC_ON);
 
@@ -6646,18 +7007,40 @@ static void google_wlc_rcs_irq(struct google_wlc_data *charger, int rcs)
 	}
 }
 
+static void google_wlc_vrect_init(struct google_wlc_data *charger)
+{
+	if ((charger->this_vrect - charger->last_vrect) > (WLC_DISCONNECT_TIMEOUT / 1000)) {
+		charger->product_id = 0;
+		charger->txsrc = 0;
+		charger->ptmc = 0;
+		if (charger->feature & WLCF_DREAM_DEFER) {
+			__pm_stay_awake(charger->xid_ws);
+			charger->xid_retry_count = 0;
+			schedule_delayed_work(&charger->xid_work,
+					      msecs_to_jiffies(GOOGLE_WLC_XID_DELAY_MS));
+		}
+	}
+}
+
 static void google_wlc_check_iop(struct google_wlc_data *charger)
 {
-	const ktime_t now = get_boot_sec();
 	const u32 iop_fail_count_max = charger->iop_fail_count_max > 0 ?
 		charger->iop_fail_count_max : GOOGLE_WLC_IOP_FAIL_COUNT_MAX;
 
-	if ((now - charger->last_vrect) > (GOOGLE_WLC_IOP_FAIL_TIMEOUT_MS / 1000) ||
+	if (charger->last_capacity < 0 || charger->last_capacity > IOP_SOC_MAX) {
+		charger->vrect_count = 0;
+		return;
+	}
+
+	if ((charger->this_vrect - charger->last_vrect) > (GOOGLE_WLC_IOP_FAIL_TIMEOUT_MS / 1000) ||
 	    charger->disable_state != WLC_NOT_DISABLED) {
 		if (charger->vrect_count > 1)
 			logbuffer_devlog(charger->log, charger->dev, "Reset IOP count");
 
 		charger->vrect_count = 1;
+	} else if (charger->txsrc) {
+		// avoid forcing BPP during battery mode reping
+		charger->vrect_count = 0;
 	} else {
 		charger->vrect_count++;
 	}
@@ -6677,8 +7060,6 @@ static void google_wlc_check_iop(struct google_wlc_data *charger)
 		schedule_delayed_work(&charger->check_iop_timeout_work,
 				      msecs_to_jiffies(GOOGLE_WLC_IOP_FAIL_TIMEOUT_MS));
 	}
-
-	charger->last_vrect = now;
 }
 
 static void google_wlc_fsk_missing_check(struct google_wlc_data *charger)
@@ -6705,13 +7086,16 @@ static void google_wlc_irq_handler(struct google_wlc_data *charger,
 
 	if (int_fields.stat_vrect) {
 		mutex_lock(&charger->status_lock);
+		charger->this_vrect = get_boot_sec();
 		google_wlc_check_iop(charger);
+		google_wlc_vrect_init(charger);
 		charger->chip->chip_write_mpla(charger);
 		charger->chip->chip_write_rf_curr(charger);
 		charger->chip->chip_write_poweron_params(charger);
 		ret = charger->chip->chip_get_opfreq(charger, &val32);
 		if (charger->status == GOOGLE_WLC_STATUS_NOT_DETECTED) {
 			logbuffer_devlog(charger->log, charger->dev, "VRECT 0->1");
+			charger->last_charging_uevent = UEVENT_WLC_OFF;
 		} else {
 			logbuffer_devlog(charger->log, charger->dev,
 					 "VRECT 1 irq, go to NOT_DETECTED->DETECTED");
@@ -6732,6 +7116,7 @@ static void google_wlc_irq_handler(struct google_wlc_data *charger,
 			charger->mode_ready = true;
 		else
 			charger->mode_ready = false;
+		charger->last_vrect = charger->this_vrect;
 		mutex_unlock(&charger->status_lock);
 		charger->chip->chip_enable_interrupts(charger);
 	}
@@ -6740,10 +7125,9 @@ static void google_wlc_irq_handler(struct google_wlc_data *charger,
 		charger->vout_ready = true;
 		if (mode_is_mpp(charger->mode)) {
 			u32 device_id, mfg_id, unique_id, kest;
-			u16 ptmc;
 			u8 qi_ver;
 
-			ret = charger->chip->chip_get_ptmc_id(charger, &ptmc);
+			ret = charger->chip->chip_get_ptmc_id(charger, &charger->ptmc);
 			ret = ret | charger->chip->chip_get_mpp_xid(charger, &device_id, &mfg_id,
 								    &unique_id,
 								    &charger->product_id);
@@ -6752,9 +7136,14 @@ static void google_wlc_irq_handler(struct google_wlc_data *charger,
 			if (ret == 0) {
 				logbuffer_devlog(charger->log, charger->dev,
 						 "MPP TX info, PTMC: 0x%04x, XID_devid: 0x%06x, XID_mfgid: 0x%06x, unique_id:0x%08x, qi_ver:%x, kest: %d/1000, product_id: %d",
-						 ptmc, device_id, mfg_id, unique_id, qi_ver, kest,
-						 charger->product_id);
+						 charger->ptmc, device_id, mfg_id, unique_id,
+						 qi_ver, kest, charger->product_id);
 				charger->tx_id = unique_id ? unique_id : device_id;
+				if (charger->last_tx_id != charger->tx_id) {
+					charger->last_tx_id = charger->tx_id;
+					/* reset once tx change is identified */
+					charger->disconnect_total_count = 0;
+				}
 			}
 			schedule_delayed_work(&charger->pla_ack_timeout_work,
 					      msecs_to_jiffies(WLC_PLA_ACK_TIMEOUT_MS));
@@ -7036,24 +7425,6 @@ static void google_wlc_stats_init(struct google_wlc_data *charger)
 	charger->irq_load_decrease_count = 0;
 }
 
-static int wlc_stats_init_capabilities(struct google_wlc_data *charger)
-{
-	struct google_wlc_stats *chg_data = &charger->chg_data;
-	struct wlc_adapter_capabilities_1_fields *cap1 =
-		(struct wlc_adapter_capabilities_1_fields *)&chg_data->adapter_capabilities[1];
-	u8 sys_mode = 0;
-	u16 ptmc = 0;
-	int ret = 0;
-
-	ret = charger->chip->chip_get_ptmc_id(charger, &ptmc);
-	ret |= charger->chip->chip_get_sys_mode(charger, &sys_mode);
-
-	chg_data->adapter_capabilities[0] = charger->tx_id;
-	cap1->ptmc = ptmc;
-
-	return ret ? -EIO : 0;
-}
-
 static int wlc_stats_update_state(struct google_wlc_data *charger)
 {
 	struct google_wlc_stats *chg_data = &charger->chg_data;
@@ -7068,7 +7439,10 @@ static int wlc_stats_update_state(struct google_wlc_data *charger)
 	struct wlc_receiver_state_1_fields *rs1 =
 		(struct wlc_receiver_state_1_fields *)&chg_data->receiver_state[1];
 
+	chg_data->adapter_capabilities[0] = charger->tx_id;
+
 	cap1->qi_id = charger->qi_id;
+	cap1->ptmc = charger->ptmc;
 
 	if (charger->nego_power > cap2->nego_power)
 		cap2->nego_power = charger->nego_power;
@@ -7200,26 +7574,29 @@ static int google_wlc_update_adapter_type(struct google_wlc_data *charger)
 
 static void wlc_update_head_stats(struct google_wlc_data *charger)
 {
-	u32 vout_mv, iout_ma;
-	u32 wlc_freq = 0;
+	u32 val;
 	int ret;
 
 	if (google_wlc_update_adapter_type(charger))
 		return;
 
-	ret = charger->chip->chip_get_opfreq(charger, &wlc_freq);
+	ret = charger->chip->chip_get_opfreq(charger, &val);
 	if (ret != 0)
-		wlc_freq = -1;
+		charger->chg_data.of_freq = -1;
+	else
+		charger->chg_data.of_freq = val;
 
-	charger->chg_data.of_freq = wlc_freq;
+	ret = charger->chip->chip_get_iout(charger, &val);
+	if (ret != 0)
+		charger->chg_data.cur_conf = -1;
+	else if (val > charger->chg_data.cur_conf)
+		charger->chg_data.cur_conf = val;
 
-	ret = charger->chip->chip_get_iout(charger, &iout_ma);
-	if (ret == 0 && iout_ma > charger->chg_data.cur_conf)
-		charger->chg_data.cur_conf = iout_ma;
-
-	ret = charger->chip->chip_get_vout_set(charger, &vout_mv);
-	if (ret == 0 && vout_mv > charger->chg_data.volt_conf)
-		charger->chg_data.volt_conf = vout_mv;
+	ret = charger->chip->chip_get_vout_set(charger, &val);
+	if (ret != 0)
+		charger->chg_data.volt_conf = -1;
+	else if (val > charger->chg_data.volt_conf)
+		charger->chg_data.volt_conf = val;
 }
 
 static void wlc_update_soc_stats(struct google_wlc_data *charger,
@@ -7227,51 +7604,68 @@ static void wlc_update_soc_stats(struct google_wlc_data *charger,
 {
 	const ktime_t now = get_boot_sec();
 	struct wlc_soc_data *soc_data;
-	u32 vrect_mv, iout_ma, cur_pout, vout_mv;
-	int ret, temp, interval_time = 0;
-	u32 wlc_freq = 0;
+	int vrect_mv, iout_ma, vout_mv, wlc_freq, temp;
+	u32 val, cur_pout;
+	int ret, interval_time = 0;
 	u8 sys_mode;
 
 	ret = charger->chip->chip_get_sys_mode(charger, &sys_mode);
 	if (ret != 0)
 		return;
 
-	ret = charger->chip->chip_get_opfreq(charger, &wlc_freq);
-	if (ret != 0)
+	ret = charger->chip->chip_get_opfreq(charger, &val);
+	if (ret == 0)
+		wlc_freq = val;
+	else
 		wlc_freq = -1;
 
-	ret = charger->chip->chip_get_temp(charger, &temp);
+	ret = charger->chip->chip_get_temp(charger, &val);
 	if (ret == 0)
-		temp = MILLIC_TO_DECIC(temp);
+		temp = MILLIC_TO_DECIC(val);
 	else
 		temp = -1;
 
-	ret = charger->chip->chip_get_vrect(charger, &vrect_mv);
-	if (ret != 0)
-		vrect_mv = 0;
+	ret = charger->chip->chip_get_vrect(charger, &val);
+	if (ret == 0)
+		vrect_mv = val;
+	else
+		vrect_mv = -1;
 
-	ret = charger->chip->chip_get_iout(charger, &iout_ma);
-	if (ret != 0)
-		iout_ma = 0;
+	ret = charger->chip->chip_get_iout(charger, &val);
+	if (ret == 0)
+		iout_ma = val;
+	else
+		iout_ma = -1;
 
-	ret = charger->chip->chip_get_vout_set(charger, &vout_mv);
-	if (ret != 0)
-		vout_mv = 0;
+	ret = charger->chip->chip_get_vout_set(charger, &val);
+	if (ret == 0)
+		vout_mv = val;
+	else
+		vout_mv = -1;
 
 	soc_data = &charger->chg_data.soc_data[cur_soc];
 
-	charger->chg_data.volt_conf = vout_mv > charger->chg_data.volt_conf ?
-				      vout_mv : charger->chg_data.volt_conf;
-	charger->chg_data.cur_conf = iout_ma > charger->chg_data.cur_conf ?
-				     iout_ma : charger->chg_data.cur_conf;
-	soc_data->vrect = vrect_mv > soc_data->vrect ? vrect_mv : soc_data->vrect;
-	soc_data->iout = iout_ma > soc_data->iout ? iout_ma : soc_data->iout;
+	if (vout_mv > charger->chg_data.volt_conf)
+		charger->chg_data.volt_conf = vout_mv;
+
+	if (iout_ma > charger->chg_data.cur_conf)
+		charger->chg_data.cur_conf = iout_ma;
+
+	if (vrect_mv > soc_data->vrect)
+		soc_data->vrect = vrect_mv;
+
+	if (iout_ma > soc_data->iout)
+		soc_data->iout = iout_ma;
+
 	soc_data->sys_mode = sys_mode;
 	soc_data->die_temp = temp;
 	soc_data->of_freq = wlc_freq;
 	soc_data->alignment = 100;
 
-	cur_pout = vrect_mv * iout_ma;
+	if (vrect_mv > 0 && iout_ma > 0)
+		cur_pout = vrect_mv * iout_ma;
+	else
+		cur_pout = 0;
 	if ((soc_data->pout_min == 0) || (soc_data->pout_min > charger->nego_power))
 		soc_data->pout_min = charger->nego_power;
 	if ((soc_data->pout_max == 0) || (soc_data->pout_max < charger->nego_power))
@@ -7383,7 +7777,6 @@ static void google_wlc_charge_stats_hda_work(struct work_struct *work)
 		 * on wlc start. Debounce by 10 seconds.
 		 */
 		wlc_update_head_stats(charger);
-		wlc_stats_init_capabilities(charger);
 		chg_data->start_time = 0;
 	}
 
@@ -7618,6 +8011,10 @@ restart:
 		google_wlc_trigger_icl_by_mode(charger, charger->mode);
 	charger->charging_initialized = true;
 	dev_info(charger->dev, "Charging initialization finished");
+	/* For DC charging, trigger chg stable work immediately since no complete signal */
+	if (charger->status == GOOGLE_WLC_STATUS_DC_CHARGING)
+		google_wlc_handle_chg_stable(charger, CHG_STABLE_TYPE_DC_CHARGING,
+					     GOOGLE_WLC_DC_CHG_STABLE_TIME_MS);
 exit_unlock:
 	__pm_relax(charger->init_charging_ws);
 exit_reschedule:
@@ -7712,8 +8109,9 @@ static void google_wlc_mpp25_init_work(struct work_struct *work)
 	if (!charger->mpp25.cal_enter_ok || !charger->pdata->support_mpp25 ||
 	    !is_charger_mpp25_ok(config) || charger->mpp25_disabled ||
 	    !mpp25_ready(charger->mpp25.state) || !google_wlc_is_present(charger) ||
-	    charger->shutdown_notify) {
+	    charger->shutdown_notify || charger->mpp25.exit) {
 		dev_info(charger->dev, "Not valid state for MPP25, disable");
+		charger->mpp25.exit = false;
 		goto error;
 	}
 	if (!charger->mpp25.pwrmode_ok && pwrmode != MPP_POWERMODE_CONTINUOUS &&
@@ -8019,14 +8417,20 @@ static void google_check_iop_timeout_work(struct work_struct *work)
 	}
 }
 
-static void google_icl_stable_work(struct work_struct *work)
+static void google_wlc_chg_stable_work(struct work_struct *work)
 {
 	struct google_wlc_data *charger = container_of(work,
-			struct google_wlc_data, icl_stable_work.work);
+			struct google_wlc_data, chg_stable_work.work);
 
-	dev_info(charger->dev, "ICL Stable");
-	charger->disconnect_total_count = 0;
-	__pm_relax(charger->icl_ramp_timeout_ws);
+	mutex_lock(&charger->status_lock);
+	if (charger->status == GOOGLE_WLC_STATUS_CHARGING ||
+	    charger->status == GOOGLE_WLC_STATUS_DC_CHARGING) {
+		dev_info(charger->dev, "charging stabilized");
+		charger->disconnect_total_count = 0;
+	}
+	charger->chg_stable_type = CHG_STABLE_TYPE_NONE;
+	__pm_relax(charger->chg_stable_ws);
+	mutex_unlock(&charger->status_lock);
 }
 
 static void google_limit_reason_work(struct work_struct *work)
@@ -8065,9 +8469,6 @@ static int google_wlc_get_property(struct power_supply *psy,
 	struct google_wlc_data *charger = power_supply_get_drvdata(psy);
 	int ret = 0, rc;
 	u32 reg;
-	u32 device_id, mfg_id;
-	u32 unique_id = 0;
-	u16 val16;
 
 	val->intval = 0;
 
@@ -8090,6 +8491,7 @@ static int google_wlc_get_property(struct power_supply *psy,
 			    charger->status != GOOGLE_WLC_STATUS_DETECTED) {
 				dev_info(charger->dev, "Online but not detected\n");
 				__pm_stay_awake(charger->notifier_ws);
+				pm_system_wakeup();
 				schedule_delayed_work(&charger->psy_notifier_work, 0);
 			}
 		}
@@ -8144,29 +8546,23 @@ static int google_wlc_get_property(struct power_supply *psy,
 
 		val->strval = "00000000";
 
-		rc = charger->chip->chip_get_ptmc_id(charger, &val16);
-		if ((rc || val16 == 0) && !charger->vout_ready)
+		rc = charger->chip->chip_get_ptmc_id(charger, &charger->ptmc);
+		if ((rc || charger->ptmc == 0) && !charger->vout_ready)
 			break;
 
 		if (charger->chip->chip_get_txid_str(charger) != NULL) {
 			val->strval = (char *)charger->tx_id_str;
 		} else {
-			rc = charger->chip->chip_get_mpp_xid(charger, &device_id, &mfg_id,
-							     &unique_id, &charger->product_id);
-			if (rc < 0)
+			mutex_lock(&charger->status_lock);
+			rc = google_wlc_get_xid(charger);
+			if (rc < 0) {
+				mutex_unlock(&charger->status_lock);
 				break;
-			/* unique id is proprietary for 1P charger */
-			charger->tx_id = unique_id ? unique_id : device_id;
+			}
 			scnprintf(charger->tx_id_str, sizeof(charger->tx_id_str), "%08x",
 				  charger->tx_id);
 			val->strval = (char *)charger->tx_id_str;
-		}
-
-		if (charger->tx_id != 0 && charger->last_tx_id != charger->tx_id) {
-			charger->last_tx_id = charger->tx_id;
-
-			/* reset once tx change is identified */
-			charger->disconnect_total_count = 0;
+			mutex_unlock(&charger->status_lock);
 		}
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
@@ -8200,7 +8596,8 @@ static enum charger_switch_rc check_mpp25_eligible(struct google_wlc_data *charg
 	if (charger->mode == RX_MODE_AC_MISSING || charger->status != GOOGLE_WLC_STATUS_CHARGING ||
 	    charger->mode == RX_MODE_WPC_MPP_RESTRICTED || charger->mode == RX_MODE_WPC_MPP_NEGO ||
 	    charger->mode == RX_MODE_WPC_MPP_HPM || charger->mode == RX_MODE_MPP_CLOAK) {
-		dev_info(charger->dev, "MPP25: Charger still starting");
+		if (__ratelimit(&present_ratelimit))
+			dev_info(charger->dev, "MPP25: Charger still starting");
 		return CHARGER_SWITCH_RESCHEDULE;
 	}
 	if (!mode_is_mpp(charger->mode)) {
@@ -8747,8 +9144,6 @@ static int google_wlc_gbms_set_property(struct power_supply *psy,
 		}
 		break;
 	case GBMS_PROP_WLC_ICL_LEVEL:
-		if (charger->mdis_level == val->int64val)
-			break;
 		charger->mdis_level = val->int64val;
 		google_wlc_thermal_icl_vote(charger);
 		break;
@@ -8756,13 +9151,9 @@ static int google_wlc_gbms_set_property(struct power_supply *psy,
 		ret = google_wlc_mdis_into_power_limit(charger, charger->mdis_level,
 						       EXECUTION_MODE_DRY_RUN, val->int64val);
 		break;
-	case GBMS_PROP_MDIS_CP_FCC:
-		ret = google_wlc_mdis_into_cp_fcc(charger, val->int64val);
-		break;
-	case GBMS_PROP_MDIS_POWER:
-		ret = google_wlc_mdis_into_power_limit(charger, val->int64val,
-						       EXECUTION_MODE_DRY_RUN,
-						       charger->chg_config_index);
+	case GBMS_PROP_PRI_CHG_MDIS:
+		charger->pri_chg_mdis_lvl = val->int64val;
+		google_wlc_pri_chg_vote(charger);
 		break;
 	default:
 		ret = -ENODATA;
@@ -8782,8 +9173,7 @@ static int google_wlc_gbms_prop_is_writeable(struct power_supply *psy,
 	case GBMS_PROP_MPP_DPLOSS_CALIBRATION_LIMIT:
 	case GBMS_PROP_ENABLE_SWITCH_CAP:
 	case GBMS_PROP_CHG_INDEX_POWER:
-	case GBMS_PROP_MDIS_CP_FCC:
-	case GBMS_PROP_MDIS_POWER:
+	case GBMS_PROP_PRI_CHG_MDIS:
 		return 1;
 	default:
 		break;
@@ -9558,10 +9948,11 @@ static int google_wlc_probe(struct i2c_client *client)
 	INIT_DELAYED_WORK(&charger->check_iop_timeout_work, google_check_iop_timeout_work);
 	INIT_DELAYED_WORK(&charger->set_iop_vout_work, google_wlc_set_iop_vout_work);
 	INIT_DELAYED_WORK(&charger->charger_switch_ready_work, google_charger_switch_ready_work);
-	INIT_DELAYED_WORK(&charger->icl_stable_work, google_icl_stable_work);
+	INIT_DELAYED_WORK(&charger->chg_stable_work, google_wlc_chg_stable_work);
 	INIT_DELAYED_WORK(&charger->limit_reason_work, google_limit_reason_work);
 	INIT_DELAYED_WORK(&charger->cloak_err_work, google_wlc_cloak_err_work);
 	INIT_DELAYED_WORK(&charger->vdd_err_work, google_wlc_vdd_err_work);
+	INIT_DELAYED_WORK(&charger->xid_work, google_wlc_xid_work);
 
 	mutex_lock(&charger->stats_lock);
 	google_wlc_stats_init(charger);
@@ -9618,6 +10009,8 @@ static int google_wlc_probe(struct i2c_client *client)
 	charger->icl_target_ws = wakeup_source_register(NULL, "google_wlc_icl_target");
 	charger->eds_tx_ws = wakeup_source_register(NULL, "google_wlc_eds_tx");
 	charger->limit_reason_ws = wakeup_source_register(NULL, "google_wlc_limit_reason");
+	charger->xid_ws = wakeup_source_register(NULL, "google_wlc_xid");
+	charger->chg_stable_ws = wakeup_source_register(NULL, "google_wlc_chg_stable");
 
 	ret = devm_request_threaded_irq(
 		&client->dev, charger->pdata->irq_int, NULL,
@@ -9707,7 +10100,8 @@ static int google_wlc_probe(struct i2c_client *client)
 
 	debugfs_create_file("ept", 0200, charger->debug_entry, charger, &debug_ept_fops);
 	debugfs_create_file("inhibit", 0444, charger->debug_entry, charger, &debug_inhibit_fops);
-	debugfs_create_u32("online_disable", 0644, charger->debug_entry, &charger->online_disable);
+	debugfs_create_file("online_disable", 0644, charger->debug_entry, charger,
+			    &online_disable_fops);
 	debugfs_create_u32("icl_ramp_disable", 0644, charger->debug_entry,
 			   &charger->icl_ramp_disable);
 	debugfs_create_u32("enable_i2c_debug", 0644, charger->debug_entry,
@@ -9860,10 +10254,11 @@ static void google_wlc_remove(struct i2c_client *client)
 	cancel_delayed_work_sync(&charger->check_iop_timeout_work);
 	cancel_delayed_work_sync(&charger->set_iop_vout_work);
 	cancel_delayed_work_sync(&charger->charger_switch_ready_work);
-	cancel_delayed_work_sync(&charger->icl_stable_work);
+	cancel_delayed_work_sync(&charger->chg_stable_work);
 	cancel_delayed_work_sync(&charger->limit_reason_work);
 	cancel_delayed_work_sync(&charger->cloak_err_work);
 	cancel_delayed_work_sync(&charger->vdd_err_work);
+	cancel_delayed_work_sync(&charger->xid_work);
 	if (!IS_ERR_OR_NULL(charger->pdata->batt_psy))
 		power_supply_put(charger->pdata->batt_psy);
 	if (!IS_ERR_OR_NULL(charger->chgr_psy))
@@ -9919,10 +10314,11 @@ static void google_wlc_shutdown(struct i2c_client *client)
 	cancel_delayed_work_sync(&charger->pla_ack_timeout_work);
 	cancel_delayed_work_sync(&charger->check_iop_timeout_work);
 	cancel_delayed_work_sync(&charger->charger_switch_ready_work);
-	cancel_delayed_work_sync(&charger->icl_stable_work);
+	cancel_delayed_work_sync(&charger->chg_stable_work);
 	cancel_delayed_work_sync(&charger->limit_reason_work);
 	cancel_delayed_work_sync(&charger->cloak_err_work);
 	cancel_delayed_work_sync(&charger->vdd_err_work);
+	cancel_delayed_work_sync(&charger->xid_work);
 	if (!IS_ERR_OR_NULL(charger->pdata->batt_psy))
 		power_supply_put(charger->pdata->batt_psy);
 	if (!IS_ERR_OR_NULL(charger->chgr_psy))

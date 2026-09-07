@@ -171,6 +171,9 @@ struct dp_stats_counters {
 
 	u32 fec_dsc_supported;
 	u32 fec_dsc_not_supported;
+
+	u32 connection_success;
+	u32 connection_failure;
 };
 
 /* DisplayPort Device */

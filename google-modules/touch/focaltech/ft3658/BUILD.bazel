@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_module(
     name = "focal_touch",
@@ -35,15 +40,5 @@ ddk_module(
         "//private/google-modules/touch/common:heatmap",
         "//private/google-modules/touch/common:touch_bus_negotiator",
         "//private/google-modules/touch/common:touch_offload",
-    ],
-)
-
-kernel_module_group(
-    name = "ft3658",
-    srcs = [
-        ":focal_touch",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -3943,10 +3943,11 @@ dhd_dbg_ring_write(int type, char *binary_data,
 	dhd_pub_t *dhdp = NULL;
 
 #if defined(__linux__)
-	/* Do not print any contents to rings if called from ISR.
-	 * as ring lock is spin_lock_bh()
+	/*
+	 * Do not print any contents to rings if interrupts are disabled
+	 * as ring lock is spin_lock_bh().
 	 */
-	if (in_irq()) {
+	if (in_irq() || irqs_disabled()) {
 		return;
 	}
 #endif /* __linux__ */

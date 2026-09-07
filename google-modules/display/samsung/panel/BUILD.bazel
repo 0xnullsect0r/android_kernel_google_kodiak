@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "display.samsung.panel.kconfig",
     srcs = [
@@ -38,13 +43,8 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
     ],
@@ -65,14 +65,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/touch/common:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/common/gs_panel:gs-panel",
         "//private/google-modules/display/samsung:exynos-drm",
@@ -96,13 +91,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
     ],
@@ -123,13 +114,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
     ],
@@ -150,13 +137,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
     ],
@@ -177,13 +160,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
@@ -205,13 +184,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
     ],
@@ -232,13 +207,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
@@ -260,13 +231,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
@@ -288,13 +255,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",
@@ -316,13 +279,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":panel-samsung-drv",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/samsung:internal_headers",
         "//private/google-modules/soc/gs:headers",

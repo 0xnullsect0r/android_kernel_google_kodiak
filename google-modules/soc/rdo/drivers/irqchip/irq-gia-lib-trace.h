@@ -9,6 +9,8 @@
 #include <linux/trace.h>
 #include <linux/tracepoint.h>
 #include <linux/api-compat.h>
+#include <linux/platform_device.h>
+#include <linux/ktime.h>
 
 #include "irq-gia-lib.h"
 
@@ -265,6 +267,43 @@ TRACE_EVENT(gia_cache_update,
 	),
 	TP_printk("dev_name=%s, chip_number=%d, imr=0x%x, has_wake_irqs=%d",
 		  __get_str(dev_name), __entry->chip_number, __entry->imr, __entry->has_wake_irqs)
+);
+
+TRACE_EVENT(gia_test_itr_programmed,
+	TP_PROTO(struct gia_device_data *gdd, irq_hw_number_t hwirq, ktime_t trig_time),
+	TP_ARGS(gdd, hwirq, trig_time),
+	TP_STRUCT__entry(
+		__string(dev_name, GIA_DEV_NAME(gdd))
+		__field(irq_hw_number_t, hwirq)
+		__field(u64, trig_time_ns)
+	),
+	TP_fast_assign(
+		assign_str_wrp(dev_name, GIA_DEV_NAME(gdd));
+		__entry->hwirq = hwirq;
+		__entry->trig_time_ns = ktime_to_ns(trig_time);
+	),
+	TP_printk("dev_name=%s, hwirq=%lu, trig_time_ns=%llu",
+		  __get_str(dev_name), __entry->hwirq, __entry->trig_time_ns)
+);
+
+TRACE_EVENT(gia_test_handler_entry,
+	TP_PROTO(struct platform_device *pdev, unsigned int virq, irq_hw_number_t hwirq,
+		 u64 latency_ns),
+	TP_ARGS(pdev, virq, hwirq, latency_ns),
+	TP_STRUCT__entry(
+		__string(dev_name, dev_name(&pdev->dev))
+		__field(unsigned int, virq)
+		__field(irq_hw_number_t, hwirq)
+		__field(u64, latency_ns)
+	),
+	TP_fast_assign(
+		assign_str_wrp(dev_name, dev_name(&pdev->dev));
+		__entry->virq = virq;
+		__entry->hwirq = hwirq;
+		__entry->latency_ns = latency_ns;
+	),
+	TP_printk("dev_name=%s, virq=%u, hwirq=%lu, latency_ns=%llu",
+		  __get_str(dev_name), __entry->virq, __entry->hwirq, __entry->latency_ns)
 );
 
 #endif /* _TRACE_IRQ_GIA_H */

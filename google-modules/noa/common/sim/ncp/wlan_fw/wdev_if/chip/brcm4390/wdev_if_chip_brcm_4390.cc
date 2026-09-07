@@ -77,3 +77,23 @@ bool WdevChipBrcm4390CheckPcieCmplTimeOut(void)
 
 	return false;
 }
+
+bool WdevChipBrcm4390FwTrapCheck(uint64_t fw_trap_addr)
+{
+	uint32_t fw_trap_data;
+
+	if (!fw_trap_addr) {
+		WLAN_LOG_ERROR(Dp, "%s(): Invalid wlan_dp or fw_trap_addr.", __func__);
+		return true;
+	}
+
+	SysIfInvalidDCache(WLAN_STATIC_CAST(const PhyAddr, fw_trap_addr),
+			   sizeof(uint32_t));
+	fw_trap_data = *(volatile uint32_t *)fw_trap_addr;
+	if (fw_trap_data != 0) {
+		WLAN_LOG_ERROR(Dp, "%s(): FW trap data(0x%" PRIx32 ") is not zero.", __func__,
+			       fw_trap_data);
+		return true;
+	}
+	return false;
+}

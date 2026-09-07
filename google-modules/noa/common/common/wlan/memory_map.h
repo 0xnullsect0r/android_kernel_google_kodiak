@@ -199,6 +199,7 @@ typedef struct NoaGlobalConfig {
 	uint32_t reg_size;
 	uint32_t ints_addr;
 	uint32_t intm_addr;
+	uint32_t rx_pkt_tlv_size;
 	uint64_t doorbell_addr;
 	uint64_t fw_trap_addr;
 } __attribute__((packed)) NoaGlobalConfig;
@@ -286,7 +287,7 @@ typedef struct NoaWlanStaInfo {
 	uint8_t encap_type : 2;
 	uint8_t lmac_id : 2;
 	uint8_t bmid;
-	uint8_t reserved1[2];
+	uint16_t fw_metadata;
 	/* DW 4 */
 	uint32_t search_idx : 20;
 	uint32_t search_type : 2;

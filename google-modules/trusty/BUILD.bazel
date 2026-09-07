@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -96,10 +101,6 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:__subpackages__",
-    ],
     deps = [
         ":trusty_headers",
         ":trusty_local_headers",
@@ -178,10 +179,6 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:__subpackages__",
-    ],
     deps = [
         ":trusty-core",
         ":trusty_headers",
@@ -208,28 +205,5 @@ ddk_module(
         ":trusty-core",
         ":trusty-ipc",
         ":trusty_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "trusty",
-    srcs = [
-        ":trusty-core",
-        ":trusty-ipc",
-        ":trusty-log",
-        ":trusty-test",
-        ":trusty-virtio",
-        ":trusty-wakelock",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display:__subpackages__",
-        "//private/google-modules/dpa:__pkg__",
-        "//private/google-modules/hdcp/samsung:__pkg__",
-        "//private/google-modules/powervr:__pkg__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/soc/gs/drivers/soc/google/gsa:__pkg__",
-        "//private/google-modules/soc/rdo/drivers/iis:__pkg__",
-        "//private/google-modules/video/cnm:__pkg__",
     ],
 )

@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "fwtp.kconfig",
@@ -12,12 +17,14 @@ ddk_module(
     name = "fwtp_lib",
     srcs = [
         "fwtp.c",
+        "fwtp_decode.c",
         "fwtp_ipc_client.c",
         "fwtp_printer.c",
     ],
     out = "fwtp_lib.ko",
     hdrs = [
         "fwtp.h",
+        "fwtp_decode.h",
         "fwtp_entry.h",
         "fwtp_err.h",
         "fwtp_ftrace.h",
@@ -31,7 +38,6 @@ ddk_module(
     includes = ["."],
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = ["DYNAMIC_DEBUG_MODULE"],
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
@@ -57,7 +63,6 @@ ddk_module(
     out = "fwtp_cpm_module.ko",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = ["DYNAMIC_DEBUG_MODULE"],
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":fwtp_lib",
         "//common:all_headers_aarch64",
@@ -75,21 +80,10 @@ ddk_module(
     out = "fwtp_google_gdmc.ko",
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = ["DYNAMIC_DEBUG_MODULE"],
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":fwtp_lib",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-gdmc-iface",
     ],
-)
-
-kernel_module_group(
-    name = "fwtp_module_group",
-    srcs = [
-        ":fwtp_cpm",
-        ":fwtp_google_gdmc",
-        ":fwtp_lib",
-    ],
-    visibility = ["//private/devices/google:__subpackages__"],
 )

@@ -854,6 +854,46 @@ fi
 git merge --abort >/dev/null 2>&1 || true
 pass
 
+# --- Test merge conflict with --continue-with-conflicts ---
+echo -n "Testing merge conflict with --continue-with-conflicts... "
+git checkout main -q
+git checkout -b conflict_base_branch_cwc -q
+echo "base" > conflict_file_cwc
+git add conflict_file_cwc
+git commit -m "conflict base" -q
+
+git checkout -b conflict_upstream_branch_cwc -q
+echo "upstream" > conflict_file_cwc
+git add conflict_file_cwc
+git commit -m "conflict upstream" -q
+
+git checkout conflict_base_branch_cwc -q
+git checkout -b conflict_head_branch_cwc -q
+echo "local" > conflict_file_cwc
+git add conflict_file_cwc
+git commit -m "conflict local" -q
+
+set +e
+"${GITTOOL}" merge --continue-with-conflicts conflict_upstream_branch_cwc >/dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if (( EXIT_CODE != 2 )); then
+  fail "Expected exit code 2, got ${EXIT_CODE}"
+fi
+
+# Verify commit message starts with [conflict]
+COMMIT_MSG=$(git log -1 --pretty=%s)
+if [[ "${COMMIT_MSG}" != "[conflict] "* ]]; then
+  fail "Expected commit message to start with '[conflict] ', got '${COMMIT_MSG}'"
+fi
+
+# Verify conflict markers are in the file
+if ! grep -q "<<<<<<< HEAD" conflict_file_cwc; then
+  fail "Expected conflict markers in conflict_file_cwc"
+fi
+pass
+
+
 # --- Test merge failure (unrelated histories) ---
 echo -n "Testing merge failure (unrelated histories)... "
 git checkout main -q
@@ -910,8 +950,8 @@ git checkout merge_all_head_branch -q
 # * (merge_all_head_branch) Initial base commit
 "${GITTOOL}" merge --pretty=%s merge_all_upstream_branch > /dev/null 2>&1
 
-if ! git log -1 --format=%s | grep -q "Merge 2 commits from merge_all_upstream_branch"; then
-  fail "Merge subject should use the number of commits. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Merge 2 commit(s) from merge_all_upstream_branch"; then
+  fail "Merge subject should use the number of commits."
 fi
 pass
 
@@ -1085,8 +1125,11 @@ EOF
 # 6. Skip "Upstream 6 (Change-Id)" (Equivalent Change-Id)
 
 # M6 should be skip of U6
-if ! git log -1 --format=%s | grep -q "SKIP: Upstream 6 (Change-Id)"; then
-  fail "U6 was not skipped correctly (Change-Id)"
+if ! git log -1 --format=%s | grep -q "Skip 1 commit(s) from by_commit_upstream_branch"; then
+  fail "U6 was not skipped correctly (Change-Id) - subject mismatch"
+fi
+if ! git log -1 --format=%b | grep -q "Upstream 6 (Change-Id)"; then
+  fail "U6 was not skipped correctly (Change-Id) - body mismatch"
 fi
 if ! git log -1 --format=%b | grep -q "Skip reason: Found equivalent commit"; then
   fail "U6 skip reason not found in body"
@@ -1098,8 +1141,11 @@ if ! git log -1 --format=%s HEAD~1 | grep -q "MERGE: Upstream 5"; then
 fi
 
 # M4 should be skip of U4
-if ! git log -1 --format=%s HEAD~2 | grep -q "SKIP: DO NOT MERGE ANYWHERE: restricted"; then
-  fail "U4 was not skipped correctly"
+if ! git log -1 --format=%s HEAD~2 | grep -q "Skip 1 commit(s) from by_commit_upstream_branch"; then
+  fail "U4 was not skipped correctly - subject mismatch"
+fi
+if ! git log -1 --format=%b HEAD~2 | grep -q "DO NOT MERGE ANYWHERE: restricted"; then
+  fail "U4 was not skipped correctly - body mismatch"
 fi
 
 # Check that the skip reason is in the body
@@ -1108,8 +1154,11 @@ if ! git log -1 --format=%b HEAD~2 | grep -q "Skip reason: DO NOT MERGE ANYWHERE
 fi
 
 # M2 should be skip of U2
-if ! git log -1 --format=%s HEAD~4 | grep -q "SKIP: Upstream 2"; then
-  fail "U2 was not skipped correctly"
+if ! git log -1 --format=%s HEAD~4 | grep -q "Skip 1 commit(s) from by_commit_upstream_branch"; then
+  fail "U2 was not skipped correctly - subject mismatch"
+fi
+if ! git log -1 --format=%b HEAD~4 | grep -q "Upstream 2"; then
+  fail "U2 was not skipped correctly - body mismatch"
 fi
 if ! git log -1 --format=%b HEAD~4 | \
     grep -q "Skip reason: Found equivalent commit by batched patch-id result"; then
@@ -1210,8 +1259,11 @@ git checkout automerger_head_branch -q
 "${GITTOOL}" merge --automerger --pretty=%s automerger_upstream_branch > /dev/null 2>&1
 
 # Verify results
-if ! git log -1 --format=%s | grep -q "SKIP: Automerger Upstream 3 (Merged-In)"; then
-  fail "AU3 was not skipped correctly (Merged-In)"
+if ! git log -1 --format=%s | grep -q "Skip 1 commit(s) from automerger_upstream_branch"; then
+  fail "AU3 was not skipped correctly (Merged-In) - subject mismatch"
+fi
+if ! git log -1 --format=%b | grep -q "Automerger Upstream 3 (Merged-In)"; then
+  fail "AU3 was not skipped correctly (Merged-In) - body mismatch"
 fi
 
 if ! git log -1 --format=%s HEAD~1 | grep -q "MERGE: Automerger Upstream 2 (Change-Id)"; then
@@ -1298,8 +1350,11 @@ git commit -m "Feature 1 equivalent" -q
 # - Merge "Feature 2"
 # - Skip "Merge feature branch" (Omitted in flatten mode)
 # - Merge "Upstream 1"
-if ! git log --format=%s | grep -q "SKIP: Feature 1"; then
-    fail "Flatten mode: Feature 1 should have been skipped."
+if ! git log --format=%s | grep -q "Skip 1 commit(s) from complex_upstream_branch"; then
+    fail "Flatten mode: Feature 1 should have been skipped - subject mismatch"
+fi
+if ! git log --format=%b | grep -q "Feature 1"; then
+    fail "Flatten mode: Feature 1 should have been skipped - body mismatch"
 fi
 if ! git log --format=%b | \
     grep -q "Skip reason: Found equivalent commit by batched patch-id result"; then
@@ -1335,8 +1390,8 @@ git checkout "${BASE_COMMIT}" -q
 git checkout -b named_head_branch -q
 "${GITTOOL}" merge named_upstream_branch > /dev/null 2>&1
 
-if ! git log -1 --format=%s | grep -q "Merge 2 commits from named_upstream_branch"; then
-  fail "Merge subject should include local branch name. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Merge 2 commit(s) from named_upstream_branch"; then
+  fail "Merge subject should include local branch name."
 fi
 
 # 2. Tag
@@ -1354,8 +1409,8 @@ git checkout "${BASE_COMMIT}" -q
 git checkout -b named_head_tag_branch -q
 "${GITTOOL}" merge TEST_TAG > /dev/null 2>&1
 
-if ! git log -1 --format=%s | grep -q "Merge 2 commits from TEST_TAG"; then
-  fail "Merge subject should include tag name. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Merge 2 commit(s) from TEST_TAG"; then
+  fail "Merge subject should include tag name."
 fi
 
 # 3. Remote Branch
@@ -1376,8 +1431,8 @@ git fetch origin named_remote_branch -q
 
 "${GITTOOL}" merge origin/named_remote_branch > /dev/null 2>&1
 
-if ! git log -1 --format=%s | grep -q "Merge 2 commits from named_remote_branch"; then
-  fail "Merge subject should include stripped remote branch name. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Merge 2 commit(s) from named_remote_branch"; then
+  fail "Merge subject should include stripped remote branch name."
 fi
 
 # 4. Raw Hash (No 'from')
@@ -1385,11 +1440,11 @@ git checkout "${BASE_COMMIT}" -q
 git checkout -b named_head_hash_branch -q
 "${GITTOOL}" merge "${NAMED_UPSTREAM_COMMIT}" > /dev/null 2>&1
 
-if ! git log -1 --format=%s | grep -q "Merge 2 commits"; then
-  fail "Merge subject should be 'Merge 2 commits'. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Merge 2 commit(s)"; then
+  fail "Merge subject should be 'Merge 2 commit(s)'."
 fi
 if git log -1 --format=%s | grep -q "from"; then
-  fail "Merge subject should NOT include 'from' for a raw hash. Got: $(git log -1 --format=%s)"
+  fail "Merge subject should NOT include 'from' for a raw hash."
 fi
 pass
 
@@ -1456,7 +1511,8 @@ git commit -m "Equivalent of C4" -q
 # HEAD~2  -> skip C1 & C2
 # HEAD~3  ... our base equivalents
 
-if ! git log -1 --format=%s HEAD~2 | grep -q "Skip 2 commits"; then
+if ! git log -1 --format=%s HEAD~2 | \
+     grep -q "Skip 2 commit(s) from batch_skip_upstream_branch"; then
   fail "C1 and C2 were not batched correctly."
 fi
 
@@ -1464,8 +1520,11 @@ if ! git log -1 --format=%s HEAD~1 | grep -q "MERGE: Commit 3"; then
   fail "C3 was not merged correctly."
 fi
 
-if ! git log -1 --format=%s HEAD | grep -q "SKIP: Commit 4"; then
-  fail "C4 was not skipped correctly as a single batch skip."
+if ! git log -1 --format=%s HEAD | grep -q "Skip 1 commit(s) from batch_skip_upstream_branch"; then
+  fail "C4 was not skipped correctly as a single batch skip - subject mismatch"
+fi
+if ! git log -1 --format=%b HEAD | grep -q "Commit 4"; then
+  fail "C4 was not skipped correctly as a single batch skip - body mismatch"
 fi
 
 pass
@@ -1596,8 +1655,11 @@ git merge eq_merged_side_branch --no-ff -m "Merge Patch B" -q
 # * Initial base commit
 "${GITTOOL}" merge --by-commit --pretty=%s eq_merged_upstream_branch > /dev/null 2>&1
 
-if ! git log -1 --format=%s HEAD | grep -q "SKIP: Patch A"; then
-  fail "Patch A was not skipped when its equivalent Patch B is merged into HEAD"
+if ! git log -1 --format=%s HEAD | grep -q "Skip 1 commit(s) from eq_merged_upstream_branch"; then
+  fail "Patch A was not skipped when its equivalent Patch B is merged into HEAD - subject mismatch"
+fi
+if ! git log -1 --format=%b HEAD | grep -q "Patch A"; then
+  fail "Patch A was not skipped when its equivalent Patch B is merged into HEAD - body mismatch"
 fi
 pass
 
@@ -1683,7 +1745,7 @@ fi
   --multi-way-merge multi_way_upstream_branch > /dev/null 2>&1
 
 # Verify history
-if ! git log -1 --format=%s HEAD~2 | grep -q "Skip 2 commits"; then
+if ! git log -1 --format=%s HEAD~2 | grep -q "Skip 2 commit(s) from multi_way_upstream_branch"; then
   fail "Expected skip of 2 commits at HEAD~2."
 fi
 if ! git log -1 --format=%s HEAD~1 | grep -q "MERGE: Multi-way X1"; then
@@ -1779,7 +1841,7 @@ git checkout manual_skip_head_branch -q
 OUT=$("${GITTOOL}" merge --by-commit \
   --manual-skip="MANUAL-SKIP::reason for skipping" manual_skip_upstream_branch 2>&1 || true)
 
-if ! grep -q "SKIP: MANUAL-SKIP: reason for skipping" \
+if ! grep -q "Skip 1 commit(s) from manual_skip_upstream_branch" \
      <<<"${OUT}"; then
   fail "Commit should be skipped. Output: ${OUT}"
 fi
@@ -1791,7 +1853,7 @@ fi
 git reset --hard "${BASE_COMMIT}" -q
 OUT=$("${GITTOOL}" merge --by-commit --ignore-keywords \
   --manual-skip="MANUAL-SKIP::reason for skipping" manual_skip_upstream_branch 2>&1 || true)
-if ! grep -q "SKIP: MANUAL-SKIP: reason for skipping" \
+if ! grep -q "Skip 1 commit(s) from manual_skip_upstream_branch" \
      <<<"${OUT}"; then
   fail "Manual skip should still work with --ignore-keywords. Output: ${OUT}"
 fi
@@ -1832,14 +1894,19 @@ git checkout -b empty_commit_head_branch -q
 "${GITTOOL}" merge --by-commit empty_commit_upstream_branch > /dev/null 2>&1
 
 # Check that Empty Commit 1 and Empty Merge Commit are skipped.
-if ! git log --format=%s HEAD | grep -q "SKIP: Empty Commit 1"; then
+skip_count=$(git log --format=%s | \
+             grep -c "Skip 1 commit(s) from empty_commit_upstream_branch" || true)
+if (( skip_count != 2 )); then
+  fail "Expected 2 skip commits, got ${skip_count}."
+fi
+if ! git log --format=%b HEAD | grep -q "Empty Commit 1"; then
   fail "Empty Commit 1 was not skipped."
 fi
 if ! git log --format=%b HEAD | \
     grep -q "Skip reason: commit has no effect on the tree (empty or redundant)"; then
   fail "Empty Commit 1 skip reason was not 'commit has no effect on the tree (empty or redundant)'."
 fi
-if ! git log --format=%s HEAD | grep -q "SKIP: Empty Merge Commit"; then
+if ! git log --format=%b HEAD | grep -q "Empty Merge Commit"; then
   fail "Empty Merge Commit was not skipped."
 fi
 if ! git log --format=%b HEAD | \
@@ -1893,9 +1960,11 @@ git commit -m "Commit B" -q
 
 # Verify results
 # In flatten mode, A should be skipped (matches A2 in HEAD)
-if ! git log -1 HEAD~1 --format=%s | grep -q "SKIP: Commit A"; then
-    fail "Commit A was not skipped correctly (Change-Id match with A2). Log:
-$(git log --oneline -n 5)"
+if ! git log -1 HEAD~1 --format=%s | grep -q "Skip 1 commit(s) from cid_merge_upstream_branch"; then
+    fail "Commit A was not skipped correctly (Change-Id match with A2) - subject mismatch"
+fi
+if ! git log -1 HEAD~1 --format=%b | grep -q "Commit A"; then
+    fail "Commit A was not skipped correctly (Change-Id match with A2) - body mismatch"
 fi
 if ! git log -1 HEAD~1 --format=%b | grep -q "Skip reason: Found equivalent commit"; then
     fail "Commit A skip reason not found in body."
@@ -1937,7 +2006,7 @@ git checkout -b cp_head_branch -q
 # |/
 # * Initial base commit
 
-if ! git log -1 --format=%s | grep -q "Skip 2 commits from cp_upstream_branch"; then
+if ! git log -1 --format=%s | grep -q "Skip 2 commit(s) from cp_upstream_branch"; then
   fail "Final Skip commit missing or incorrect."
 fi
 
@@ -2009,6 +2078,42 @@ fi
 git cherry-pick --abort >/dev/null 2>&1 || true
 pass
 
+# --- Test merge (--cherry-pick) conflict with --continue-with-conflicts ---
+echo -n "Testing merge (--cherry-pick) conflict with --continue-with-conflicts... "
+git checkout "${BASE_COMMIT}" -q
+git checkout -b cp_conflict_upstream_branch_cwc -q
+echo "conflict upstream" > conflict_file_cp_cwc
+git add conflict_file_cp_cwc
+git commit -m "Cherry-pick conflict upstream" -q
+
+git checkout "${BASE_COMMIT}" -q
+git checkout -b cp_conflict_head_branch_cwc -q
+echo "conflict local" > conflict_file_cp_cwc
+git add conflict_file_cp_cwc
+git commit -m "Cherry-pick conflict local" -q
+
+set +e
+"${GITTOOL}" merge --cherry-pick --continue-with-conflicts \
+  cp_conflict_upstream_branch_cwc >/dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if (( EXIT_CODE != 2 )); then
+  fail "Expected exit code 2, got ${EXIT_CODE}"
+fi
+
+# Verify cherry-picked commit message starts with [conflict]
+CP_COMMIT_MSG=$(git log -1 --pretty=%s HEAD~1)
+if [[ "${CP_COMMIT_MSG}" != "[conflict] "* ]]; then
+  fail "Expected cherry-picked commit message to start with '[conflict] ', got '${CP_COMMIT_MSG}'"
+fi
+
+# Verify conflict markers in file of HEAD~1
+if ! git show HEAD~1:conflict_file_cp_cwc | grep -q "<<<<<<< HEAD"; then
+  fail "Expected conflict markers in conflict_file_cp_cwc at HEAD~1"
+fi
+pass
+
+
 # --- Test merge (--cherry-pick) flattening ---
 echo -n "Testing merge (--cherry-pick) flattening... "
 git checkout "${BASE_COMMIT}" -q
@@ -2061,8 +2166,8 @@ git checkout -b cp_flatten_head_branch -q
 # gittool explicitly excludes "flatten mode" skips from the final merge message.
 # So we expect 2 commits (the cherry-picked ones).
 
-if ! git log -1 --format=%s | grep -q "Skip 2 commits from cp_flatten_upstream_branch"; then
-  fail "Final Skip commit missing or incorrect. Got: $(git log -1 --format=%s)"
+if ! git log -1 --format=%s | grep -q "Skip 2 commit(s) from cp_flatten_upstream_branch"; then
+  fail "Final Skip commit missing or incorrect."
 fi
 
 # Verify files exist from both parents of the merge
@@ -2113,8 +2218,11 @@ git checkout -b restrict_head_default -q
 # Verify results:
 # "DO NOT MERGE ANYWHERE" should be skipped.
 # "DO NOT MERGE" and "RESTRICT AUTOMERGE" should be MERGED.
-if ! git log --format=%s | grep -q "SKIP: DO NOT MERGE ANYWHERE: always skip"; then
-  fail "DO NOT MERGE ANYWHERE should have been skipped by default."
+if ! git log --format=%s | grep -q "Skip 1 commit(s) from restrict_upstream_branch"; then
+  fail "DO NOT MERGE ANYWHERE should have been skipped by default - subject mismatch"
+fi
+if ! git log --format=%b | grep -q "DO NOT MERGE ANYWHERE: always skip"; then
+  fail "DO NOT MERGE ANYWHERE should have been skipped by default - body mismatch."
 fi
 if ! git log --format=%s | grep -q "MERGE: DO NOT MERGE: conditional skip"; then
   fail "DO NOT MERGE should have been merged by default."
@@ -2130,13 +2238,17 @@ git checkout -b restrict_head_enabled -q
 
 # Verify results:
 # ALL three keywords should be skipped.
-if ! git log --format=%s | grep -q "SKIP: DO NOT MERGE ANYWHERE: always skip"; then
+skip_count=$(git log --format=%s | grep -c "Skip 1 commit(s) from restrict_upstream_branch" || true)
+if (( skip_count != 3 )); then
+  fail "Expected 3 skip commits, got ${skip_count}."
+fi
+if ! git log --format=%b | grep -q "DO NOT MERGE ANYWHERE: always skip"; then
   fail "DO NOT MERGE ANYWHERE should have been skipped."
 fi
-if ! git log --format=%s | grep -q "SKIP: DO NOT MERGE: conditional skip"; then
+if ! git log --format=%b | grep -q "DO NOT MERGE: conditional skip"; then
   fail "DO NOT MERGE should have been skipped with --restrict-automerge."
 fi
-if ! git log --format=%s | grep -q "SKIP: RESTRICT AUTOMERGE: conditional skip 2"; then
+if ! git log --format=%b | grep -q "RESTRICT AUTOMERGE: conditional skip 2"; then
   fail "RESTRICT AUTOMERGE should have been skipped with --restrict-automerge."
 fi
 pass

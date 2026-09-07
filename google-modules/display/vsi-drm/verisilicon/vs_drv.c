@@ -10,6 +10,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_bridge.h>
+#include <drm/drm_connector.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_crtc_helper.h>
@@ -20,6 +21,7 @@
 #include <drm/drm_file.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_ioctl.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_of.h>
 #include <drm/drm_prime.h>
 #include <drm/drm_print.h>
@@ -288,11 +290,54 @@ static int drm_debugfs_add_custom_entries(struct drm_device *drm_dev)
 
 #endif /* CONFIG_DEBUG_FS */
 
+static void vs_drm_update_wb_connectors_mask(struct drm_device *drm_dev)
+{
+	struct vs_drm_private *priv = drm_dev->dev_private;
+	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
+
+	priv->wb_connectors_mask = 0;
+	drm_connector_list_iter_begin(drm_dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
+		if (connector->connector_type == DRM_MODE_CONNECTOR_WRITEBACK)
+			priv->wb_connectors_mask |= drm_connector_mask(connector);
+	}
+	drm_connector_list_iter_end(&conn_iter);
+}
+
 /* platfrom driver */
+
+static struct drm_private_state *vs_drm_private_state_duplicate(struct drm_private_obj *obj)
+{
+	struct vs_drm_private_state *state = to_vs_drm_private_state(obj->state);
+	struct vs_drm_private_state *priv_state;
+
+	priv_state = kmemdup(state, sizeof(*priv_state), GFP_KERNEL);
+	if (!priv_state)
+		return NULL;
+
+	__drm_atomic_helper_private_obj_duplicate_state(obj, &priv_state->base);
+	return &priv_state->base;
+}
+
+static void vs_drm_private_state_destroy(struct drm_private_obj *obj,
+					 struct drm_private_state *state)
+{
+	struct vs_drm_private_state *priv_state = to_vs_drm_private_state(state);
+
+	kfree(priv_state);
+}
+
+static const struct drm_private_state_funcs vs_drm_private_state_funcs = {
+	.atomic_duplicate_state = vs_drm_private_state_duplicate,
+	.atomic_destroy_state = vs_drm_private_state_destroy,
+};
+
 static int vs_drm_bind(struct device *dev)
 {
 	struct drm_device *drm_dev;
 	struct vs_drm_private *priv;
+	struct vs_drm_private_state *priv_state;
 	int ret;
 
 	drm_dev = drm_dev_alloc(&vs_drm_driver, dev);
@@ -301,7 +346,7 @@ static int vs_drm_bind(struct device *dev)
 
 	dev_set_drvdata(dev, drm_dev);
 
-	priv = devm_kzalloc(drm_dev->dev, sizeof(struct vs_drm_private), GFP_KERNEL);
+	priv = drmm_kzalloc(drm_dev, sizeof(struct vs_drm_private), GFP_KERNEL);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto err_put_dev;
@@ -318,12 +363,24 @@ static int vs_drm_bind(struct device *dev)
 	if (ret)
 		dev_err(dev, "failed to enable traces\n");
 
-	drm_mode_config_init(drm_dev);
+	ret = drmm_mode_config_init(drm_dev);
+	if (ret)
+		goto err_put_dev;
+
+	priv_state = kzalloc(sizeof(*priv_state), GFP_KERNEL);
+	if (!priv_state) {
+		ret = -ENOMEM;
+		goto err_put_dev;
+	}
+	drm_atomic_private_obj_init(drm_dev, &priv->private_state_obj, &priv_state->base,
+				    &vs_drm_private_state_funcs);
 
 	/* Now try and bind all our sub-components */
 	ret = component_bind_all(dev, drm_dev);
 	if (ret)
-		goto err_mode;
+		goto err_priv_state;
+
+	vs_drm_update_wb_connectors_mask(drm_dev);
 
 	vs_mode_config_init(drm_dev);
 
@@ -358,18 +415,21 @@ err_helper:
 	drm_kms_helper_poll_fini(drm_dev);
 err_bind:
 	component_unbind_all(drm_dev->dev, drm_dev);
-err_mode:
-	drm_mode_config_cleanup(drm_dev);
+err_priv_state:
+	drm_atomic_private_obj_fini(&priv->private_state_obj);
 err_put_dev:
-	drm_dev->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
 	drm_dev_put(drm_dev);
+
 	return ret;
 }
 
 static void vs_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
+	struct vs_drm_private *priv = drm_dev->dev_private;
+
+	drm_atomic_helper_shutdown(drm_dev);
 
 	drm_dev_unregister(drm_dev);
 
@@ -379,9 +439,8 @@ static void vs_drm_unbind(struct device *dev)
 
 	component_unbind_all(drm_dev->dev, drm_dev);
 
-	drm_mode_config_cleanup(drm_dev);
+	drm_atomic_private_obj_fini(&priv->private_state_obj);
 
-	drm_dev->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
 	drm_dev_put(drm_dev);
 }

@@ -96,6 +96,12 @@ properties:
       parameter. Define this if your UART does not implement the busy functionality.
     type: boolean
 
+  google,defer-pinctrl-to-termios:
+    description: Defer pinctrl default state configuration from runtime resume
+      to set_termios callback. This helps prevent transient line glitches
+      until the core line configuration is done.
+    type: boolean
+
   resets:
     minItems: 1
     maxItems: 2

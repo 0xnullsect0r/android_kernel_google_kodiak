@@ -2088,7 +2088,7 @@ static ssize_t rr_show(struct device *dev, struct device_attribute *attr, char *
 		buf_idx += scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "error: %d!\n", ret);
 	} else {
 		buf_idx +=
-			scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "result: %d", cmd->setting);
+			scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "result: %u\n", cmd->setting);
 	}
 
 	return buf_idx;
@@ -2102,22 +2102,73 @@ static ssize_t rr_store(struct device *dev, struct device_attribute *attr, const
 	int ret;
 
 	ret = kstrtou32(buf, 10, &value);
-	if (ret) {
+	if (ret || value < 120) {
 		GOOG_LOGE(gti, "error: invalid input!\n");
 		return -EINVAL;
 	}
 
-	struct gti_report_rate_cmd *cmd = &gti->cmd.report_rate_cmd;
+	gti->report_rate_request = value;
+	gti->report_rate_changed = true;
 
-	cmd->setting = value;
+	/* If VRR is not enabled in DTS, fall back to legacy immediate execution */
+	if (!gti->vrr_enabled) {
+		gti->cmd.report_rate_cmd.setting = gti->report_rate_request;
+		ret = goog_process_vendor_cmd(gti, GTI_CMD_SET_REPORT_RATE);
+		if (ret == -EOPNOTSUPP)
+			GOOG_LOGW(gti, "error: not supported!\n");
+		else if (ret)
+			GOOG_LOGE(gti, "error: %d!\n", ret);
+		else
+			GOOG_LOGI(gti, "report_rate: %u\n", gti->report_rate_active);
+		return size;
+	}
+
+	/* Condition 1: If input_process_lock is held, defer without blocking sysfs */
+	if (!mutex_trylock(&gti->input_process_lock)) {
+		/* Ensure report_rate_request is visible before setting deferred flag */
+		smp_wmb();
+		gti->report_rate_update_deferred = true;
+		GOOG_LOGI(gti, "input_process_lock held. Deferring report rate switch to %u\n",
+			  value);
+		return size;
+	}
+
+	/* Condition 2: If fingers are actively touching the screen, defer */
+	if (gti->slot_bit_active != 0) {
+		/* Ensure report_rate_request is visible before setting deferred flag */
+		smp_wmb();
+		gti->report_rate_update_deferred = true;
+		GOOG_LOGI(gti,
+			  "slot_bit_active active (0x%lx). Deferring report rate switch to %u\n",
+			  gti->slot_bit_active, value);
+		mutex_unlock(&gti->input_process_lock);
+		return size;
+	}
+
+	/* Condition 3: If bus is suspended (wake_lock without resume fails), defer */
+	if (goog_pm_wake_lock(gti, GTI_PM_WAKELOCK_TYPE_SYSFS, true) < 0) {
+		/* Ensure report_rate_request is visible before setting deferred flag */
+		smp_wmb();
+		gti->report_rate_update_deferred = true;
+		GOOG_LOGI(gti, "Bus suspended. Deferring report rate switch to %u\n", value);
+		mutex_unlock(&gti->input_process_lock);
+		return size;
+	}
+
+	gti->cmd.report_rate_cmd.setting = gti->report_rate_request;
 	ret = goog_process_vendor_cmd(gti, GTI_CMD_SET_REPORT_RATE);
+	goog_pm_wake_unlock(gti, GTI_PM_WAKELOCK_TYPE_SYSFS);
+	mutex_unlock(&gti->input_process_lock);
 
-	if (ret == -EOPNOTSUPP)
-		GOOG_LOGE(gti, "error: not supported!\n");
-	else if (ret)
-		GOOG_LOGE(gti, "error: %d!\n", ret);
-	else
-		GOOG_LOGI(gti, "report_rate: %u\n", gti->cmd.report_rate_cmd.setting);
+	if (ret == -EOPNOTSUPP) {
+		GOOG_LOGW(gti, "error: not supported!\n");
+	} else if (ret) {
+		gti->report_rate_update_deferred = true;
+		GOOG_LOGW(gti, "error: %d!\n", ret);
+	} else {
+		gti->report_rate_update_deferred = false;
+		GOOG_LOGI(gti, "report_rate: %u\n", gti->report_rate_active);
+	}
 
 	return size;
 }

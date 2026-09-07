@@ -32,6 +32,7 @@
 #include <linux/usb/xhci-sideband.h>
 
 #define AOC_CORE_POWER_CTRL_TIMEOUT 1000
+#define USB_ENUMERATION_TIMEOUT 5000
 
 /* The index 0 for SRAM and 1 for DRAM reflect the memory region order declared in the dts */
 #define MEM_SRAM 0
@@ -125,47 +126,6 @@ parse_done:
 	dev_info(&udev->dev, "Parsed the connected device: %s\n",
 		 parsed_device_string(parsed_udev));
 	return parsed_udev;
-}
-
-static void adjust_remote_wakeup(struct usb_device *udev, bool device_add)
-{
-	struct usb_interface_descriptor *desc;
-	struct usb_host_config *config;
-	struct usb_device *rhdev = udev->bus->root_hub;
-	struct device *xhci_dev = rhdev->dev.parent;
-	bool enable_remote_wakeup = false;
-	int i;
-
-	if (!udev || is_root_hub(udev))
-		return;
-
-	if (device_add) {
-		if (is_root_hub(udev->parent) && device_can_wakeup(&udev->dev)) {
-			config = udev->config;
-			for (i = 0; i < config->desc.bNumInterfaces; i++) {
-				desc = &config->intf_cache[i]->altsetting->desc;
-				if (desc->bInterfaceClass == USB_CLASS_AUDIO) {
-					enable_remote_wakeup = true;
-					break;
-				}
-			}
-		}
-	} else {
-		enable_remote_wakeup = false;
-	}
-
-	if (enable_remote_wakeup) {
-		device_set_wakeup_enable(&udev->dev, 1);
-		usb_enable_autosuspend(udev);
-		__pm_relax(offload_data->wakelock);
-		pm_runtime_allow(xhci_dev);
-	} else {
-		__pm_stay_awake(offload_data->wakelock);
-		pm_runtime_forbid(xhci_dev);
-	}
-	dev_info(&udev->dev, "device %s, %s wakelock\n",
-		 device_add ? "add" : "remove",
-		 enable_remote_wakeup ? "release" : "acquire");
 }
 
 /* This function is copied from drivers/usb/core/buffer.c */
@@ -388,6 +348,9 @@ static int usb_audio_offload_init(struct usb_bus *ubus)
 
 	mutex_lock(&offload_data->offload_dev_lock);
 
+	offload_data->wakeup_dev_count = 0;
+	offload_data->total_dev_count = 0;
+
 #if IS_ENABLED(CONFIG_AOC_LGA)
 	offload_data->aoc_core_pd = dev_pm_domain_attach_by_name(dev->parent, "aoc_core_pd");
 	if (!offload_data->aoc_core_pd) {
@@ -592,6 +555,52 @@ unlock:
 	return ret;
 }
 
+static void usb_offload_update_pm_state(struct usb_device *udev,
+					enum parsed_usb_device parsed_udev, bool is_add)
+{
+	struct device *xhci_dev = udev->bus->root_hub->dev.parent;
+	bool allow_sleep = false;
+
+	if (parsed_udev == DEVICE_ROOT_HUB)
+		return;
+
+	mutex_lock(&offload_data->offload_dev_lock);
+	if (is_add) {
+		if (parsed_udev == DEVICE_AUDIO_ISOC && device_can_wakeup(&udev->dev)) {
+			device_set_wakeup_enable(&udev->dev, 1);
+			usb_enable_autosuspend(udev);
+			offload_data->wakeup_dev_count++;
+		} else {
+			usb_disable_autosuspend(udev);
+		}
+		offload_data->total_dev_count++;
+		pm_runtime_allow(xhci_dev);
+	} else { /* REMOVE */
+		if (offload_data->total_dev_count > 0)
+			offload_data->total_dev_count--;
+		if (parsed_udev == DEVICE_AUDIO_ISOC && device_can_wakeup(&udev->dev)) {
+			if (offload_data->wakeup_dev_count > 0)
+				offload_data->wakeup_dev_count--;
+		}
+
+		if (offload_data->total_dev_count == 0)
+			pm_runtime_forbid(xhci_dev);
+	}
+
+	allow_sleep = (offload_data->wakeup_dev_count == 1 && offload_data->total_dev_count == 1)
+		      || offload_data->total_dev_count == 0;
+
+	if (allow_sleep)
+		__pm_relax(offload_data->wakelock);
+	else
+		__pm_stay_awake(offload_data->wakelock);
+	mutex_unlock(&offload_data->offload_dev_lock);
+
+	dev_info(&udev->dev, "device %s, %s wakelock\n",
+		 is_add ? "added" : "removed",
+		 allow_sleep ? "release" : "acquire");
+}
+
 static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 			    void *data)
 {
@@ -633,7 +642,6 @@ static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 						 "xhci_sync_conn_stat failed, ret = %d\n", ret);
 			}
 		}
-		adjust_remote_wakeup(udev, true);
 
 		/*
 		 * Trigger memory region swapping from SRAM to DRAM by re-initing host mode
@@ -658,6 +666,7 @@ static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 					offload_data->mem_swap_stat = STATE_SWAP_REQUESTING;
 			}
 		}
+		usb_offload_update_pm_state(udev, parsed_udev, true);
 		break;
 	case USB_DEVICE_REMOVE:
 		udev = data;
@@ -689,12 +698,12 @@ static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 					"Device not found in offload list for removal\n");
 			}
 		}
-		adjust_remote_wakeup(udev, false);
+		usb_offload_update_pm_state(udev, parsed_udev, false);
 		break;
 	case USB_BUS_ADD:
 		ubus = data;
+		pm_wakeup_event(ubus->sysdev, USB_ENUMERATION_TIMEOUT);
 		if (ubus->busnum == 1) {
-			__pm_stay_awake(offload_data->wakelock);
 			ret = usb_audio_offload_init(ubus);
 			if (ret) {
 				dev_err(ubus->sysdev, "offload init failed, ret = %d\n", ret);
@@ -717,6 +726,13 @@ static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 				if (aoc_vote == USB_ROLE_NONE || tcpci_vote != USB_ROLE_HOST) {
 					dev_warn(ubus->sysdev, "Stop memory swap process\n");
 					offload_data->mem_swap_stat = STATE_MAPPED_SRAM;
+					ret = gvotable_cast_vote(offload_data->usb_data_role_votable
+								 , OFFLOAD_VOTER,
+								 (void *)(long) -ENODATA, 1);
+					if (ret)
+						dev_err(ubus->sysdev,
+							"reset OFFLOAD voter failed, ret = %d\n",
+							ret);
 				} else {
 					ret = gvotable_cast_vote(offload_data->usb_data_role_votable
 								 , OFFLOAD_VOTER,
@@ -733,7 +749,6 @@ static int xhci_udev_notify(struct notifier_block *self, unsigned long action,
 			} else {
 				offload_data->mem_swap_stat = STATE_MAPPED_SRAM;
 			}
-			__pm_relax(offload_data->wakelock);
 		}
 		break;
 	}

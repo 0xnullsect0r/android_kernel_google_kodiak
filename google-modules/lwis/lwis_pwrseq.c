@@ -45,11 +45,9 @@ int lwis_pwrseq_list_add_info(struct device *dev, struct list_head *list, const 
 
 void lwis_pwrseq_list_free(struct list_head *list)
 {
-	struct lwis_pwrseq_info *pwrseq_node;
-	struct list_head *it_node, *it_tmp;
+	struct lwis_pwrseq_info *pwrseq_node, *pwrseq_node_tmp;
 
-	list_for_each_safe(it_node, it_tmp, list) {
-		pwrseq_node = list_entry(it_node, struct lwis_pwrseq_info, node);
+	list_for_each_entry_safe(pwrseq_node, pwrseq_node_tmp, list, node) {
 		list_del(&pwrseq_node->node);
 		kfree(pwrseq_node);
 	}

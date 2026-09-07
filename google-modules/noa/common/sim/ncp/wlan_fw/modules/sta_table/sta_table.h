@@ -64,8 +64,8 @@ typedef struct StaInfo {
 	uint8_t lmac_id : 2;
 	/// @brief Buffer manager ID.
 	uint8_t bmid;
-	/// @brief Reserved for future use.
-	uint8_t reserved1[2];
+	/// @brief fw_metadata for exception handling.
+	uint16_t fw_metadata;
 	/// @brief Search index.
 	uint32_t search_idx : 20;
 	/// @brief Search type.

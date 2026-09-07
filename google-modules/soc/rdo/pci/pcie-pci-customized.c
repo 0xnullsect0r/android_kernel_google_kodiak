@@ -106,19 +106,17 @@ static void google_pcibios_reset_secondary_bus(struct pci_dev *dev)
 		return;
 	}
 
-	/*
-	 * Save the config space of the Root Port before doing the
-	 * reset, since the state could be lost. The Endpoint state
-	 * should've been saved by the caller.
-	 */
-
-	pci_save_state(dev);
 	ret = gpcie->reset_root_port(host, dev);
 	if (ret) {
 		pci_err(dev, "Failed to reset Root Port: %d\n", ret);
 		return;
 	}
-	/* Now restore it on success */
+	/*
+	 * Now restore the previously saved on success.
+	 * Setting state_saved to true is a workaround to re-use the
+	 * previously saved one.
+	 */
+	dev->state_saved = true;
 	pci_restore_state(dev);
 }
 

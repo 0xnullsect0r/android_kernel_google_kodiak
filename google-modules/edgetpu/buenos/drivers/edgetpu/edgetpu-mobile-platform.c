@@ -20,12 +20,14 @@
 
 #include "edgetpu-config.h"
 #include "edgetpu-devfreq.h"
+#include "edgetpu-coresight-remote.h"
 #include "edgetpu-dt-mailbox-adapter.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-ikv.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-mmu.h"
 #include "edgetpu-mobile-platform.h"
+#include "edgetpu-msi.h"
 #include "edgetpu-pm.h"
 #include "edgetpu-soc.h"
 #include "edgetpu-telemetry.h"
@@ -158,10 +160,20 @@ static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/*
+	 * This must be called before `edgetpu_device_add()` as the function internally initializes
+	 * mailboxes and they are checking the availability of MSI.
+	 */
+	ret = edgetpu_msi_init(etdev);
+	if (ret) {
+		dev_err(dev, "MSI setup failed: %d", ret);
+		goto out_cleanup_fw_region;
+	}
+
 	ret = edgetpu_device_add(etdev, &regs, ARRAY_SIZE(iface_params));
 	if (ret) {
 		dev_err(dev, "edgetpu device add failed: %d", ret);
-		goto out_cleanup_fw_region;
+		goto out_msi_exit;
 	}
 
 	ret = edgetpu_soc_setup_irqs(etdev);
@@ -183,6 +195,10 @@ static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
 	ret = edgetpu_devfreq_create(etdev);
 	if (ret)
 		etdev_warn(etdev, "Failed to create devfreq interface: %d", ret);
+
+	ret = edgetpu_coresight_remote_init(etdev);
+	if (ret)
+		etdev_warn(etdev, "Failed to initialize coresight remote: %d", ret);
 
 	edgetpu_soc_post_power_on_init(etdev);
 
@@ -211,6 +227,8 @@ out_destroy_devfreq:
 	edgetpu_firmware_destroy(etdev);
 out_remove_device:
 	edgetpu_device_remove(etdev);
+out_msi_exit:
+	edgetpu_msi_exit(etdev);
 out_cleanup_fw_region:
 	edgetpu_platform_cleanup_fw_region(etdev);
 	return ret;
@@ -222,9 +240,11 @@ static void edgetpu_mobile_platform_remove(struct platform_device *pdev)
 
 	edgetpu_fs_remove(etdev);
 	edgetpu_devfreq_destroy(etdev);
+	edgetpu_coresight_remote_exit(etdev);
 	edgetpu_thermal_destroy(etdev);
 	edgetpu_firmware_destroy(etdev);
 	edgetpu_device_remove(etdev);
+	edgetpu_msi_exit(etdev);
 	edgetpu_platform_cleanup_fw_region(etdev);
 
 	edgetpu_debug_pointer = NULL;

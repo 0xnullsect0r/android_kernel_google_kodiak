@@ -198,6 +198,18 @@ static bool panel_bridge_is_mp_mode(struct drm_connector_state *conn_state)
 	return false;
 }
 
+static bool panel_bridge_has_mp_mode_update(struct drm_connector_state *conn_state)
+{
+#if IS_ENABLED(CONFIG_GS_DRM_PANEL_UNIFIED)
+	if (conn_state) {
+		struct gs_drm_connector_state *s = to_gs_connector_state(conn_state);
+
+		return s->pending_update_flags & GS_FLAG_POWER_STATE_UPDATE;
+	}
+#endif
+	return false;
+}
+
 static void panel_bridge_mode_set(struct drm_bridge *bridge, const struct drm_display_mode *mode,
 				  const struct drm_display_mode *adjusted_mode)
 {
@@ -267,17 +279,20 @@ static int panel_bridge_atomic_check(struct drm_bridge *bridge,
 	if (!display_core->interface)
 		return 0;
 
-	panel_is_mp_mode = panel_bridge_is_mp_mode(conn_state);
-	if ((display_core->aod_mode == AOD_MODE_MP) != panel_is_mp_mode) {
-		pr_info("%s %s AOD_MODE_MP from aod_mode 0x%x.\n", display_core->interface->name,
-			panel_is_mp_mode ? "enter" : "exit", display_core->aod_mode);
+	if (panel_bridge_has_mp_mode_update(conn_state)) {
+		panel_is_mp_mode = panel_bridge_is_mp_mode(conn_state);
+		if ((display_core->aod_mode == AOD_MODE_MP) != panel_is_mp_mode) {
+			pr_info("%s %s AOD_MODE_MP from aod_mode 0x%x.\n",
+				display_core->interface->name, panel_is_mp_mode ? "enter" : "exit",
+				display_core->aod_mode);
 
-		display_core->aod_mode = panel_is_mp_mode ? AOD_MODE_MP : AOD_MODE_DISABLED;
+			display_core->aod_mode = panel_is_mp_mode ? AOD_MODE_MP : AOD_MODE_DISABLED;
 
-		if (panel_is_mp_mode)
-			goog_notify_display_state(display_core, false);
-		else
-			goog_notify_display_state(display_core, true);
+			if (panel_is_mp_mode)
+				goog_notify_display_state(display_core, false);
+			else
+				goog_notify_display_state(display_core, true);
+		}
 	}
 
 	return 0;

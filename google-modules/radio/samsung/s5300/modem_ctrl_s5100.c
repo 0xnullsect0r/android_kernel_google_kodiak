@@ -31,6 +31,7 @@
 
 #include <linux/exynos-pci-ctrl.h>
 #include <linux/shm_ipc.h>
+#include <misc/logbuffer.h>
 
 #include "modem_prj.h"
 #include "modem_utils.h"

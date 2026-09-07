@@ -10,6 +10,7 @@
  */
 
 #include <linux/atomic.h>
+#include <linux/build_bug.h>
 #include <linux/container_of.h>
 #include <linux/export.h>
 #include <linux/file.h>
@@ -21,6 +22,7 @@
 #include <linux/sched.h>
 #include <linux/sort.h>
 #include <linux/spinlock.h>
+#include <linux/stddef.h>
 #include <linux/types.h>
 
 #include <iif/iif-fence-table.h>
@@ -30,6 +32,29 @@
 #include <iif/iif-sync-file.h>
 #include <iif/iif.h>
 
+#define TEST_IIF_FENCE_AP_WAITER_SUBMITTED()
+
+#define IIF_FENCE_WAIT_CB_SIGNALED (0)
+
+/*
+ * Shadow structure used internally by the core IIF driver to access the callback function pointer.
+ * The function pointer is hidden behind private padding in the public struct iif_fence_poll_cb to
+ * prevent client drivers from accessing or executing it directly, enforcing sync-unit drivers to
+ * call iif_fence_invoke_poll_callback() to trigger it. The layout of this internal structure must
+ * remain perfectly synchronized with struct iif_fence_poll_cb.
+ */
+struct iif_fence_poll_cb_internal {
+	struct list_head node;
+	struct iif_fence_status status;
+	iif_fence_poll_cb_t func;
+};
+
+static_assert(sizeof(struct iif_fence_poll_cb) == sizeof(struct iif_fence_poll_cb_internal));
+static_assert(offsetof(struct iif_fence_poll_cb, node) ==
+	      offsetof(struct iif_fence_poll_cb_internal, node));
+static_assert(offsetof(struct iif_fence_poll_cb, status) ==
+	      offsetof(struct iif_fence_poll_cb_internal, status));
+
 /*
  * A callback instance which will be created when `iif_fence_wait_timeout()` is called and
  * registered to a fence as a poll callback.
@@ -37,39 +62,14 @@
 struct iif_fence_wait_cb {
 	struct iif_fence_poll_cb base;
 	struct task_struct *task;
+	struct iif_fence_status *status;
+	unsigned long flags;
 };
 
 /* Returns true if @fence is a direct fence. */
 static bool iif_fence_is_direct(struct iif_fence *fence)
 {
 	return fence->params.flags & IIF_FLAGS_DIRECT;
-}
-
-/*
- * Returns true if @fence is unblocked.
- *
- * If the fence is a single-shot fence, it will return true if @fence->signaled is true.
- *
- * If the fence is a reusable fence, it will return true if @fence->signal_error is set or
- * @fence->timeline is bigger than @timeline. The caller can pass @fence->timeline to @timeline
- * to let the function consider @fence->signal_error only.
- */
-static bool iif_fence_is_unblocked_locked(struct iif_fence *fence, u64 timeline)
-{
-	lockdep_assert_held(&fence->fence_lock);
-
-	if (fence->params.fence_type == IIF_FENCE_TYPE_SINGLE_SHOT)
-		return fence->signaled;
-
-	if (fence->params.fence_type == IIF_FENCE_TYPE_REUSABLE) {
-		if (fence->signal_error)
-			return true;
-
-		if (fence->timeline > timeline)
-			return true;
-	}
-
-	return false;
 }
 
 static inline int iif_fence_ops_fence_create(struct iif_fence *fence,
@@ -80,7 +80,13 @@ static inline int iif_fence_ops_fence_create(struct iif_fence *fence,
 
 static inline void iif_fence_ops_fence_retire(struct iif_fence *fence)
 {
-	fence->fence_ops->fence_retire(fence, fence->driver_data);
+	if (fence->fence_ops->fence_retire)
+		fence->fence_ops->fence_retire(fence, fence->driver_data);
+}
+
+static inline void iif_fence_ops_fence_release(struct iif_fence *fence)
+{
+	fence->fence_ops->fence_release(fence, fence->driver_data);
 }
 
 static inline int iif_fence_ops_fence_add_sync_point(struct iif_fence *fence, u64 timeline,
@@ -97,15 +103,44 @@ static inline int iif_fence_ops_fence_signal(struct iif_fence *fence, int status
 	return fence->fence_ops->fence_signal(fence, status, fence->driver_data);
 }
 
-static inline int iif_fence_ops_add_poll_cb(struct iif_fence *fence)
+static inline int iif_fence_ops_add_poll_cb(struct iif_fence *fence, struct iif_fence_poll_cb *cb,
+					    iif_fence_poll_cb_t func)
 {
-	return fence->fence_ops->add_poll_cb(fence, &fence->sync_unit_poll_cb, fence->driver_data);
+	struct iif_fence_poll_cb_internal *internal = (void *)cb;
+
+	internal->func = func;
+
+	return fence->fence_ops->add_poll_cb(fence, cb, fence->driver_data);
 }
 
-static inline bool iif_fence_ops_remove_poll_cb(struct iif_fence *fence)
+static inline bool iif_fence_ops_remove_poll_cb(struct iif_fence *fence,
+						struct iif_fence_poll_cb *cb)
 {
-	return fence->fence_ops->remove_poll_cb(fence, &fence->sync_unit_poll_cb,
-						fence->driver_data);
+	return fence->fence_ops->remove_poll_cb(fence, cb, fence->driver_data);
+}
+
+static inline int iif_fence_ops_disable_poll_cb(struct iif_fence *fence, bool disable)
+{
+	if (fence->fence_ops->disable_poll_cb) {
+		fence->fence_ops->disable_poll_cb(fence, disable, fence->driver_data);
+		return 0;
+	}
+
+	return -EOPNOTSUPP;
+}
+
+static inline int iif_fence_ops_delegate_to_ap(struct iif_fence *fence)
+{
+	if (fence->fence_ops->delegate_to_ap)
+		return fence->fence_ops->delegate_to_ap(fence, fence->driver_data);
+
+	return -EOPNOTSUPP;
+}
+
+static inline void iif_fence_ops_fence_unblocked(struct iif_fence *fence)
+{
+	if (fence->fence_ops->fence_unblocked)
+		fence->fence_ops->fence_unblocked(fence, fence->driver_data);
 }
 
 /* A compare function to sort fences by their ID. */
@@ -261,11 +296,14 @@ static void iif_fence_retire_locked(struct iif_fence *fence)
 	/* Removes the fence from the ID to fence object hash table. */
 	iif_manager_remove_fence_from_hlist(fence->mgr, fence);
 
-	/* Removes the poll callback from the sync-unit before retire the fence. */
-	iif_fence_ops_remove_poll_cb(fence);
-
 	/* Asks the sync-unit to retire the fence. */
 	iif_fence_ops_fence_retire(fence);
+
+	/*
+	 * The sync-unit driver is expected to internally unregister @fence->sync_unit_poll_cb on
+	 * retire, but ensures that the callback is removed just in case.
+	 */
+	iif_fence_ops_remove_poll_cb(fence, &fence->sync_unit_poll_cb);
 
 	fence->state = IIF_FENCE_STATE_RETIRED;
 }
@@ -280,7 +318,7 @@ static void iif_fence_retire_if_possible_locked(struct iif_fence *fence)
 	lockdep_assert_held(&fence->fence_lock);
 
 	if (!(fence->params.flags & IIF_FLAGS_RETIRE_ON_RELEASE) && !fence->outstanding_waiters &&
-	    !iif_fence_outstanding_signalers_locked(fence) && !atomic_read(&fence->num_sync_file))
+	    iif_fence_all_signalers_signaled_locked(fence) && !atomic_read(&fence->num_sync_file))
 		iif_fence_retire_locked(fence);
 }
 
@@ -375,26 +413,38 @@ static void iif_fence_submit_waiter_locked(struct iif_fence *fence, enum iif_ip_
 	fence->params = params;
 }
 
-/* Decreases the number of outstanding waiters of @waiter_ip. */
-static void iif_fence_remove_waiter_locked(struct iif_fence *fence, enum iif_ip_type waiter_ip)
+/* Decreases the number of outstanding waiters of @waiter_ip by @count. */
+static void iif_fence_remove_waiter_locked(struct iif_fence *fence, enum iif_ip_type waiter_ip,
+					   unsigned int count)
 {
 	lockdep_assert_held(&fence->fence_lock);
 
-	WARN_ON(waiter_ip >= IIF_IP_NUM);
-	WARN_ON(!fence->outstanding_waiters || !fence->outstanding_waiters_per_ip[waiter_ip]);
+	if (!count)
+		return;
 
-	fence->outstanding_waiters--;
-	fence->outstanding_waiters_per_ip[waiter_ip]--;
+	if (waiter_ip >= IIF_IP_NUM) {
+		iif_warn(fence, "invalid waiter removal, ip=%u", waiter_ip);
+		return;
+	}
+
+	if (fence->outstanding_waiters < count ||
+	    fence->outstanding_waiters_per_ip[waiter_ip] < count) {
+		iif_warn(fence, "unbalanced waiter removal, ip=%u, count=%u", waiter_ip, count);
+		return;
+	}
+
+	fence->outstanding_waiters -= count;
+	fence->outstanding_waiters_per_ip[waiter_ip] -= count;
 	iif_fence_retire_if_possible_locked(fence);
 }
 
-/* Decreases the number of outstanding waiters of @waiter_ip. */
-static void iif_fence_remove_waiter(struct iif_fence *fence, enum iif_ip_type waiter_ip)
+/* Decreases the number of outstanding waiters of @waiter_ip by @count. */
+static void iif_fence_remove_waiter(struct iif_fence *fence, enum iif_ip_type waiter_ip, int count)
 {
 	unsigned long flags;
 
 	write_lock_irqsave(&fence->fence_lock, flags);
-	iif_fence_remove_waiter_locked(fence, waiter_ip);
+	iif_fence_remove_waiter_locked(fence, waiter_ip, count);
 	write_unlock_irqrestore(&fence->fence_lock, flags);
 }
 
@@ -461,151 +511,21 @@ static void iif_fences_submit_waiter_locked(struct iif_fence **fences, int num_f
 	}
 }
 
-static int iif_fence_add_sync_point_locked(struct iif_fence *fence, u64 timeline, u64 count)
-{
-	lockdep_assert_held(&fence->fence_lock);
-
-	/*
-	 * TODO(b/389607552): To support sync-unit which doesn't support adding sync point, the
-	 * registered sync points should be also managed by IIF driver. Locking @fence_lock will
-	 * be required once we implement that.
-	 *
-	 * For now, as we support direct fences only, skip that and let the iif-direct handles it.
-	 */
-	return iif_fence_ops_fence_add_sync_point(fence, timeline, count);
-}
-
-/* Notifies poll callbacks for a single-shot fence. */
-static void iif_fence_notify_poll_cb_single_shot_locked(struct iif_fence *fence)
-{
-	struct iif_fence_poll_cb *cur, *tmp;
-
-	lockdep_assert_held(&fence->fence_lock);
-
-	if (!fence->signaled)
-		return;
-
-	list_for_each_entry_safe(cur, tmp, &fence->poll_cb_list, node) {
-		list_del_init(&cur->node);
-		cur->func(fence, cur);
-	}
-}
-
-/* Notifies poll callbacks for a reusable fence. */
-static void iif_fence_notify_poll_cb_reusable_locked(struct iif_fence *fence)
-{
-	struct iif_fence_poll_cb *cur, *tmp;
-
-	lockdep_assert_held(&fence->fence_lock);
-
-	/*
-	 * TODO(b/389607552): Currently, it relies on the sync point filtering logic of direct
-	 * fence. Updates here to be generic for other sync-unit drivers.
-	 */
-
-	list_for_each_entry_safe(cur, tmp, &fence->poll_cb_list, node) {
-		if (fence->signal_error)
-			list_del_init(&cur->node);
-		cur->func(fence, cur);
-	}
-}
-
 /*
- * Sets the status passed from the sync-unit driver to @fence. This function is supposed to be
- * called when the underlying sync-unit driver invokes the poll callback registered by the IIF
- * driver.
+ * The poll callback which will be registered to sync-unit fences.
  *
- * Returns true if the status has been updated.
+ * The sync-unit driver must guarantee that the callback won't be called concurrently for the same
+ * fence object.
  */
-static bool iif_fence_set_status_locked(struct iif_fence *fence,
-					const struct iif_fence_status *status)
+static void iif_fence_poll_cb_func(struct iif_fence *fence, struct iif_fence_poll_cb *cb)
 {
-	int timeline = status->timeline;
-	int error = status->error;
-	bool signaled = status->signaled;
-	bool updated = false;
-
-	lockdep_assert_held(&fence->fence_lock);
-
-	if (fence->params.fence_type == IIF_FENCE_TYPE_SINGLE_SHOT) {
-		if (unlikely(fence->signaled && !signaled)) {
-			iif_warn(fence, "The fence was already signaled, shouldn't revert it\n");
-			signaled = fence->signaled;
-		}
-
-		if (fence->signaled != signaled) {
-			fence->signaled = signaled;
-			updated = true;
-		}
-	} else {
-		if (unlikely(fence->timeline > timeline))
-			iif_warn(fence, "The fence timeline shouldn't be decreased\n");
-
-		if (fence->timeline < timeline) {
-			fence->timeline = timeline;
-			updated = true;
-		}
-	}
-
-	if (unlikely(error > 0 || error < -MAX_ERRNO)) {
-		iif_warn(fence, "The fence has been signaled with an invalid error: %d\n", error);
-		error = -EINVAL;
-	}
-
-	if (unlikely(fence->signal_error && !error)) {
-		iif_warn(fence, "The fence was already errored out, shouldn't revert it\n");
-		error = fence->signal_error;
-	}
-
-	if (unlikely(fence->signal_error && fence->signal_error != error))
-		iif_warn(fence, "The fence error has been changed, %d -> %d\n", fence->signal_error,
-			 error);
-
-	if (fence->signal_error != error) {
-		fence->signal_error = error;
-
-		/*
-		 * Single-shot fences should be considered as updated only if @signaled is updated.
-		 */
-		if (fence->params.fence_type != IIF_FENCE_TYPE_SINGLE_SHOT)
-			updated = true;
-	}
-
-	return updated;
-}
-
-/*
- * Notifies the poll callbacks registered to @fence.
- *
- * This function must be called only if @fence is unblocked so that @fence->fence_lock doesn't have
- * to be held.
- */
-static void iif_fence_notify_poll_cb_locked(struct iif_fence *fence)
-{
-	lockdep_assert_held(&fence->fence_lock);
-
-	if (unlikely(fence->params.flags & IIF_FLAGS_DISABLE_POLL)) {
-		fence->poll_cb_pended = true;
-		return;
-	}
-
+	/* Here must be the only place which updates the @fence status. */
 	if (fence->params.fence_type == IIF_FENCE_TYPE_SINGLE_SHOT)
-		iif_fence_notify_poll_cb_single_shot_locked(fence);
-	else if (fence->params.fence_type == IIF_FENCE_TYPE_REUSABLE)
-		iif_fence_notify_poll_cb_reusable_locked(fence);
+		fence->signaled = cb->status.signaled;
+	else
+		fence->timeline = cb->status.timeline;
 
-	fence->poll_cb_pended = false;
-}
-
-/* The poll callback which will be registered to sync-unit fences. */
-static void iif_fence_poll_cb_func_locked(struct iif_fence *iif,
-					  const struct iif_fence_status *status)
-{
-	lockdep_assert_held(&iif->fence_lock);
-
-	/* If the fence status hasn't been updated, ignore it. */
-	if (!iif_fence_set_status_locked(iif, status))
-		return;
+	fence->signal_error = cb->status.error;
 
 	/*
 	 * Don't need to check the return value because the purpose of `signaled_work` is to invoke
@@ -613,20 +533,7 @@ static void iif_fence_poll_cb_func_locked(struct iif_fence *iif,
 	 * every single signal. It is enough to read the latest fence status at the last
 	 * `signaler_work` invocation.
 	 */
-	schedule_work(&iif->signaled_work);
-
-	/* Notifies registered poll callbacks. */
-	iif_fence_notify_poll_cb_locked(iif);
-}
-
-/* The poll callback which will be registered to sync-unit fences. */
-static void iif_fence_poll_cb_func(struct iif_fence *iif, const struct iif_fence_status *status)
-{
-	unsigned long flags;
-
-	write_lock_irqsave(&iif->fence_lock, flags);
-	iif_fence_poll_cb_func_locked(iif, status);
-	write_unlock_irqrestore(&iif->fence_lock, flags);
+	schedule_work(&fence->signaled_work);
 }
 
 /*
@@ -871,16 +778,7 @@ static int iif_fences_acquire_block_wakelock_of_waiters(struct iif_fence **fence
 /* Cleans up @fence which was initialized by the `iif_fence_init` function. */
 static void iif_fence_do_destroy(struct iif_fence *fence)
 {
-	struct iif_fence_status status;
 	unsigned long flags;
-	bool updated = false;
-
-	/*
-	 * If the IP driver puts @fence asynchronously, the works might be not finished. We should
-	 * wait for them.
-	 */
-	flush_work(&fence->signaled_work);
-	flush_work(&fence->waited_work);
 
 	/* Checks whether there is remaining all_signaler_submitted and poll callbacks. */
 	write_lock_irqsave(&fence->fence_lock, flags);
@@ -904,41 +802,6 @@ static void iif_fence_do_destroy(struct iif_fence *fence)
 			"Fence is destroying before signaled, likely a bug of the signaler, signaler_ip=%d\n",
 			fence->params.signaler_ip);
 
-		/*
-		 * Theoretically, the meaning of this destroy() function has been called is that the
-		 * signaler IP kernel driver has cleaned up (canceled) all signaler commands and the
-		 * signaler IP won't signal the fence anymore. Therefore, it is safe to signal the
-		 * fence by the IIF kernel driver.
-		 */
-		iif_fence_set_propagate_unblock(fence);
-
-		/*
-		 * Errors the fence out forcefully.
-		 *
-		 * The meaning of reaching this if-branch is that the fence is going to destroy
-		 * even though not all signalers have signaled the fence which means the fence would
-		 * not be signaled enoughly and it should be errored out. If the fence actually
-		 * needs to be errored out, @updated will be set to true.
-		 *
-		 * Normally, the fence had to retire before it destroys. Therefore, we don't need to
-		 * propagate the error to the underlying sync-unit fence and can error the kernel
-		 * fence object out forcefully to propagate the error to the ones polling on the
-		 * fence via invoking poll callbacks below.
-		 *
-		 * However, if the fence is going to destroy without any interaction (no signaler,
-		 * waiter was submitted and no FD was installed), this function can be called before
-		 * retirement. Even in this case, theoretically, as there should be no waiters, we
-		 * don't need to propagate the error to the underlying sync-unit fence and can set
-		 * an error to the kernel fence object forcefully. Also, the underlying sync-unit
-		 * fence will retire right below and how they will clean the fence up is independent
-		 * from this kernel fence object release.
-		 */
-		if (fence->params.fence_type == IIF_FENCE_TYPE_SINGLE_SHOT)
-			status.signaled = true;
-		else
-			status.timeline = fence->params.timeout;
-		status.error = -EDEADLK;
-		updated = iif_fence_set_status_locked(fence, &status);
 		iif_fence_inc_signaled_signalers_locked(fence, true);
 	}
 
@@ -948,22 +811,17 @@ static void iif_fence_do_destroy(struct iif_fence *fence)
 	 */
 	iif_fence_retire_locked(fence);
 
-	/*
-	 * It is always safe to call this function.
-	 * - If the if-clause above was executed, it means that the fence has been unblocked and it
-	 *   is good to call this function.
-	 * - If @fence->poll_cb_list was empty, this function call will be NO-OP.
-	 * - If `iif_fence_all_signalers_signaled_locked(fence)` was true, it means that the fence
-	 *   was already unblocked and it is good to call it. (In this case, all callbacks should be
-	 *   called when the fence was unblocked and @fence->poll_cb_list should be already empty.
-	 *   It means that the function call will be NO-OP theoretically.)
-	 */
-	iif_fence_notify_poll_cb_locked(fence);
-
 	write_unlock_irqrestore(&fence->fence_lock, flags);
 
-	if (updated)
-		iif_manager_broadcast_fence_unblocked(fence->mgr, fence);
+	/*
+	 * If the IP driver puts @fence asynchronously, the works might be not finished. We should
+	 * wait for them.
+	 *
+	 * As the sync-unit driver can signal the fence when the fence has retired above, we should
+	 * flush the works after that.
+	 */
+	flush_work(&fence->signaled_work);
+	flush_work(&fence->waited_work);
 
 	/*
 	 * If @fence is not signaled normally or IP drivers haven't called
@@ -971,6 +829,9 @@ static void iif_fence_do_destroy(struct iif_fence *fence)
 	 * haven't released yet. We should release all of them.
 	 */
 	iif_fence_release_all_block_wakelock(fence);
+
+	/* Release sync-unit fence object. */
+	iif_fence_ops_fence_release(fence);
 
 #if IS_ENABLED(CONFIG_DEBUG_SPINLOCK)
 	lockdep_unregister_key(&fence->fence_lock_key);
@@ -1016,6 +877,14 @@ static void iif_fence_waited_work_func(struct work_struct *work)
 	int i;
 
 	write_lock_irqsave(&fence->fence_lock, flags);
+
+	/*
+	 * Remove AP waiters which were submitted while registering poll callbacks, but implicitly
+	 * unregistered by the sync-unit driver. For the poll callbacks explicitly unregistered by
+	 * the registerer, their waiters will be removed at `iif_fence_remove_poll_callback()` call.
+	 */
+	iif_fence_remove_waiter_locked(fence, IIF_IP_AP,
+				       atomic_xchg(&fence->pending_ap_waiter_completions, 0));
 
 	/*
 	 * Note that if there are outstanding signalers, releasing the block wakelock will be pended
@@ -1075,6 +944,19 @@ static void iif_fence_wait_poll(struct iif_fence *fence, struct iif_fence_poll_c
 {
 	struct iif_fence_wait_cb *wait_cb = container_of(poll_cb, struct iif_fence_wait_cb, base);
 
+	/*
+	 * For reusable fences, this poll callback can be invoked multiple times if the signaler
+	 * fires signals faster than the waiter thread wakes up and returns from
+	 * iif_fence_wait_timeout_with_status(). The waiter only needs the status of the first
+	 * unblock event that matches the timeline target passed to the wait function.
+	 * This ensures that subsequent signals do not overwrite the initial unblock status
+	 * before the waiter has finished waking up.
+	 *
+	 * This logic is also compatible with single-shot fences, where the callback is
+	 * invoked exactly once when the fence is unblocked.
+	 */
+	if (!test_and_set_bit(IIF_FENCE_WAIT_CB_SIGNALED, &wait_cb->flags))
+		*wait_cb->status = poll_cb->status;
 	wake_up_process(wait_cb->task);
 }
 
@@ -1115,16 +997,11 @@ int iif_fence_init_with_params(struct iif_manager *mgr, struct iif_fence *fence,
 		return id;
 	}
 
-	/*
-	 * Direct fences use the `_locked()` one directly as the callback will be invoked inside of
-	 * the `iif_fence_signal_*()` function call which holds @iif->fence_lock.
-	 */
-	fence->sync_unit_poll_cb.func = (params->flags & IIF_FLAGS_DIRECT) ?
-						iif_fence_poll_cb_func_locked :
-						iif_fence_poll_cb_func;
-	fence->sync_unit_poll_cb.iif = fence;
+	/* Ensure that the callback is initialized. */
+	memset(&fence->sync_unit_poll_cb.status, 0, sizeof(fence->sync_unit_poll_cb.status));
+	INIT_LIST_HEAD(&fence->sync_unit_poll_cb.node);
 
-	ret = iif_fence_ops_add_poll_cb(fence);
+	ret = iif_fence_ops_add_poll_cb(fence, &fence->sync_unit_poll_cb, iif_fence_poll_cb_func);
 	if (ret < 0) {
 		iif_fence_ops_fence_retire(fence);
 		iif_manager_unset_fence_ops(mgr, fence);
@@ -1145,7 +1022,6 @@ int iif_fence_init_with_params(struct iif_manager *mgr, struct iif_fence *fence,
 	fence->ops = ops;
 	fence->state = IIF_FENCE_STATE_INITIALIZED;
 	fence->propagate = params->signaler_ip == IIF_IP_AP;
-	fence->poll_cb_pended = false;
 	kref_init(&fence->kref);
 #if IS_ENABLED(CONFIG_DEBUG_SPINLOCK)
 	lockdep_register_key(&fence->fence_lock_key);
@@ -1153,9 +1029,9 @@ int iif_fence_init_with_params(struct iif_manager *mgr, struct iif_fence *fence,
 #else
 	rwlock_init(&fence->fence_lock);
 #endif /* IS_ENABLED(CONFIG_DEBUG_SPINLOCK) */
-	INIT_LIST_HEAD(&fence->poll_cb_list);
 	INIT_LIST_HEAD(&fence->all_signaler_submitted_cb_list);
 	atomic_set(&fence->num_sync_file, 0);
+	atomic_set(&fence->pending_ap_waiter_completions, 0);
 	INIT_WORK(&fence->signaled_work, &iif_fence_signaled_work_func);
 	INIT_WORK(&fence->waited_work, &iif_fence_waited_work_func);
 	INIT_WORK(&fence->put_work, &iif_fence_put_work_func);
@@ -1200,9 +1076,8 @@ int iif_fence_set_flags(struct iif_fence *fence, unsigned long flags, bool clear
 	else
 		fence->params.flags &= ~flags;
 
-	/* Invokes poll callbacks which were pended because of IIF_FLAGS_DISABLE_POLL flag. */
-	if (clear && (flags & IIF_FLAGS_DISABLE_POLL) && fence->poll_cb_pended)
-		iif_fence_notify_poll_cb_locked(fence);
+	if (flags & IIF_FLAGS_DISABLE_POLL)
+		iif_fence_ops_disable_poll_cb(fence, !clear);
 out:
 	write_unlock_irqrestore(&fence->fence_lock, irq_flags);
 
@@ -1302,20 +1177,20 @@ EXPORT_SYMBOL_GPL(iif_fence_submit_waiter);
 
 int iif_fence_add_sync_point(struct iif_fence *fence, u64 timeline, u64 count)
 {
-	unsigned long flags;
-	int ret;
-
 	if (fence->params.fence_type != IIF_FENCE_TYPE_REUSABLE)
 		return -EOPNOTSUPP;
+
+	if (fence->params.flags & IIF_FLAGS_CIRCULAR_REUSABLE)
+		return -EINVAL;
 
 	if (!timeline || !count)
 		return -EINVAL;
 
-	write_lock_irqsave(&fence->fence_lock, flags);
-	ret = iif_fence_add_sync_point_locked(fence, timeline, count);
-	write_unlock_irqrestore(&fence->fence_lock, flags);
+	/* Check if the sync point timeline and count are within valid range. */
+	if (count != IIF_FENCE_SYNC_POINT_COUNT_ALL && timeline > ULLONG_MAX - count)
+		return -EINVAL;
 
-	return ret;
+	return iif_fence_ops_fence_add_sync_point(fence, timeline, count);
 }
 EXPORT_SYMBOL_GPL(iif_fence_add_sync_point);
 
@@ -1474,7 +1349,7 @@ void iif_fence_waiter_completed(struct iif_fence *fence, enum iif_ip_type waiter
 
 	write_lock_irqsave(&fence->fence_lock, flags);
 
-	iif_fence_remove_waiter_locked(fence, waiter_ip);
+	iif_fence_remove_waiter_locked(fence, waiter_ip, 1);
 
 	if (!iif_fence_outstanding_signalers_locked(fence) &&
 	    fence->outstanding_block_wakelock[waiter_ip])
@@ -1491,7 +1366,7 @@ EXPORT_SYMBOL_GPL(iif_fence_waiter_completed);
 
 void iif_fence_waiter_completed_async(struct iif_fence *fence, enum iif_ip_type waiter_ip)
 {
-	iif_fence_remove_waiter(fence, waiter_ip);
+	iif_fence_remove_waiter(fence, waiter_ip, 1);
 	iif_fence_waited_work_async(fence);
 }
 EXPORT_SYMBOL_GPL(iif_fence_waiter_completed_async);
@@ -1560,6 +1435,18 @@ EXPORT_SYMBOL_GPL(iif_fence_get_status);
 
 void iif_fence_set_propagate_unblock(struct iif_fence *fence)
 {
+	iif_fence_delegate_to_ap(fence);
+}
+EXPORT_SYMBOL_GPL(iif_fence_set_propagate_unblock);
+
+int iif_fence_delegate_to_ap(struct iif_fence *fence)
+{
+	int ret;
+
+	ret = iif_fence_ops_delegate_to_ap(fence);
+	if (ret)
+		return ret;
+
 	/*
 	 * It is safe to not hold any locks because this function is expected to be called before
 	 * signaling @fence and @fence->propagate will be accessed only when the fence has been
@@ -1567,8 +1454,10 @@ void iif_fence_set_propagate_unblock(struct iif_fence *fence)
 	 * callbacks are being processed.
 	 */
 	fence->propagate = true;
+
+	return 0;
 }
-EXPORT_SYMBOL_GPL(iif_fence_set_propagate_unblock);
+EXPORT_SYMBOL_GPL(iif_fence_delegate_to_ap);
 
 bool iif_fence_is_signaled(struct iif_fence *fence)
 {
@@ -1579,16 +1468,40 @@ EXPORT_SYMBOL_GPL(iif_fence_is_signaled);
 
 signed long iif_fence_wait_timeout(struct iif_fence *fence, bool intr, signed long timeout_jiffies)
 {
-	struct iif_fence_wait_cb wait_cb;
-	unsigned long flags;
+	struct iif_fence_status status = {
+		.timeline = fence->timeline,
+		.error = 0,
+	};
+
+	return iif_fence_wait_timeout_with_status(fence, intr, timeout_jiffies, &status);
+}
+EXPORT_SYMBOL_GPL(iif_fence_wait_timeout);
+
+signed long iif_fence_wait_timeout_with_status(struct iif_fence *fence, bool intr,
+					       signed long timeout_jiffies,
+					       struct iif_fence_status *status)
+{
+	struct iif_fence_wait_cb wait_cb = {
+		.base = {
+			.node = LIST_HEAD_INIT(wait_cb.base.node),
+			.status = *status,
+		},
+		.task = current,
+		.status = status,
+		.flags = 0,
+	};
 	signed long ret = timeout_jiffies ? timeout_jiffies : 1;
-	u64 timeline;
+	int cb_ret;
 
-	write_lock_irqsave(&fence->fence_lock, flags);
+	cb_ret = iif_fence_add_poll_callback(fence, &wait_cb.base, iif_fence_wait_poll);
+	if (cb_ret && cb_ret != -EPERM)
+		return cb_ret;
 
-	/* If @fence is already unblocked, exit the function directly. */
-	if (iif_fence_is_unblocked_locked(fence, fence->timeline))
-		goto out;
+	/* -EPERM means that the fence is already signaled. Update @status and return directly. */
+	if (cb_ret) {
+		*status = wait_cb.base.status;
+		return ret;
+	}
 
 	/* If the thread is already interrupted, return an error right away. */
 	if (intr && signal_pending(current)) {
@@ -1602,49 +1515,27 @@ signed long iif_fence_wait_timeout(struct iif_fence *fence, bool intr, signed lo
 		goto out;
 	}
 
-	/* Registers the poll callback to @fence. */
-	wait_cb.base.func = iif_fence_wait_poll;
-	wait_cb.task = current;
-	list_add_tail(&wait_cb.base.node, &fence->poll_cb_list);
-
-	/*
-	 * Stores the current timeline. It will be used for checking if the fence is a reusable
-	 * fence and its timeline has been increased.
-	 */
-	timeline = fence->timeline;
-
 	/* Wait until @fence to be unblocked. */
-	while (!iif_fence_is_unblocked_locked(fence, timeline) && ret > 0) {
+	while (!test_bit(IIF_FENCE_WAIT_CB_SIGNALED, &wait_cb.flags) && ret > 0) {
 		/* Sets interruptible status of the current thread before sleep. */
 		if (intr)
 			__set_current_state(TASK_INTERRUPTIBLE);
 		else
 			__set_current_state(TASK_UNINTERRUPTIBLE);
 
-		/* Releases the lock and waits for the signal. */
-		write_unlock_irqrestore(&fence->fence_lock, flags);
-
 		/* Sleeps until interrupt, timeout or `iif_fence_wait_poll()` is invoked. */
 		ret = schedule_timeout(ret);
-
-		/* Re-holds the lock and checks the interrupt and the signal status. */
-		write_lock_irqsave(&fence->fence_lock, flags);
 
 		/* If timeout hasn't elapsed yet, but the thread is interrupted, return an error. */
 		if (ret > 0 && intr && signal_pending(current))
 			ret = -ERESTARTSYS;
 	}
-
-	/* Unregisters the callback from @fence. */
-	if (!list_empty(&wait_cb.base.node))
-		list_del_init(&wait_cb.base.node);
-
 out:
-	write_unlock_irqrestore(&fence->fence_lock, flags);
+	iif_fence_remove_poll_callback(fence, &wait_cb.base);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(iif_fence_wait_timeout);
+EXPORT_SYMBOL_GPL(iif_fence_wait_timeout_with_status);
 
 void iif_fence_waited(struct iif_fence *fence, enum iif_ip_type ip)
 {
@@ -1662,38 +1553,51 @@ int iif_fence_add_poll_callback(struct iif_fence *fence, struct iif_fence_poll_c
 				iif_fence_poll_cb_t func)
 {
 	unsigned long flags;
-	int ret = 0;
+	bool retired;
+	int ret;
 
 	write_lock_irqsave(&fence->fence_lock, flags);
 
-	if (((fence->params.fence_type == IIF_FENCE_TYPE_SINGLE_SHOT) && fence->signaled) ||
-	    ((fence->params.fence_type == IIF_FENCE_TYPE_REUSABLE) && fence->signal_error) ||
-	    iif_fence_all_signalers_signaled_locked(fence)) {
-		INIT_LIST_HEAD(&poll_cb->node);
-		ret = -EPERM;
+	/*
+	 * Submit an AP waiter only if the fence hasn't retired. Even if the fence has retired, we
+	 * still proceed to call `add_poll_cb()` so that the sync-unit driver can advance the
+	 * @poll_cb->status timeline step-by-step especially for reusable fences.
+	 */
+	retired = iif_fence_has_retired_locked(fence);
+	if (!retired)
+		iif_fence_submit_waiter_locked(fence, IIF_IP_AP);
+
+	TEST_IIF_FENCE_AP_WAITER_SUBMITTED();
+
+	ret = iif_fence_ops_add_poll_cb(fence, poll_cb, func);
+
+	/*
+	 * This is likely a bug at the sync-unit driver. If the fence has retired, the fence must be
+	 * considered as always unblocked. That said, the sync-unit driver must return -EPERM and
+	 * only update @cb->status to the next fence unblocked status on `add_poll_cb()` call
+	 * instead of registering the callback.
+	 */
+	if (!ret && retired) {
+		iif_err(fence,
+			"add_poll_cb must fail for the retired fence, likely a bug at the sync-unit driver");
+		iif_fence_ops_remove_poll_cb(fence, poll_cb);
+		ret = -EIO;
 		goto out;
 	}
 
-	poll_cb->func = func;
-	list_add_tail(&poll_cb->node, &fence->poll_cb_list);
+	if (ret) {
+		/* If the callback registration failed, remove the waiter immediately. */
+		if (!retired)
+			iif_fence_remove_waiter_locked(fence, IIF_IP_AP, 1);
 
-	/*
-	 * If the fence is a reusable fence and it was signaled at least once, invoke the poll
-	 * callback right away.
-	 *
-	 * Otherwise, if the caller registers a sync point after this function call and the sync
-	 * point is already passed, the poll callback won't be notified for that sync point forever.
-	 *
-	 * Even if the caller registers a sync point first and then calls this function, a race
-	 * condition that the poll callback won't be invoked can happen if the fence timeline passes
-	 * the sync point in the middle.
-	 *
-	 * Therefore, it is much safer to invoke the poll callback if the fence has been signaled at
-	 * least once and let the caller decide whether the fence timeline is the value they are
-	 * waiting for.
-	 */
-	if (fence->params.fence_type == IIF_FENCE_TYPE_REUSABLE && fence->timeline)
-		poll_cb->func(fence, poll_cb);
+		/*
+		 * As a defensive safeguard against sync-unit drivers that might leave
+		 * @poll_cb->node in a modified state on registration failure, re-initialize it to
+		 * an empty node.
+		 */
+		if (ret)
+			INIT_LIST_HEAD(&poll_cb->node);
+	}
 out:
 	write_unlock_irqrestore(&fence->fence_lock, flags);
 
@@ -1704,20 +1608,41 @@ EXPORT_SYMBOL_GPL(iif_fence_add_poll_callback);
 bool iif_fence_remove_poll_callback(struct iif_fence *fence, struct iif_fence_poll_cb *poll_cb)
 {
 	unsigned long flags;
-	bool removed = false;
+	bool removed;
 
 	write_lock_irqsave(&fence->fence_lock, flags);
 
-	if (!list_empty(&poll_cb->node)) {
-		list_del_init(&poll_cb->node);
-		removed = true;
-	}
+	/*
+	 * Remove the AP waiter submitted at `iif_fence_add_poll_callback()` only if the registered
+	 * callback was removed by this function call. If the callback was already removed by the
+	 * sync-unit driver, the AP waiter will be removed at `iif_fence_waited_work_func()`.
+	 */
+	removed = iif_fence_ops_remove_poll_cb(fence, poll_cb);
+	if (removed)
+		iif_fence_remove_waiter_locked(fence, IIF_IP_AP, 1);
 
 	write_unlock_irqrestore(&fence->fence_lock, flags);
 
 	return removed;
 }
 EXPORT_SYMBOL_GPL(iif_fence_remove_poll_callback);
+
+void iif_fence_invoke_poll_callback(struct iif_fence *fence, struct iif_fence_poll_cb *cb,
+				    bool completed)
+{
+	struct iif_fence_poll_cb_internal *internal = (void *)cb;
+
+	if (completed) {
+		/* Trigger AP waiter completion only for client callbacks. */
+		if (cb != &fence->sync_unit_poll_cb) {
+			atomic_inc(&fence->pending_ap_waiter_completions);
+			schedule_work(&fence->waited_work);
+		}
+	}
+
+	internal->func(fence, cb);
+}
+EXPORT_SYMBOL_GPL(iif_fence_invoke_poll_callback);
 
 int iif_fence_add_all_signaler_submitted_callback(struct iif_fence *fence,
 						  struct iif_fence_all_signaler_submitted_cb *cb,
@@ -1808,3 +1733,9 @@ int iif_fence_outstanding_waiters(struct iif_fence *fence)
 	return outstanding;
 }
 EXPORT_SYMBOL_GPL(iif_fence_outstanding_waiters);
+
+void iif_fence_unblocked(struct iif_fence *fence)
+{
+	iif_fence_ops_fence_unblocked(fence);
+}
+EXPORT_SYMBOL_GPL(iif_fence_unblocked);

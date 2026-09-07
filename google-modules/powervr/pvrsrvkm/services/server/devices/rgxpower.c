@@ -113,12 +113,14 @@ void RGXInitGpuUtilStats(PVRSRV_DEVICE_NODE *psDeviceNode,
 	PVRSRV_ERROR eError;
 	OS_SPINLOCK_FLAGS uiFlags = 0;
 	IMG_UINT64 ui64DeviceTimestampTicks = 0;
-	IMG_UINT64 ui64OsTimestampNS = OSClockns64();
+	IMG_UINT64 ui64OsTimestampNS;
 
 #if defined(SUPPORT_SOC_TIMER)
 	eError = PVRSRVRGXCurrentTime(NULL, psDeviceNode, RGX_QUERY_SOC_TIMER, &ui64DeviceTimestampTicks);
+	ui64OsTimestampNS = RGXTimeGetSOCTimerValueNS(psDeviceNode);
 #else
 	eError = PVRSRVRGXCurrentTime(NULL, psDeviceNode, RGX_QUERY_DEVICE_TIMESTAMP, &ui64DeviceTimestampTicks);
+	ui64OsTimestampNS = OSClockns64();
 #endif
 	PVR_ASSERT(eError == PVRSRV_OK);
 

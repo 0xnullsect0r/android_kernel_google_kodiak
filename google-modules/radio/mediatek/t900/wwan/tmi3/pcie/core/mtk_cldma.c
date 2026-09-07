@@ -62,10 +62,8 @@
 #define AVG_TIME_GAP(avg, gap)	(((RX_FREQ_STAT_CNT - 1) * (avg) + (gap)) >> NUM_FOR_CAL_CNT)
 #define NO_BUDGET		(0)
 #define MAX_POLLING_ROUND	(200)
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 #define PRE_CHECK_INTERVAL_US	(200)
 #define PRE_CHECK_MAX_CNT	(10)
-#endif
 
 static unsigned int mtk_ctrl_keep_wake_time_ms = 500;
 enum tx_done_exit_flag {
@@ -563,13 +561,13 @@ static int mtk_cldma_dev_init(struct cldma_dev *cd, int hif_id)
 	snprintf(bd_pool_name, DMA_POOL_NAME_LEN, "cldma%d_bd_pool_%s",
 		 hw_id, mdev->dev_str);
 	drv_info->gpd_dma_pool = dma_pool_create(gpd_pool_name, mdev->dev,
-						 sizeof(union gpd), 4, 0);
+						 sizeof(union gpd), L1_CACHE_BYTES, 0);
 	if (!drv_info->gpd_dma_pool) {
 		MTK_ERR(mdev, "Failed to alloc gpd dma pool for cldma%d\n", hw_id);
 		goto err_free_drv_info;
 	}
 	drv_info->bd_dma_pool = dma_pool_create(bd_pool_name, mdev->dev,
-						sizeof(union bd), 4, 0);
+						sizeof(union bd), L1_CACHE_BYTES, 0);
 	if (!drv_info->bd_dma_pool) {
 		MTK_ERR(mdev, "Failed to alloc bd dma pool for cldma%d\n", hw_id);
 		goto err_destroy_gpd_pool;
@@ -857,6 +855,59 @@ static void mtk_cldma_rx_skb_adjust(struct mtk_md_dev *mdev, struct rxq *rxq,
 	req->gpd->rx_gpd.data_recv_len = 0;
 }
 
+static void mtk_cldma_rx_skb_put(struct rxq *rxq, struct rx_req *req)
+{
+	struct bd_dsc *bd_dsc;
+	int i;
+
+	if (!req->gpd->rx_gpd.data_recv_len)
+		return;
+
+	for (i = 0; i < rxq->nr_bds; i++) {
+		bd_dsc = req->bd_dsc_pool + i;
+		bd_dsc->skb->len = 0;
+		skb_reset_tail_pointer(bd_dsc->skb);
+		skb_put(bd_dsc->skb,
+			le16_to_cpu(bd_dsc->bd->rx_bd.data_recv_len));
+		if (req->skb != bd_dsc->skb) {
+			req->skb->len += bd_dsc->skb->len;
+			req->skb->data_len += bd_dsc->skb->len;
+		}
+		bd_dsc->bd->rx_bd.data_recv_len = 0;
+		bd_dsc->skb = NULL;
+	}
+	if (!rxq->nr_bds) {
+		req->skb->len = 0;
+		skb_reset_tail_pointer(req->skb);
+		skb_put(req->skb, le16_to_cpu(req->gpd->rx_gpd.data_recv_len));
+	}
+
+	req->gpd->rx_gpd.data_recv_len = 0;
+}
+
+static void mtk_cldma_rx_skb_unmap(struct mtk_md_dev *mdev, struct rxq *rxq,
+				   struct rx_req *req)
+{
+	struct bd_dsc *bd_dsc;
+	int i;
+
+	for (i = 0; i < rxq->nr_bds; i++) {
+		bd_dsc = req->bd_dsc_pool + i;
+		if (bd_dsc->data_dma_addr) {
+			dma_unmap_single(mdev->dev, bd_dsc->data_dma_addr,
+					 req->frag_size, DMA_FROM_DEVICE);
+			bd_dsc->data_dma_addr = 0;
+		}
+	}
+	if (!rxq->nr_bds) {
+		if (req->data_dma_addr) {
+			dma_unmap_single(mdev->dev, req->data_dma_addr,
+					 req->mtu, DMA_FROM_DEVICE);
+			req->data_dma_addr = 0;
+		}
+	}
+}
+
 static int mtk_cldma_reload_rx_skb(struct mtk_md_dev *mdev, struct rxq *rxq,
 				   struct mtk_bm_pool *bm_pool, struct rx_req *req)
 {
@@ -1077,13 +1128,8 @@ again:
 										   rxq->arg));
 			}
 #endif
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-			err = rxq->rx_done(req->skb, rxq->arg,
-					   atomic_read(&rxq->need_exit) ? true : false, true);
-#else
 			err = rxq->rx_done(req->skb, rxq->arg,
 					   atomic_read(&rxq->need_exit) ? true : false);
-#endif
 			if (err == -EAGAIN)
 				usleep_range(1000, 2000);
 			else
@@ -1220,9 +1266,7 @@ void mtk_cldma_rx_done_work_optimize(struct work_struct *work)
 	int i, err, idx, ret, cnt;
 	struct mtk_md_dev *mdev;
 	u32 polling_round = 0;
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 	int retry_cnt;
-#endif
 
 	drv_info = rxq->drv_info;
 	mdev = drv_info->mdev;
@@ -1252,7 +1296,8 @@ again:
 		ret = mtk_cldma_check_rx_hwo(rxq, req);
 		if (ret)
 			goto err_out;
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
+
+		mtk_cldma_rx_skb_put(rxq, req);
 		retry_cnt = 0;
 		do {
 			if (rxq->nr_bds)
@@ -1267,8 +1312,7 @@ again:
 				break;
 			udelay(PRE_CHECK_INTERVAL_US);
 		} while (retry_cnt++ < PRE_CHECK_MAX_CNT);
-#endif
-		mtk_cldma_rx_skb_adjust(mdev, rxq, req);
+		mtk_cldma_rx_skb_unmap(mdev, rxq, req);
 		trace_mtk_ctrl_rx_done(rxq->drv_info->hw_id, rxq->rxqno,
 				       req->skb, req->skb->data, i);
 		do {
@@ -1279,13 +1323,8 @@ again:
 										   rxq->arg));
 			}
 #endif
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-			err = rxq->rx_done(req->skb, rxq->arg,
-					   atomic_read(&rxq->need_exit) ? true : false, true);
-#else
 			err = rxq->rx_done(req->skb, rxq->arg,
 					   atomic_read(&rxq->need_exit) ? true : false);
-#endif
 			if (err == -EAGAIN)
 				usleep_range(1000, 2000);
 			else
@@ -1897,11 +1936,7 @@ static int mtk_cldma_rxq_free(struct cldma_drv_info *drv_info, u32 rxqno)
 				"cldma%d rxq%d dispatch req%d in rxq_free\n",
 				drv_info->hw_id, rxq->rxqno, rxq->free_idx);
 			mtk_cldma_rx_skb_adjust(mdev, rxq, req);
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-			rxq->rx_done(req->skb, rxq->arg, true, true);
-#else
 			rxq->rx_done(req->skb, rxq->arg, true);
-#endif
 			req->skb = NULL;
 		}
 		if (req->skb) {
@@ -2226,6 +2261,42 @@ static int mtk_cldma_close(struct cldma_dev *cd, struct sk_buff *skb)
 	return 0;
 }
 
+static int mtk_cldma_check_device_rx(struct cldma_dev *cd, struct sk_buff *skb)
+{
+	struct trb *trb = (struct trb *)skb->cb;
+	struct cldma_drv_info *drv_info;
+	struct mtk_md_dev *mdev;
+	struct queue_info *que;
+	u32 ret;
+
+	que = radix_tree_lookup(&cd->trans->queue_tbl, trb->channel_id & 0xFFFF);
+	drv_info = cd->cldma_drv_info[que->hif_id];
+	if (unlikely(!drv_info)) {
+		ret = -EPIPE;
+		goto out;
+	}
+	mdev = drv_info->mdev;
+
+	mtk_pm_ds_lock(mdev, MTK_USER_CTRL);
+	ret = mtk_pm_ds_wait_complete(mdev, MTK_USER_CTRL);
+	if (unlikely(ret)) {
+		MTK_ERR(mdev, "Failed to lock ds:%d\n", ret);
+	} else {
+		ret = drv_info->drv_ops->cldma_check_device_rx_status(drv_info, que->txqno);
+		if (!ret || ret == LINK_ERROR_VAL)
+			ret = -EPIPE;
+		else
+			ret = 0;
+	}
+	mtk_pm_ds_unlock(mdev, MTK_USER_CTRL);
+
+out:
+	trb->status = ret;
+	trb->trb_complete(skb);
+
+	return 0;
+}
+
 static int mtk_cldma_txbuf_set(struct cldma_drv_info *drv_info, struct sk_buff *skb,
 			       struct tx_req *req, int nr_bds)
 {
@@ -2506,6 +2577,7 @@ static int (*trb_act_tbl[TRB_CMD_MAX])(struct cldma_dev *cd, struct sk_buff *skb
 	[TRB_CMD_ENABLE] = mtk_cldma_open,
 	[TRB_CMD_TX] = mtk_cldma_tx,
 	[TRB_CMD_DISABLE] = mtk_cldma_close,
+	[TRB_CMD_CHECK_STA] = mtk_cldma_check_device_rx,
 };
 
 /**

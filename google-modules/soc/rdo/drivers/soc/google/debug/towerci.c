@@ -299,6 +299,15 @@ static void parse_and_print_error(struct device *dev, u32 err_record_num, u32 er
 	ierr = FIELD_GET(GENMASK(15, 8), err_status);
 	serr = FIELD_GET(GENMASK(7, 0), err_status);
 
+	/*
+	 * Workaround for SI-Tower Errata 3779432 (PEN-3628846):
+	 * For Error Record 1 (ERR1STATUS), SERR=0x17 (Deferred error from Completer
+	 * passed through) is inaccurately reported for EWA transaction errors. Software should
+	 * upgrade SERR to 0x12 (Error response from completer/external downstream).
+	 */
+	if (err_record_num == 1 && serr == 0x17)
+		serr = 0x12;
+
 	dev_info(dev, "err_status: %#x, ue: %u, er: %u, of: %u, ce: %u, de: %u, pn: %u, ci: %u\n",
 			err_status, ue, er, of, ce, de, pn, ci);
 	dev_info(dev, "uet: %#x %s, ierr: %#x %s, serr: %#x %s\n",

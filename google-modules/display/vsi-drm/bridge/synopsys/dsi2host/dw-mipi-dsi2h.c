@@ -15,6 +15,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/phy/phy.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
@@ -1197,7 +1198,6 @@ static ssize_t dw_mipi_dsi2h_host_transfer(struct mipi_dsi_host *host,
 		}
 		spin_unlock_irqrestore(&dsi2h->spinlock_dsi, irq_flags);
 	}
-
 	if (dsi2h_pre_state == DSI2H_STATE_ULPS || dsi2h_pre_state == DSI2H_STATE_PENDING_ULPS ||
 	    dsi2h_pre_state == DSI2H_STATE_SUSPEND) {
 		dsi2h->state = DSI2H_STATE_PENDING_ULPS;
@@ -2406,6 +2406,15 @@ static void dw_mipi_dsi2h_bridge_atomic_enable(struct drm_bridge *bridge,
 
 	if (unlikely(dsi2h->state != DSI2H_STATE_HS_EN))
 		dev_WARN(dsi2h->dev, "incorrect state=%d after enable\n", dsi2h->state);
+
+	dsi2h->first_enable_done = true;
+
+	if (dsi2h->handoff_power_vote && dsi2h->power_controller_synced) {
+		dev_dbg(dsi2h->dev, "Enable done & sync complete, releasing DSI handoff vote\n");
+		dsi2h->handoff_power_vote = false;
+		pm_runtime_put(dsi2h->dev);
+	}
+
 	mutex_unlock(&dsi2h->dsi2h_lock);
 }
 
@@ -3148,6 +3157,108 @@ static void dw_mipi_dsi2h_destroy_vdev(struct dw_mipi_dsi2h *dsi2h)
 	dsi2h->vdev = NULL;
 }
 
+/**
+ * _dsi_get_power_domain_node - Get the power domain device node for DSI
+ * @dev: Pointer to the DSI device structure
+ *
+ * Return: The power domain device_node if found, or NULL. The caller must call
+ * of_node_put() on the returned non-NULL pointer.
+ */
+static struct device_node *_dsi_get_power_domain_node(struct device *dev)
+{
+	if (!dev || !dev->of_node)
+		return NULL;
+
+	return of_parse_phandle(dev->of_node, "power-domains", 0);
+}
+
+/**
+ * _dsi_get_power_controller_node - Get the parent power controller device node
+ * @dev: Pointer to the DSI device structure
+ *
+ * Return: The power controller device_node if found, or NULL. The caller must
+ * call of_node_put() on the returned non-NULL pointer.
+ */
+static struct device_node *_dsi_get_power_controller_node(struct device *dev)
+{
+	struct device_node *pd_np = _dsi_get_power_domain_node(dev);
+	struct device_node *power_controller_np;
+
+	if (!pd_np)
+		return NULL;
+
+	power_controller_np = of_get_parent(pd_np);
+	of_node_put(pd_np);
+
+	return power_controller_np;
+}
+
+static bool _dsi_has_power_during_handoff_reg(struct dw_mipi_dsi2h *dsi2h)
+{
+	u32 pwr_up = 0;
+
+	regmap_read(dsi2h->regs, DW_DSI2H_PWR_UP, &pwr_up);
+	return (pwr_up & 1) != 0;
+}
+
+static bool _dsi_has_power_during_handoff_dt(struct dw_mipi_dsi2h *dsi2h)
+{
+	struct device_node *pd_np = _dsi_get_power_domain_node(dsi2h->dev);
+	bool handoff = false;
+
+	if (pd_np) {
+		handoff = of_property_read_bool(pd_np, "google,boot-stay-on");
+		of_node_put(pd_np);
+	}
+
+	return handoff;
+}
+
+static bool dw_dsi2h_power_controller_synced(struct device *dev)
+{
+	struct device_node *power_controller_np = _dsi_get_power_controller_node(dev);
+	struct platform_device *power_controller_pdev;
+	bool synced = false;
+
+	if (!power_controller_np)
+		return false;
+
+	power_controller_pdev = of_find_device_by_node(power_controller_np);
+	of_node_put(power_controller_np);
+
+	if (power_controller_pdev) {
+		synced = power_controller_pdev->dev.state_synced;
+		put_device(&power_controller_pdev->dev);
+	}
+
+	return synced;
+}
+
+static void dw_mipi_dsi2h_handoff_work_func(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct dw_mipi_dsi2h *dsi2h = container_of(dwork, struct dw_mipi_dsi2h, handoff_work);
+
+	bool release_vote = false;
+
+	mutex_lock(&dsi2h->dsi2h_lock);
+	if (dw_dsi2h_power_controller_synced(dsi2h->dev)) {
+		dsi2h->power_controller_synced = true;
+		if (dsi2h->handoff_power_vote && dsi2h->first_enable_done) {
+			dev_dbg(dsi2h->dev,
+				"Sync complete & enable done, releasing DSI handoff vote\n");
+			release_vote = true;
+			dsi2h->handoff_power_vote = false;
+		}
+	} else {
+		queue_delayed_work(system_power_efficient_wq, &dsi2h->handoff_work, HZ);
+	}
+	mutex_unlock(&dsi2h->dsi2h_lock);
+
+	if (release_vote)
+		pm_runtime_put(dsi2h->dev);
+}
+
 static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 						   const struct dw_mipi_dsi2h_plat_data *pdata)
 {
@@ -3232,6 +3343,8 @@ static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 	dw_dsi2h->mipi_fifo_pld_used = 0;
 	dw_dsi2h->dynamic_hs_clk_en = pdata->dynamic_hs_clk_en;
 	dw_dsi2h->suppress_dsi_errors = true;
+	dw_dsi2h->first_enable_done = false;
+	dw_dsi2h->power_controller_synced = false;
 
 	spin_lock_init(&dw_dsi2h->spinlock_dsi);
 	mutex_init(&dw_dsi2h->dsi2h_lock);
@@ -3240,6 +3353,7 @@ static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 	dw_dsi2h->thread = kthread_run(kthread_worker_fn, &dw_dsi2h->dsi2h_worker,
 			"dw_dsi2h_kthread");
 	kthread_init_delayed_work(&dw_dsi2h->ulps_dwork, dw_dsi2h_delay_ulps_handler);
+	INIT_DELAYED_WORK(&dw_dsi2h->handoff_work, dw_mipi_dsi2h_handoff_work_func);
 
 	/* Get Phy */
 	/* If no CD-PHY available try to get D-PHY */
@@ -3325,6 +3439,30 @@ static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 		goto end;
 	}
 
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret >= 0) {
+		bool reg_check = _dsi_has_power_during_handoff_reg(dw_dsi2h);
+		bool dt_check = _dsi_has_power_during_handoff_dt(dw_dsi2h);
+
+		dev_info(dev, "DSI power handoff from bootloader: dt=%d reg=%d\n", dt_check,
+			 reg_check);
+
+		if (reg_check != dt_check) {
+			dev_warn(dev, "Handoff check mismatch: reg=%d, dt=%d\n", reg_check,
+				 dt_check);
+		}
+
+		if (dt_check) {
+			dw_dsi2h->handoff_power_vote = true;
+			dev_dbg(dev, "Handoff detected, keeping power vote\n");
+			queue_delayed_work(system_power_efficient_wq, &dw_dsi2h->handoff_work, HZ);
+		} else {
+			pm_runtime_put(dev);
+		}
+	} else {
+		dev_err(dev, "Failed to resume for handoff check: %d\n", ret);
+	}
+
 	dw_dsi2h->trace_pid = current->tgid;
 
 	return dw_dsi2h;
@@ -3351,6 +3489,11 @@ int dw_mipi_dsi2h_remove(void *handle)
 	dw_mipi_dsi2h_debugfs_remove(dsi2h);
 	dw_mipi_dsi2h_sysfs_remove(dsi2h);
 	dw_mipi_dsi2h_destroy_vdev(dsi2h);
+	cancel_delayed_work_sync(&dsi2h->handoff_work);
+	if (dsi2h->handoff_power_vote) {
+		pm_runtime_put(dsi2h->dev);
+		dsi2h->handoff_power_vote = false;
+	}
 	kfree(dsi2h);
 
 	return 0;

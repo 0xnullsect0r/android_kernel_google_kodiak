@@ -1,7 +1,7 @@
 /*
  * Linux OS Independent Layer
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -30,6 +30,18 @@
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
 #include <linux/sched/clock.h>
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0) */
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+#include <linux/lockdep.h>
+
+#define OSL_LOCK_CLASS_SET(lock) \
+	do {                     \
+		static struct lock_class_key __key; \
+		lockdep_set_class(((spinlock_t *)lock), (struct lock_class_key *)&__key); \
+	} while (0)
+#else
+#define OSL_LOCK_CLASS_SET(lock) do { } while (0)
+#endif
 
 #define DECLSPEC_ALIGN(x)	__attribute__ ((aligned(x)))
 

@@ -20,7 +20,6 @@ load(
     "kernel_modules_install",
     "kernel_sbom",
     "kernel_unstripped_modules_archive",
-    "merged_kernel_uapi_headers",
     "system_dlkm_image",
     "vendor_boot_image",
     "vendor_dlkm_image",
@@ -28,12 +27,48 @@ load(
 load("@rules_pkg//pkg:install.bzl", "pkg_install")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:pkg.bzl", "pkg_zip")
-load("//private/devices/google/common:constants.bzl", "PIXEL_GKI_MODULES_LIST")
 load("//private/devices/google/common/kleaf:bste.bzl", "bste_test_package")
 load("//private/devices/google/common/kleaf:copy_files.bzl", "STRIP_PREFIX_FILES_ONLY", "copy_files")
 load("//private/devices/google/common/kleaf:create_file.bzl", "create_file")
+load("//private/devices/google/common/kleaf:extracted_system_dlkm.bzl", "extracted_system_dlkm")
 load("//private/devices/google/common/kleaf:image_props.bzl", "image_props")
 load("//private/devices/google/common/kleaf:merged_uapi_headers.bzl", "merged_uapi_headers")
+load("//private/devices/google/common/kleaf:modules_list.bzl", "modules_list")
+load("//private/devices/google/common/kleaf:select_files.bzl", "select_files")
+load("//private/devices/google/common/kleaf:verify_intree_modules.bzl", "verify_intree_modules")
+
+def gki_module(path):
+    return struct(
+        gki = True,
+        path = path,
+    )
+
+def intree_module(path):
+    return struct(
+        intree = True,
+        path = path,
+    )
+
+def _is_gki_module(m):
+    return type(m) == "struct" and getattr(m, "gki", False)
+
+def _is_intree_module(m):
+    return type(m) == "struct" and getattr(m, "intree", False)
+
+def _is_ext_module(m):
+    return not _is_gki_module(m) and not _is_intree_module(m)
+
+def _get_gki_modules(mixed_list):
+    """Filter and return only GKI modules (structs) from a mixed list."""
+    return {m.path: m for m in mixed_list if _is_gki_module(m)}.values()
+
+def _get_intree_modules(mixed_list):
+    """Filter and return only intree modules (structs) from a mixed list."""
+    return {m.path: m for m in mixed_list if _is_intree_module(m)}.values()
+
+def _get_ext_modules(mixed_list):
+    """Filter and return only out-of-tree modules (labels) from a mixed list."""
+    return {m: m for m in mixed_list if _is_ext_module(m)}.values()
 
 def device_build(
         name,
@@ -49,7 +84,11 @@ def device_build(
         dtbo_additional_outs = [],
         module_outs = [],
         ext_dtbos = [],
-        ext_modules = [],
+        vendor_ramdisk_modules = [],
+        system_dlkm_modules = [],
+        system_dlkm_modules_blocklisted = [],
+        vendor_dlkm_modules = [],
+        vendor_dlkm_modules_blocklisted = [],
         kunit_modules = [],
         ddk_uapi_headers = [],
         build_dtb = False,
@@ -57,9 +96,6 @@ def device_build(
         build_vendor_kernel_boot = False,
         build_system_dlkm = False,
         build_vendor_dlkm = False,
-        vendor_ramdisk_modules_lists = [],
-        system_dlkm_modules_blocklists = [],
-        vendor_dlkm_modules_blocklists = [],
         fs_type = "ext4",
         insmod_cfgs = [],
         bste_test_suites = [],
@@ -101,9 +137,15 @@ def device_build(
             dtbo.img.
         module_outs: The list of in-tree modules building from kernel sources.
         ext_dtbos: Extra dtbos.
-        ext_modules: Out-of-tree modules. Combined with the base device.
+        vendor_ramdisk_modules: Modules to be in vendor ramdisk. Combined with the base device.
+        system_dlkm_modules: GKI modules to be in system DLKM. Combined with the base device.
+        system_dlkm_modules_blocklisted: GKI modules to be in system DLKM but blocklisted. Combined
+            with the base device.
+        vendor_dlkm_modules: Modules to be in vendor DLKM. Combined with the base device.
+        vendor_dlkm_modules_blocklisted: Modules to be in vendor DLKM but blocklisted.
+            Combined with the base device.
         kunit_modules: Kunit modules, packed into kunit_tests.zip. Combined with the base device.
-        ddk_uapi_headers: DDK uapi headers which will be merged into kernel-uapi-headers.tar.gz.
+        ddk_uapi_headers: DDK uapi headers which will be merged into ddk-uapi-headers.tar.gz.
             Combined with the base device.
         build_dtb: If True, build dtb.img from dtb_outs.
         build_dtbo: If True, build dtbo.img from dtbo_outs and ext_dtbos.
@@ -111,14 +153,6 @@ def device_build(
         build_system_dlkm: If True, build system_dlkm.img which contains GKI modules. If False and
             build_vendor_dlkm is True, GKI modules will be in vendor_dlkm.img instead.
         build_vendor_dlkm: If True, build vendor_dlkm.img.
-        vendor_ramdisk_modules_lists: Files containing lists of modules which should be in vendor
-            ramdisk (initramfs.img, vendor_kernel_boot.img). Combined with the base device.
-        system_dlkm_modules_blocklists: Files containing lists of modules which should be blocked
-            from being loaded from system_dlkm.img. If build_system_dlkm is False and
-            build_vendor_dlkm is True, this will be combined into vendor_dlkm_modules_blocklists.
-            Combined with the base device.
-        vendor_dlkm_modules_blocklists: Files containing lists of modules which should be blocked
-            from being loaded from vendor_dlkm.img. Combined with the base device.
         fs_type: Filesystem for system_dlkm and vendor_dlkm. Support ext4 (default) and erofs.
         insmod_cfgs: Insmod cfg files which will be copied to etc/ in vendor_dlkm.img. Combined with
             the base device.
@@ -132,12 +166,16 @@ def device_build(
         base_kconfigs = ["{}/kconfigs".format(base_device)]
         base_kconfig_exts = ["{}/kconfig_ext".format(base_device)]
         base_defconfig_fragments = ["{}/defconfig_fragments".format(base_device)]
+        base_vendor_ramdisk_modules = ["{}/vendor_ramdisk_modules".format(base_device)]
+        base_system_dlkm_modules = ["{}/system_dlkm_modules".format(base_device)]
+        base_system_dlkm_modules_blocklisted = ["{}/system_dlkm_modules_blocklisted".format(base_device)]
+        base_vendor_dlkm_modules = ["{}/vendor_dlkm_modules".format(base_device)]
+        base_vendor_dlkm_modules_blocklisted = ["{}/vendor_dlkm_modules_blocklisted".format(base_device)]
+        base_gki_modules = ["{}/gki_modules".format(base_device)]
+        base_intree_modules = ["{}/intree_modules".format(base_device)]
         base_ext_modules = ["{}/ext_modules".format(base_device)]
         base_kunit_modules = ["{}/kunit_modules".format(base_device)]
         base_ddk_uapi_headers = ["{}/ddk_uapi_headers".format(base_device)]
-        base_vendor_ramdisk_modules_lists = ["{}/vendor_ramdisk_modules_list".format(base_device)]
-        base_system_dlkm_modules_blocklists = ["{}/system_dlkm_modules_blocklist".format(base_device)]
-        base_vendor_dlkm_modules_blocklists = ["{}/vendor_dlkm_modules_blocklist".format(base_device)]
         base_insmod_cfgs = ["{}/insmod_cfgs".format(base_device)]
         base_bste_test_suites = ["{}/bste_test_suites".format(base_device)]
     else:
@@ -145,17 +183,27 @@ def device_build(
         base_kconfigs = []
         base_kconfig_exts = ["//common:kernel_package_kconfig"]
         base_defconfig_fragments = ["//common:kernel_package_defconfig_fragment"]
-        base_ext_modules = select({
+        base_vendor_ramdisk_modules = select({
             "//private/devices/google/common:use_prebuilt_fips140_is_true": [
                 "//private/devices/google/common:fips140",
             ],
             "//conditions:default": [],
         })
+        base_system_dlkm_modules = []
+        base_system_dlkm_modules_blocklisted = []
+        base_vendor_dlkm_modules = []
+        base_vendor_dlkm_modules_blocklisted = []
+        base_gki_modules = []
+        base_intree_modules = []
+        base_ext_modules = (
+            base_vendor_ramdisk_modules +
+            base_system_dlkm_modules +
+            base_system_dlkm_modules_blocklisted +
+            base_vendor_dlkm_modules +
+            base_vendor_dlkm_modules_blocklisted
+        )
         base_kunit_modules = []
         base_ddk_uapi_headers = []
-        base_vendor_ramdisk_modules_lists = []
-        base_system_dlkm_modules_blocklists = []
-        base_vendor_dlkm_modules_blocklists = []
         base_insmod_cfgs = []
         base_bste_test_suites = []
 
@@ -171,18 +219,28 @@ def device_build(
     target_dtbs = "{}/dtbs".format(name)
     target_dtbos = "{}/dtbos".format(name)
     target_additional_dtbos = "{}/additional_dtbos".format(name)
+    target_vendor_ramdisk_modules = "{}/vendor_ramdisk_modules".format(name)
+    target_system_dlkm_modules = "{}/system_dlkm_modules".format(name)
+    target_system_dlkm_modules_blocklisted = "{}/system_dlkm_modules_blocklisted".format(name)
+    target_vendor_dlkm_modules = "{}/vendor_dlkm_modules".format(name)
+    target_vendor_dlkm_modules_blocklisted = "{}/vendor_dlkm_modules_blocklisted".format(name)
+    target_extracted_gki_modules = "{}/extracted_gki_modules".format(name)
+    target_gki_modules = "{}/gki_modules".format(name)
+    target_gki_module_format = target_gki_modules + "/{}"
+    target_intree_modules = "{}/intree_modules".format(name)
+    target_intree_module_format = target_intree_modules + "/{}"
+    target_verify_intree_modules = "{}/verify_intree_modules".format(name)
     target_ext_modules = "{}/ext_modules".format(name)
-    target_kernel_modules_install = "{}/kernel_modules_install".format(name)
-    target_kernel_unstripped_modules_archive = "{}/kernel_unstripped_modules_archive".format(name)
-    target_merged_kernel_uapi_headers = "{}/merged_kernel_uapi_headers".format(name)
+    target_ext_modules_install = "{}/ext_modules_install".format(name)
     target_kunit_modules = "{}/kunit_modules".format(name)
-    target_kunit_modules_install = "{}/kunit_modules_install".format(name)
+    target_kunit_modules_kos = "{}/kunit_modules_kos".format(name)
     target_kunit_modules_pkg = "{}/kunit_modules_pkg".format(name)
     target_kunit_tests_zip = "{}/kunit_tests_zip".format(name)
+    target_kernel_modules_install = "{}/kernel_modules_install".format(name)
+    target_kernel_unstripped_modules_archive = "{}/kernel_unstripped_modules_archive".format(name)
     target_ddk_uapi_headers = "{}/ddk_uapi_headers".format(name)
     target_merged_ddk_uapi_headers = "{}/merged_ddk_uapi_headers".format(name)
     target_cleaned_ddk_uapi_headers = "{}/cleaned_ddk_uapi_headers".format(name)
-    target_merged_kernel_and_ddk_uapi_headers = "{}/merged_kernel_and_ddk_uapi_headers".format(name)
     target_vendor_ramdisk_modules_list = "{}/vendor_ramdisk_modules_list".format(name)
     target_system_dlkm_modules_list = "{}/system_dlkm_modules_list".format(name)
     target_system_dlkm_modules_blocklist = "{}/system_dlkm_modules_blocklist".format(name)
@@ -317,29 +375,106 @@ def device_build(
         srcs = ["{}/{}".format(target_dt, dtbo) for dtbo in dtbo_additional_outs],
     )
 
+    all_system_dlkm_modules = system_dlkm_modules + system_dlkm_modules_blocklisted
+    for m in all_system_dlkm_modules:
+        if not _is_gki_module(m):
+            fail("system_dlkm should only contain GKI modules")
+
+    all_vendor_dlkm_modules = vendor_dlkm_modules + vendor_dlkm_modules_blocklisted
+    for m in all_vendor_dlkm_modules:
+        if _is_gki_module(m):
+            fail("vendor_dlkm should not contain GKI modules")
+
+    all_modules = vendor_ramdisk_modules + all_system_dlkm_modules + all_vendor_dlkm_modules
+    gki_modules = _get_gki_modules(all_modules)
+
+    extracted_system_dlkm(
+        name = target_extracted_gki_modules,
+        gki_modules = [m.path for m in gki_modules],
+        images = "//common:kernel_aarch64_system_dlkm_image",
+        visibility = ["//visibility:private"],
+    )
+
+    for m in gki_modules:
+        select_files(
+            name = target_gki_module_format.format(m.path),
+            srcs = [target_extracted_gki_modules],
+            include = ["**/{}".format(m.path)],
+            visibility = ["//visibility:private"],
+        )
+
+    intree_modules = _get_intree_modules(all_modules)
+
+    for m in intree_modules:
+        select_files(
+            name = target_intree_module_format.format(m.path),
+            srcs = ["//private/devices/google/common:kernel"],
+            include = ["**/{}".format(m.path)],
+            visibility = ["//visibility:private"],
+        )
+
+    def _resolve_modules(mixed_list):
+        ret = []
+        for m in mixed_list:
+            if _is_gki_module(m):
+                ret.append(target_gki_module_format.format(m.path))
+            elif _is_intree_module(m):
+                ret.append(target_intree_module_format.format(m.path))
+            else:
+                ret.append(m)
+        return ret
+
+    native.filegroup(
+        name = target_gki_modules,
+        srcs = base_gki_modules + _resolve_modules(gki_modules),
+    )
+
+    native.filegroup(
+        name = target_intree_modules,
+        srcs = base_intree_modules + _resolve_modules(intree_modules),
+    )
+
+    verify_intree_modules(
+        name = target_verify_intree_modules,
+        kernel_build = target_kernel,
+        intree_modules = target_intree_modules,
+    )
+
+    native.filegroup(
+        name = target_vendor_ramdisk_modules,
+        srcs = base_vendor_ramdisk_modules + _resolve_modules(vendor_ramdisk_modules),
+    )
+
+    native.filegroup(
+        name = target_system_dlkm_modules,
+        srcs = base_system_dlkm_modules + _resolve_modules(system_dlkm_modules),
+    )
+
+    native.filegroup(
+        name = target_system_dlkm_modules_blocklisted,
+        srcs = base_system_dlkm_modules_blocklisted + _resolve_modules(system_dlkm_modules_blocklisted),
+    )
+
+    native.filegroup(
+        name = target_vendor_dlkm_modules,
+        srcs = base_vendor_dlkm_modules + _resolve_modules(vendor_dlkm_modules),
+    )
+
+    native.filegroup(
+        name = target_vendor_dlkm_modules_blocklisted,
+        srcs = base_vendor_dlkm_modules_blocklisted + _resolve_modules(vendor_dlkm_modules_blocklisted),
+    )
+
     kernel_module_group(
         name = target_ext_modules,
-        srcs = base_ext_modules + ext_modules,
+        srcs = base_ext_modules + _get_ext_modules(all_modules),
     )
 
     kernel_modules_install(
-        name = target_kernel_modules_install,
+        name = target_ext_modules_install,
         kernel_build = target_kernel,
         kernel_modules = [target_ext_modules],
-        visibility = ["//visibility:private"],
-    )
-
-    kernel_unstripped_modules_archive(
-        name = target_kernel_unstripped_modules_archive,
-        kernel_build = target_kernel,
-        kernel_modules = [target_ext_modules],
-        visibility = ["//visibility:private"],
-    )
-
-    merged_kernel_uapi_headers(
-        name = target_merged_kernel_uapi_headers,
-        kernel_build = target_kernel,
-        kernel_modules = [target_ext_modules],
+        check_dependencies = True,
         visibility = ["//visibility:private"],
     )
 
@@ -348,10 +483,11 @@ def device_build(
         srcs = base_kunit_modules + kunit_modules,
     )
 
-    kernel_modules_install(
-        name = target_kunit_modules_install,
-        kernel_build = target_kernel,
-        kernel_modules = [target_kunit_modules],
+    select_files(
+        name = target_kunit_modules_kos,
+        srcs = [target_kunit_modules],
+        include = ["**/*.ko"],
+        allow_empty = True,
         visibility = ["//visibility:private"],
     )
 
@@ -359,7 +495,7 @@ def device_build(
         name = target_kunit_modules_pkg,
         srcs = [
             "//common:kernel_aarch64/lib/kunit/kunit.ko",
-            target_kunit_modules_install,
+            target_kunit_modules_kos,
         ],
         prefix = "kunit_test_modules",
         visibility = ["//visibility:private"],
@@ -372,6 +508,24 @@ def device_build(
             target_kunit_modules_pkg,
         ],
         out = "{}/kunit_tests.zip".format(name),
+        visibility = ["//visibility:private"],
+    )
+
+    kernel_modules_install(
+        name = target_kernel_modules_install,
+        kernel_build = target_kernel,
+        kernel_modules = [
+            target_ext_modules,
+            target_kunit_modules,
+        ],
+        check_dependencies = True,
+        visibility = ["//visibility:private"],
+    )
+
+    kernel_unstripped_modules_archive(
+        name = target_kernel_unstripped_modules_archive,
+        kernel_build = target_kernel,
+        kernel_modules = [target_ext_modules],
         visibility = ["//visibility:private"],
     )
 
@@ -395,33 +549,26 @@ def device_build(
         visibility = ["//visibility:private"],
     )
 
-    merged_uapi_headers(
-        name = target_merged_kernel_and_ddk_uapi_headers,
-        uapi_headers = [
-            target_merged_kernel_uapi_headers,
-            target_ddk_uapi_headers,
+    modules_list(
+        name = target_vendor_ramdisk_modules_list,
+        modules = [target_vendor_ramdisk_modules],
+        visibility = ["//visibility:private"],
+    )
+
+    modules_list(
+        name = target_system_dlkm_modules_list,
+        modules = [
+            target_system_dlkm_modules,
+            target_system_dlkm_modules_blocklisted,
         ],
         visibility = ["//visibility:private"],
     )
 
-    create_file(
-        name = target_vendor_ramdisk_modules_list,
-        srcs = base_vendor_ramdisk_modules_lists + vendor_ramdisk_modules_lists,
-        out = "{}/vendor_ramdisk.modules".format(name),
-    )
-
-    create_file(
-        name = target_system_dlkm_modules_list,
-        out = "{}/system_dlkm.modules".format(name),
-        # The list is used to filter modules with `grep -w`.
-        contents = ["^kernel/" + m for m in PIXEL_GKI_MODULES_LIST],
-        visibility = ["//visibility:private"],
-    )
-
-    create_file(
+    modules_list(
         name = target_system_dlkm_modules_blocklist,
-        srcs = base_system_dlkm_modules_blocklists + system_dlkm_modules_blocklists,
-        out = "{}/system_dlkm.blocklist".format(name),
+        modules = [target_system_dlkm_modules_blocklisted],
+        format = "blocklist",
+        visibility = ["//visibility:private"],
     )
 
     create_file(
@@ -440,18 +587,20 @@ def device_build(
         visibility = ["//visibility:private"],
     )
 
-    create_file(
+    modules_list(
         name = target_vendor_dlkm_modules_list,
-        out = "{}/vendor_dlkm.modules".format(name),
-        # The list is used to filter modules with `grep -w`.
-        contents = ["^kernel/" + m for m in module_outs] + ["^extra/.*"],
+        modules = [
+            target_vendor_dlkm_modules,
+            target_vendor_dlkm_modules_blocklisted,
+        ],
         visibility = ["//visibility:private"],
     )
 
-    create_file(
+    modules_list(
         name = target_vendor_dlkm_modules_blocklist,
-        srcs = base_vendor_dlkm_modules_blocklists + vendor_dlkm_modules_blocklists,
-        out = "{}/vendor_dlkm.blocklist".format(name),
+        modules = [target_vendor_dlkm_modules_blocklisted],
+        format = "blocklist",
+        visibility = ["//visibility:private"],
     )
 
     create_file(
@@ -507,7 +656,7 @@ def device_build(
 
     initramfs(
         name = target_initramfs,
-        kernel_modules_install = target_kernel_modules_install,
+        kernel_modules_install = target_ext_modules_install,
         modules_list = target_vendor_ramdisk_modules_list,
         ramdisk_compression = "lz4",
         trim_unused_modules = True,
@@ -540,16 +689,15 @@ def device_build(
         target_kernel_modules_install,
         target_kernel_unstripped_modules_archive,
         target_kmi_symbol_list,
-        target_kunit_modules_install,
         target_kunit_tests_zip,
         target_merged_ddk_uapi_headers,
         target_cleaned_ddk_uapi_headers,
-        target_merged_kernel_and_ddk_uapi_headers,
         target_bste_test_package,
+        target_gki_modules,
+        target_verify_intree_modules,
         "@kleaf//build/kernel:gki_certification_tools",
         "//common:kernel_aarch64",
         "//common:kernel_aarch64_headers",
-        "//private/devices/google/common:kernel_gki_modules",
     ] + extra_dist_targets
 
     dtb_image(
@@ -591,7 +739,7 @@ def device_build(
             name = target_system_dlkm_image_types,
             base = "//common:kernel_aarch64_system_dlkm_image",
             fs_types = [fs_type],
-            kernel_modules_install = target_kernel_modules_install,
+            kernel_modules_install = target_ext_modules_install,
             modules_blocklist = target_system_dlkm_modules_blocklist,
             modules_list = target_system_dlkm_modules_list,
             props = target_system_dlkm_props,
@@ -618,7 +766,7 @@ def device_build(
             name = target_vendor_dlkm_image,
             archive = True,
             etc_files = [target_insmod_cfgs],
-            kernel_modules_install = target_kernel_modules_install,
+            kernel_modules_install = target_ext_modules_install,
             modules_blocklist = target_vendor_dlkm_modules_blocklist if build_system_dlkm else target_merged_dlkm_modules_blocklist,
             modules_list = target_vendor_dlkm_modules_list if build_system_dlkm else target_merged_dlkm_modules_list,
             props = target_vendor_dlkm_props,

@@ -3,6 +3,11 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 load("//private/google-modules/display/vsi-drm/verisilicon:vs_drm_cflags.bzl", "VS_DRM_COPTS")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "ddk_headers",
     hdrs = glob([
@@ -104,9 +109,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
-    ],
-    visibility = [
-        "//private/google-modules/display/vsi-drm:__pkg__",
     ],
     deps = [
         ":ddk_headers",

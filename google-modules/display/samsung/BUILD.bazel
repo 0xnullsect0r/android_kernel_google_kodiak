@@ -3,7 +3,12 @@
 # the drm device driver.  This driver provides support for the
 # Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "ddk_uapi_headers", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "ddk_uapi_headers")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -173,22 +178,14 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        ":__subpackages__",
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/touch:__subpackages__",
-    ],
     deps = [
         ":internal_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/display/common/gs_panel:gs-panel",
-        "//private/google-modules/hdcp/samsung:exynos-hdcp2",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/bts",
-        "//private/google-modules/soc/gs/drivers/devfreq/google:exynos_devfreq",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos-pd_el3",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos_pm_qos",
@@ -197,7 +194,15 @@ ddk_module(
         "//private/google-modules/soc/gs/drivers/soc/google/debug:itmon",
         "//private/google-modules/soc/gs/drivers/tty/serial:exynos_tty",
         "//private/google-modules/soc/gs/drivers/usb/dwc3:dwc3-exynos-usb",
-    ],
+    ] + select({
+        "//private/devices/google/common:soc_is_gs201_or_before": [
+            "//private/google-modules/soc/gs/drivers/devfreq-whi/google:exynos_devfreq",
+        ],
+        "//conditions:default": [
+            "//private/google-modules/hdcp/samsung:exynos-hdcp2",
+            "//private/google-modules/soc/gs/drivers/devfreq/google:exynos_devfreq",
+        ],
+    }),
 )
 
 ddk_module(
@@ -220,40 +225,13 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc/alsa:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         ":exynos-drm",
         ":internal_headers",
         "//common:all_headers_aarch64",
         "//private/google-modules/aoc/alsa:headers",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/dma:samsung-dma",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
-    ],
-)
-
-kernel_module_group(
-    name = "display.samsung",
-    srcs = [
-        ":exynos-drm",
-        "//private/google-modules/display/samsung/panel:panel-boe-nt37290",
-        "//private/google-modules/display/samsung/panel:panel-common",
-        "//private/google-modules/display/samsung/panel:panel-samsung-drv",
-        "//private/google-modules/display/samsung/panel:panel-samsung-emul",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3fc3",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3fc3-p10",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3hc2",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3hc3",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3hc3-c10",
-        "//private/google-modules/display/samsung/panel:panel-samsung-s6e3hc4",
-        "//private/google-modules/display/samsung/panel:panel-samsung-sofef01",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

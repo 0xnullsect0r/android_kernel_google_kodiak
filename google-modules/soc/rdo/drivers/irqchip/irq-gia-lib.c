@@ -17,6 +17,9 @@
 #define CREATE_TRACE_POINTS
 #include "irq-gia-lib-trace.h"
 
+EXPORT_TRACEPOINT_SYMBOL_GPL(gia_test_itr_programmed);
+EXPORT_TRACEPOINT_SYMBOL_GPL(gia_test_handler_entry);
+
 #define GIA_AUTOSUSPEND_DELAY_MS 10
 
 /* List head linking all the gdd */
@@ -1274,7 +1277,8 @@ static void gia_pm_init(struct gia_device_data *gdd)
  *
  * Return 0 on success, or a negative error code on failure.
  */
-int gia_set_clear_trigger_reg(struct platform_device *pdev, u32 hwirq, bool set)
+int gia_set_clear_trigger_reg(struct platform_device *pdev, u32 hwirq, bool set,
+			      ktime_t *trig_time)
 {
 	void __iomem *reg_addr;
 	unsigned long flags;
@@ -1304,6 +1308,10 @@ int gia_set_clear_trigger_reg(struct platform_device *pdev, u32 hwirq, bool set)
 		reg &= ~(1 << (hwirq % IRQS_PER_REG));
 
 	writel_relaxed(reg, reg_addr);
+	if (set && trig_time) {
+		WRITE_ONCE(*trig_time, ktime_get());
+		trace_gia_test_itr_programmed(gdd, hwirq, *trig_time);
+	}
 	gia_unlock_process_context(&gdd->lock, &flags);
 
 	return 0;

@@ -6,7 +6,10 @@
 #ifndef _GOOG_MBA_GDMC_IFACE_PRIV_H_
 #define _GOOG_MBA_GDMC_IFACE_PRIV_H_
 
-#include <linux/trace.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
+#include <soc/google/goog-mba-gdmc-iface.h>
+#include <soc/google/goog_gdmc_service_ids.h>
 
 enum goog_mba_gdmc_msg_prio {
 	GOOG_MBA_GDMC_NORMAL_PRIO,

@@ -1760,6 +1760,168 @@
 		CFG_VALUE_OR_DEFAULT, \
 		"mask to affine rx_thread/rx_irq/tx_comp for high tput")
 
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+/*
+ * <ini>
+ * dp_cpu_perf_freq_boost_enable - CPU freq boost enable
+ * @Min: 0
+ * @Max: 1
+ * @Default: 0
+ *
+ * This ini specifies whether CPU freq boost enable is enabled
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_PERF_FREQ_BOOST_ENABLE \
+	CFG_INI_BOOL("dp_cpu_perf_freq_boost_enable", false, \
+		     "Enable/Disable CPU freq boost enable")
+
+/*
+ * <ini>
+ * dp_cpu_little_core_perf_freq - Little core perf frequency
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 2649000
+ *
+ * This ini specifies target performance frequency for little core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_LITTLE_CORE_PERF_FREQ \
+		CFG_INI_UINT( \
+		"dp_cpu_little_core_perf_freq", \
+		0, \
+		4294967295UL, \
+		2649000u, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Little core perf frequency")
+
+/*
+ * <ini>
+ * dp_cpu_mid_core_perf_freq - Mid core perf frequency
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 3379000
+ *
+ * This ini specifies target performance frequency for mid core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_MID_CORE_PERF_FREQ \
+		CFG_INI_UINT( \
+		"dp_cpu_mid_core_perf_freq", \
+		0, \
+		4294967295UL, \
+		3379000u, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Mid core perf frequency")
+
+/*
+ * <ini>
+ * dp_cpu_big_core_perf_freq - Big core perf frequency
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 3898000
+ *
+ * This ini specifies target performance frequency for big core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_BIG_CORE_PERF_FREQ \
+		CFG_INI_UINT( \
+		"dp_cpu_big_core_perf_freq", \
+		0, \
+		4294967295UL, \
+		3898000u, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Big core perf frequency")
+
+/*
+ * <ini>
+ * dp_cpu_little_core_start_cpu - Little core start CPU index
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 0
+ *
+ * This ini specifies starting CPU index for little core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_LITTLE_CORE_START_CPU \
+		CFG_INI_UINT( \
+		"dp_cpu_little_core_start_cpu", \
+		0, \
+		4294967295UL, \
+		0, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Little core start CPU index")
+
+/*
+ * <ini>
+ * dp_cpu_mid_core_start_cpu - Mid core start CPU index
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 2
+ *
+ * This ini specifies starting CPU index for mid core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_MID_CORE_START_CPU \
+		CFG_INI_UINT( \
+		"dp_cpu_mid_core_start_cpu", \
+		0, \
+		4294967295UL, \
+		2, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Mid core start CPU index")
+
+/*
+ * <ini>
+ * dp_cpu_big_core_start_cpu - Big core start CPU index
+ * @Min: 0
+ * @Max: 4294967295UL
+ * @Default: 6
+ *
+ * This ini specifies starting CPU index for big core cluster
+ *
+ * Usage: Internal
+ *
+ * </ini>
+ */
+#define CFG_DP_CPU_BIG_CORE_START_CPU \
+		CFG_INI_UINT( \
+		"dp_cpu_big_core_start_cpu", \
+		0, \
+		4294967295UL, \
+		6, \
+		CFG_VALUE_OR_DEFAULT, \
+		"Big core start CPU index")
+
+#define CFG_WCN_GOOGLE_MGMT \
+	CFG(CFG_DP_CPU_PERF_FREQ_BOOST_ENABLE) \
+	CFG(CFG_DP_CPU_LITTLE_CORE_PERF_FREQ) \
+	CFG(CFG_DP_CPU_MID_CORE_PERF_FREQ) \
+	CFG(CFG_DP_CPU_BIG_CORE_PERF_FREQ) \
+	CFG(CFG_DP_CPU_LITTLE_CORE_START_CPU) \
+	CFG(CFG_DP_CPU_MID_CORE_START_CPU) \
+	CFG(CFG_DP_CPU_BIG_CORE_START_CPU)
+#else
+#define CFG_WCN_GOOGLE_MGMT
+#endif
+
 #define CFG_DP_AFFN_OVERRIDE_MGMT \
 	CFG(CFG_DP_AFFN_OVERRIDE_ENABLE) \
 	CFG(CFG_DP_AFFN_OVERRIDE_HIGH_THRESHOLD) \
@@ -1767,7 +1929,8 @@
 	CFG(CFG_DP_AFFN_OVERRIDE_LOW_THRESHOLD) \
 	CFG(CFG_DP_AFFN_OVERRIDE_LOW_TPUT_MASK) \
 	CFG(CFG_DP_AFFN_OVERRIDE_MEDIUM_TPUT_MASK) \
-	CFG(CFG_DP_AFFN_OVERRIDE_HIGH_TPUT_MASK)
+	CFG(CFG_DP_AFFN_OVERRIDE_HIGH_TPUT_MASK) \
+	CFG_WCN_GOOGLE_MGMT
 
 #else
 #define CFG_DP_AFFN_OVERRIDE_MGMT

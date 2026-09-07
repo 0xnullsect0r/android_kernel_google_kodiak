@@ -64,6 +64,7 @@ typedef enum GlobalConfigField {
 	kWdevRegSize,
 	kIntsAddr,
 	kIntmAddr,
+	kRxPktTlvSize,
 	kDoorbellAddr,
 	kFwTrapAddr,
 } GlobalConfigField;
@@ -275,6 +276,7 @@ static inline void DumpMemoryMapGlobalConfigSection(MemoryMapHelper *helper)
 	MEMORY_MAP_SECTION_VALUE(NoaGlobalConfig, global_config, reg_size, PRIu32);
 	MEMORY_MAP_SECTION_VALUE(NoaGlobalConfig, global_config, ints_addr, PRIu32);
 	MEMORY_MAP_SECTION_VALUE(NoaGlobalConfig, global_config, intm_addr, PRIu32);
+	MEMORY_MAP_SECTION_VALUE(NoaGlobalConfig, global_config, rx_pkt_tlv_size, PRIu32);
 }
 
 static inline void DumpMemoryMapNepRingConfigSection(MemoryMapHelper *helper)
@@ -336,7 +338,7 @@ static inline void DumpMemoryMapStaInfoSection(MemoryMapHelper *helper)
 			bit_field_offset, sta_infos[i].encrypt_type, bit_field_offset + 4,
 			sta_infos[i].encap_type, bit_field_offset + 4 + 2, sta_infos[i].lmac_id);
 		MEMORY_MAP_SECTION_VALUE(NoaWlanStaInfo, &sta_infos[i], bmid, PRIu8);
-		bit_field_offset = offsetof(NoaWlanStaInfo, reserved1) + sizeof(uint8_t) * 2;
+		bit_field_offset = offsetof(NoaWlanStaInfo, fw_metadata) + sizeof(uint8_t) * 2;
 		WLAN_LOG_INFO(Shell, "(0x%08x) search_idx %d, (0x%08x) search_type %d\n",
 			      bit_field_offset, sta_infos[i].search_idx, bit_field_offset + 20,
 			      sta_infos[i].search_type);

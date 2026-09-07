@@ -9,7 +9,7 @@ if [ ! -f "${TARGET_BIN}" ]; then
 fi
 
 # Run readelf to verify architecture
-MACHINE=$(readelf -h "${TARGET_BIN}" | grep "Machine:" | awk '{print $2}')
+MACHINE=$(llvm-readelf -h "${TARGET_BIN}" | grep "Machine:" | awk '{print $2}')
 
 echo "Machine type detected: ${MACHINE}"
 
@@ -21,7 +21,7 @@ else
 fi
 
 # Ensure binary is statically linked (no program interpreter requested)
-if readelf -l "${TARGET_BIN}" | grep -q "program interpreter"; then
+if llvm-readelf -l "${TARGET_BIN}" | grep -q "program interpreter"; then
   echo "FAIL: Binary is dynamically linked (interpreter found)" >&2
   exit 1
 fi

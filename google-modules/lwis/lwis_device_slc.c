@@ -96,13 +96,13 @@ static int lwis_slc_register_io_locked(struct lwis_device *lwis_dev, struct lwis
 }
 
 static void print_logs_for_pt_matching_failure(struct lwis_slc_device *slc_dev,
-					       size_t requested_size_in_kb)
+					       uint64_t requested_size_in_kb)
 {
 	int i;
 
 	dev_err(slc_dev->io_dev.base_dev.dev,
-		"Failed to find valid partition, largest size supported is %zuKB, asking for %zuKB\n",
-		slc_dev->pt[slc_dev->num_pt - 1].size_kb, requested_size_in_kb);
+		"Failed to find valid partition, largest size supported is %zuKB, asking for %lluKB\n",
+		slc_dev->pt[slc_dev->num_pt - 1].size_kb, (unsigned long long)requested_size_in_kb);
 	for (i = 0; i < slc_dev->num_pt; i++) {
 		dev_err(slc_dev->io_dev.base_dev.dev, "Partition[%d]: size %zuKB is %s\n", i,
 			slc_dev->pt[i].size_kb,

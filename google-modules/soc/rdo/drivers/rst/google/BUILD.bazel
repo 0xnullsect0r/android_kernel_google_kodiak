@@ -2,12 +2,10 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -28,11 +26,19 @@ ddk_module(
     conditional_srcs = {
         "CONFIG_GOOGLE_CPM_RST": {
             True: [
-                "rst-cpm.c",
+                "rst-cpm-main.c",
+            ],
+        },
+        "CONFIG_SOC_MBU": {
+            True: [
+                "rst-cpm-mbu.c",
             ],
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
+    local_defines = [
+        "DYNAMIC_DEBUG_MODULE",
+    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",

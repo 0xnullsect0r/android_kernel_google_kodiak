@@ -267,6 +267,18 @@ struct lwis_device_event_state *lwis_device_event_state_find(struct lwis_device 
 							     int64_t event_id);
 
 /*
+ * lwis_device_event_state_find_locked: Looks through the provided device's
+ * event state list and tries to find a lwis_device_event_state object with the
+ * matching event_id. If not found, returns NULL
+ *
+ * Assumes: lwis_dev->lock is locked
+ * Alloc: No
+ * Returns: device event state object, if found, NULL otherwise
+ */
+struct lwis_device_event_state *lwis_device_event_state_find_locked(struct lwis_device *lwis_dev,
+								    int64_t event_id);
+
+/*
  * lwis_device_event_state_find_or_create: Looks through the provided device's
  * event state list and tries to find a lwis_device_event_state object with the
  * matching event_id. If not found, creates the object with 0 flags and adds it

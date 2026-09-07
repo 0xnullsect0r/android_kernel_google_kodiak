@@ -31,6 +31,7 @@
 #include <common/ring_id.h>
 #include <common/wlan_ring_id.h>
 #include <dhd_linux_priv.h>
+#include <dhd_msgbuf.h>
 
 #include "dhd_custom_google_noa_4390.h"
 #include "dhd_custom_google_noa_trace.h"
@@ -255,6 +256,8 @@ static int dhd_noa_manage_power(void *bus, bool acquire)
 	return 0;
 }
 
+static int dhd_noa_wlan_rx_handover(void *bus_priv);
+
 /* NOA driver used operation */
 static struct noa_wlan_client_ops noa_ops = {
 	.dump_ring = dhd_noa_dump_rings,
@@ -268,6 +271,7 @@ static struct noa_wlan_client_ops noa_ops = {
 	.sync_back_pci_dev_state = dhd_sync_back_pci_dev_state,
 #endif /* CONFIG_NOA_PCIE_SUPPORT */
 	.manage_power = dhd_noa_manage_power,
+	.rx_handover = dhd_noa_wlan_rx_handover,
 };
 
 #if IS_ENABLED(CONFIG_NOA_VPN_OFFLOAD_SUPPORT)
@@ -1114,6 +1118,7 @@ static void dhd_noa_wlan_notify_station_state(u8 state, void *src, int iflist_id
 
 /* physical plat_ops that is used at runtime. */
 struct platform_bus_ops *plat_ops;
+static int dhd_noa_wlan_rx_handover(void *bus_priv);
 /* This google bus ops will be used in google_plat.h directly */
 struct platform_bus_ops google_bus_ops = {
 	.init = dhd_noa_wlan_init,
@@ -1134,4 +1139,128 @@ struct platform_bus_ops google_bus_ops = {
 	.update_flowid_lkup_entry = dhd_noa_wlan_update_flowid_lkup_entry,
 	.sync_pci_link_state = dhd_noa_wlan_sync_pci_link_state,
 	.notify_station_state = dhd_noa_wlan_notify_station_state,
+	.rx_handover = dhd_noa_wlan_rx_handover,
 };
+
+static int dhd_noa_wlan_rx_handover(void *bus_priv)
+{
+	dhd_bus_t *bus = bus_priv;
+	dhd_pub_t *dhd = bus->dhd;
+	dhd_prot_t *prot = dhd->prot;
+	dhd_pktid_map_t *map = (dhd_pktid_map_t *)prot->pktid_rx_map;
+	struct noa_wlan_rx_handover_item *items = NULL;
+	struct noa_wlan_mapping_params params = {
+		.contiguous = true,
+		.tkid_in_use = true,
+		.pool_id = DHD_MAPPER_POOL_APC_RX,
+	};
+	u32 i, count = 0;
+	u32 active_count = 0;
+	size_t tbl_size;
+	u64 table_dpa_addr;
+	int ret = 0;
+
+	if (!client) {
+		pr_err("%s(): NULL client.\n", __func__);
+		return -ENODEV;
+	}
+
+	if (!map) {
+		pr_err("%s(): NULL rx pktid map.\n", __func__);
+		return -EINVAL;
+	}
+
+	// Count active lockers
+	for (i = 1; i <= map->items; i++) {
+		if (map->lockers[i].state == LOCKER_IS_BUSY) {
+			active_count++;
+		}
+	}
+
+	dev_info(client->dev, "%s: active rx buffers count = %u\n", __func__, active_count);
+
+	if (active_count == 0) {
+		dev_info(client->dev, "%s(): No active RX buffers to handover.\n", __func__);
+		return 0;
+	}
+
+	tbl_size = active_count * sizeof(struct noa_wlan_rx_handover_item);
+	items = kzalloc(tbl_size, GFP_KERNEL);
+	if (!items) {
+		return -ENOMEM;
+	}
+
+	// Scan, remap, and register in Host BM
+	for (i = 1; i <= map->items; i++) {
+		dhd_pktid_item_t *item = &map->lockers[i];
+		if (item->state == LOCKER_IS_BUSY) {
+			struct noa_wlan_rx_handover_item *dst = &items[count];
+			u64 pa = ((u64)PHYSADDRHI(item->pa) << 32) | PHYSADDRLO(item->pa);
+			unsigned long apc_va = (unsigned long)(PKTDATA(dhd->osh, item->pkt));
+			u32 len = item->len;
+			u64 dpa_addr;
+
+			pa -= WLAN_PKT_PAD;
+			len += WLAN_PKT_PAD;
+			apc_va -= WLAN_PKT_PAD;
+
+			params.cpu_addr = (void *)apc_va;
+			params.size = len;
+			params.tkid = i;
+
+			ret = noa_wlan_mapper_remap(client, &params, &dpa_addr);
+			if (ret) {
+				dev_err(client->dev, "%s(): Failed to remap buffer %d, err: %d\n", __func__, i, ret);
+				goto err_unmap_buffers;
+			}
+
+			ret = noa_wlan_bm_register(&client->vendor_rx_bm, i, len, dpa_addr);
+			if (ret) {
+				dev_err(client->dev, "%s(): Failed to register buffer %d in bm, err: %d\n", __func__, i, ret);
+				noa_wlan_mapper_unmap_by_tkid(client, DHD_MAPPER_POOL_APC_RX, i);
+				goto err_unmap_buffers;
+			}
+
+			dst->tkid = i;
+			dst->buf_size = len;
+			dst->host_pa = pa;
+			dst->dpa_addr = dpa_addr;
+
+			count++;
+		}
+	}
+
+	// Map the table itself
+	struct noa_wlan_mapping_params tbl_map_params = {
+		.cpu_addr = items,
+		.size = tbl_size,
+		.contiguous = true,
+		.tkid_in_use = false,
+	};
+	ret = noa_wlan_mapper_remap(client, &tbl_map_params, &table_dpa_addr);
+	if (ret) {
+		dev_err(client->dev, "%s(): Failed to map handover table, err: %d\n", __func__, ret);
+		goto err_unmap_buffers;
+	}
+
+	// Send RPC
+	ret = noa_wlan_fw_rx_handover_sync(client, table_dpa_addr, count);
+	if (ret) {
+		dev_err(client->dev, "%s(): Handover RPC failed, err: %d\n", __func__, ret);
+		noa_wlan_mapper_unmap_by_addr(client, items);
+		goto err_unmap_buffers;
+	}
+
+	// Immediately unmap the table
+	noa_wlan_mapper_unmap_by_addr(client, items);
+	kfree(items);
+	return 0;
+
+err_unmap_buffers:
+	for (i = 0; i < count; i++) {
+		noa_wlan_mapper_unmap_by_tkid(client, DHD_MAPPER_POOL_APC_RX, items[i].tkid);
+		noa_wlan_bm_remove(&client->vendor_rx_bm, items[i].tkid);
+	}
+	kfree(items);
+	return ret;
+}

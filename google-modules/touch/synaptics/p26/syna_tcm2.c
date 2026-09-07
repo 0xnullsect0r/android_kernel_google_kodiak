@@ -2335,6 +2335,11 @@ static int syna_dev_process_events(const unsigned char code,
 		return -EINVAL;
 	}
 
+	/* If interrupts are disabled, top-half ISR didn't run. Use current time. */
+	if (tcm->hw_if && !tcm->hw_if->bdata_attn.irq_enabled) {
+		tcm->timestamp = ktime_get();
+	}
+
 	/* not report to input device subsystem if the cdev interface is in used */
 	if ((tcm->char_dev_ref_count > 0) && !tcm->concurrent_reporting)
 		return 0;

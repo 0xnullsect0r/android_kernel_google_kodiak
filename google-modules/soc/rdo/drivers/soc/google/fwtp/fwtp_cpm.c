@@ -134,7 +134,7 @@ static int fwtp_cpm_subscribe(struct fwtp_dev *fwtp_dev, bool subscribe)
 
 	/* Subscribe or unsubscribe to the tracepoint rings. */
 	err = fwtp_ipc_client_subscribe(&(fwtp_dev->fwtp_ipc_client), subscribe,
-					FWTP_CPM_NOTIFY_BYTE_COUNT);
+					fwtp_dev->notify_byte_count);
 	if (err != kFwtpOk)
 		return -EIO;
 
@@ -268,6 +268,7 @@ static void fwtp_cpm_printer_post_process(
 	uint8_t *p_starting_next_data_item;
 	u32 data;
 	int data_item_size;
+	u64 boottime_timestamp;
 
 	/*
 	 * Pass the tracepoint string and data item to the CPM tracepoint
@@ -277,8 +278,11 @@ static void fwtp_cpm_printer_post_process(
 	data = 0;
 	data_item_size =
 		fwtp_get_next_data_item(data_items, &data, sizeof(data));
-	if (data_item_size > 0)
-		cpm_tracepoint_decode(str_id, data, timestamp);
+	if (data_item_size > 0) {
+		boottime_timestamp = fwtp_dev_get_boottime_timestamp(
+			timestamp, printer_ctx->timestamp_hz);
+		cpm_tracepoint_decode(str_id, data, boottime_timestamp);
+	}
 	data_items->p_next_data_item = p_starting_next_data_item;
 
 	/* Continue post-processing the tracepoint. */
@@ -563,6 +567,7 @@ static int fwtp_cpm_init_dev(struct fwtp_cpm_dev *fwtp_cpm_dev,
 	fwtp_dev->fwtp_ipc_client.string_table_num = string_table_num;
 	fwtp_dev->printer_ctx.name = tracepoint_name;
 	fwtp_dev->ftrace_enabled = true;
+	fwtp_dev->notify_byte_count = FWTP_CPM_NOTIFY_BYTE_COUNT;
 	ret = fwtp_dev_init(fwtp_dev);
 	if (ret) {
 		dev_err(fwtp_dev->dev,
@@ -670,7 +675,7 @@ static int fwtp_cpm_init_dev_list(struct fwtp_cpm_dev *fwtp_cpm_dev)
 						TRACEPOINT_REQUEST_VFA_DRAM,
 						CPM_STRING_TABLE_VFA);
 		} else {
-			dev_warn(dev, "Sub-device name %s unregognized.\n",
+			dev_warn(dev, "Sub-device name %s unrecognized.\n",
 				 sub_dev_name);
 			ret = 0;
 		}
@@ -740,10 +745,10 @@ static int fwtp_cpm_probe(struct platform_device *pdev)
 	}
 
 	/* Get DMA memory. */
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
 	if (ret) {
 		dev_err(dev,
-			"Failed to set DMA mask to 32 bits with error %d.\n",
+			"Failed to set DMA mask to 36 bits with error %d.\n",
 			ret);
 		goto out;
 	}

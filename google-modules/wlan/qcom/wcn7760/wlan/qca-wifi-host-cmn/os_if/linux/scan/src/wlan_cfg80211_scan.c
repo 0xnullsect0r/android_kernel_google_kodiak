@@ -49,6 +49,7 @@
 #include "wlan_p2p_ucfg_api.h"
 #endif
 #include "wlan_pmo_ucfg_api.h"
+#include <wlan_cm_api.h>
 
 #define INVALID_LINK_ID 255
 
@@ -590,11 +591,11 @@ int wlan_cfg80211_sched_scan_start(struct wlan_objmgr_vdev *vdev,
 	if (ucfg_ie_allowlist_enabled(psoc, vdev))
 		ucfg_copy_ie_allowlist_attrs(psoc, &req->ie_allowlist);
 
-	osif_debug("Network count %d n_ssids %d fast_scan_period: %d msec slow_scan_period: %d msec, fast_scan_max_cycles: %d, relative_rssi %d band_pref %d, rssi_pref %d",
-		   req->networks_cnt, request->n_ssids, req->fast_scan_period,
-		   req->slow_scan_period, req->fast_scan_max_cycles,
-		   req->relative_rssi, req->band_rssi_pref.band,
-		   req->band_rssi_pref.rssi);
+	osif_debug("vdev %d Network count %d n_ssids %d fast_scan_period: %d msec slow_scan_period: %d msec, fast_scan_max_cycles: %d, relative_rssi %d band_pref %d, rssi_pref %d",
+		   req->vdev_id, req->networks_cnt, request->n_ssids,
+		   req->fast_scan_period, req->slow_scan_period,
+		   req->fast_scan_max_cycles, req->relative_rssi,
+		   req->band_rssi_pref.band, req->band_rssi_pref.rssi);
 
 	for (i = 0; i < req->networks_cnt; i++)
 		osif_debug("[%d] ssid: " QDF_SSID_FMT ", RSSI th %d bc NW type %u",
@@ -620,6 +621,7 @@ int wlan_cfg80211_sched_scan_stop(struct wlan_objmgr_vdev *vdev)
 {
 	QDF_STATUS status;
 
+	osif_debug("vdev %d", wlan_vdev_get_id(vdev));
 	status = ucfg_scan_pno_stop(vdev);
 	if (QDF_IS_STATUS_ERROR(status))
 		osif_debug("Failed to disable PNO");
@@ -1209,6 +1211,15 @@ static void wlan_cfg80211_scan_done_callback(
 		       util_scan_get_ev_type_name(event->type), event->type,
 		       util_scan_get_ev_reason_name(event->reason),
 		       event->reason, unique_bss_count);
+
+	/*
+	 * Update assoc_state for all connected STA links (MLO and non-MLO)
+	 * to prevent scan entries from aging out after CSA events. Only
+	 * needed when scan found at least one BSS entry.
+	 */
+	if (unique_bss_count)
+		wlan_cm_update_all_sta_links_assoc_state(pdev);
+
 allow_suspend:
 	qdf_mutex_acquire(&osif_priv->osif_scan->scan_req_q_lock);
 	if (qdf_list_empty(&osif_priv->osif_scan->scan_req_q)) {

@@ -88,6 +88,7 @@ struct dw8250_data {
 
 	unsigned int		skip_autocfg:1;
 	unsigned int		uart_16550_compatible:1;
+	unsigned int		defer_pinctrl:1;
 
 	unsigned long		flags;
 	struct semaphore	aoss_ssr_lock;
@@ -591,6 +592,12 @@ static void dw8250_set_termios(struct uart_port *p, struct ktermios *termios,
 	}
 
 	google_dw8250_do_set_termios(p, termios, old);
+
+	if (d->defer_pinctrl) {
+		ret = pinctrl_pm_select_default_state(p->dev);
+		if (ret)
+			dev_err(p->dev, "failed to configure pins: %d\n", ret);
+	}
 }
 
 static void dw8250_set_ldisc(struct uart_port *p, struct ktermios *termios)
@@ -803,6 +810,8 @@ static int dw8250_probe(struct platform_device *pdev)
 
 	data->uart_16550_compatible = device_property_read_bool(dev,
 						"snps,uart-16550-compatible");
+	data->defer_pinctrl = device_property_read_bool(dev,
+						"google,defer-pinctrl-to-termios");
 
 	err = device_property_read_u32(dev, "reg-shift", &val);
 	if (!err)
@@ -1087,9 +1096,11 @@ static int dw8250_runtime_resume(struct device *dev)
 	if (res)
 		goto err_reset;
 
-	res = pinctrl_pm_select_default_state(dev);
-	if (res)
-		goto err_pinctrl;
+	if (!data->defer_pinctrl) {
+		res = pinctrl_pm_select_default_state(dev);
+		if (res)
+			goto err_pinctrl;
+	}
 
 	enable_irq(up->port.irq);
 

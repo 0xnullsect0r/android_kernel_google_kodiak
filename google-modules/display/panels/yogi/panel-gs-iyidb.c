@@ -492,6 +492,10 @@ static const struct gs_dsi_cmd iyidb_init_cmds[] = {
 	/* b/516652338: HBM display off flashing improvement set */
 	GS_DSI_QUEUE_CMD(0xB0, 0x00, 0x09, 0xF4),
 	GS_DSI_QUEUE_CMD(0xF4, 0x00, 0x02, 0x02, 0x02),
+
+	/* b/498721617: Halo flicker improvement set */
+	GS_DSI_QUEUE_CMD(0xB0, 0x00, 0x31, 0xA3),
+	GS_DSI_QUEUE_CMD(0xA3, 0x04, 0x04, 0x04),
 	GS_DSI_FLUSH_CMDLIST(test_key_disable),
 };
 static DEFINE_GS_CMDSET(iyidb_init);
@@ -1662,6 +1666,7 @@ static void iyidb_set_panel_feat(struct gs_panel *ctx, const struct gs_panel_mod
 		return;
 	}
 
+	ctx->panel_settings_changed = true;
 	snprintf(trace_msg, sizeof(trace_msg),
 		 "feat: hbm=%u irc=%u ns=%u h_pwm=%u fi=%u@a,%u@m ee=%u rr=%3u-%3u@%3u",
 		 test_bit(FEAT_HBM, feat), irc_mode, test_bit(FEAT_OP_NS, feat),
@@ -2254,6 +2259,32 @@ static bool iyidb_set_self_refresh(struct gs_panel *ctx, bool enable)
 	return false;
 }
 
+static void iyidb_self_test(struct gs_panel *ctx)
+{
+	struct device *dev = ctx->dev;
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	int ret, i;
+	/* Refer to go/iyidb-self-test-regs */
+	static const u8 self_test_regs[] = { MIPI_DCS_GET_POWER_MODE, MIPI_DCS_GET_SIGNAL_MODE,
+					     MIPI_DCS_GET_DIAGNOSTIC_RESULT };
+	u8 self_test_reg_values[ARRAY_SIZE(self_test_regs)] = { 0 };
+
+	PANEL_ATRACE_BEGIN(__func__);
+
+	for (i = 0; i < ARRAY_SIZE(self_test_regs); i++) {
+		ret = mipi_dsi_dcs_read(dsi, self_test_regs[i], &self_test_reg_values[i], 1);
+		if (ret < 0)
+			dev_err(dev, "Failed to read self test reg 0x%02x (%d)\n",
+				self_test_regs[i], ret);
+		PANEL_ATRACE_INSTANT("self_test: 0x%02x (0x%02x)", self_test_regs[i],
+				     self_test_reg_values[i]);
+	}
+	dev_info(dev, "self test: power(0x%02x) signal(0x%02x) diagnostic(0x%02x)\n",
+		 self_test_reg_values[0], self_test_reg_values[1], self_test_reg_values[2]);
+
+	PANEL_ATRACE_END(__func__);
+}
+
 static void iyidb_commit_done(struct gs_panel *ctx)
 {
 	struct iyidb_panel *spanel = to_spanel(ctx);
@@ -2497,6 +2528,8 @@ re_try:
 	GS_DCS_WRITE_CMD(dev, MIPI_DCS_SET_DISPLAY_ON);
 
 	ctx->dsi_hs_clk_mbps = MIPI_DSI_FREQ_DEFAULT;
+
+	iyidb_self_test(ctx);
 
 	PANEL_ATRACE_END(__func__);
 
@@ -2816,4 +2849,3 @@ module_mipi_dsi_driver(gs_panel_driver);
 MODULE_AUTHOR("Hung-Yeh Lee <hungyeh@google.com>");
 MODULE_DESCRIPTION("MIPI-DSI based Google iyidb panel driver");
 MODULE_LICENSE("Dual MIT/GPL");
-

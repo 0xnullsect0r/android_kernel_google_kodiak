@@ -64,6 +64,7 @@
 				batoilo_wlc_trig_lvl = <5400>;
 				batoilo2_wlc_trig_lvl = <7000>;
 				batoilo_trig_lvl = <5800>;
+				batoilo_usb_trig_lvl = <5400>;
 				batoilo2_trig_lvl = <7000>;
 				batoilo_bat_open_to = <0x0>;    /* Disable BATFET open */
 				batoilo2_bat_open_to = <0x6>;   /* 21ms */

@@ -424,6 +424,7 @@ void *lwis_allocator_allocate(struct lwis_device *lwis_dev, size_t size, gfp_t g
 		block->req_size = size;
 		block->next = NULL;
 		block->prev = NULL;
+		block->in_use = true;
 		block->ptr = kvmalloc(size, gfp_flags);
 		if (block->ptr == NULL) {
 			kfree(block);
@@ -447,6 +448,7 @@ void *lwis_allocator_allocate(struct lwis_device *lwis_dev, size_t size, gfp_t g
 	block = allocator_free_block_get_locked(block_pool);
 	if (block != NULL) {
 		block->req_size = size;
+		block->in_use = true;
 		spin_unlock_irqrestore(&lwis_dev->allocator_lock, flags);
 		if (gfp_flags & __GFP_ZERO)
 			memset(block->ptr, 0, size);
@@ -464,6 +466,7 @@ void *lwis_allocator_allocate(struct lwis_device *lwis_dev, size_t size, gfp_t g
 	block->req_size = size;
 	block->next = NULL;
 	block->prev = NULL;
+	block->in_use = true;
 	block_size = 1 << idx;
 	block->ptr = kvmalloc(block_size, gfp_flags);
 	if (block->ptr == NULL) {
@@ -515,6 +518,13 @@ void lwis_allocator_free(struct lwis_device *lwis_dev, void *ptr)
 		spin_unlock_irqrestore(&lwis_dev->allocator_lock, flags);
 		return;
 	}
+
+	if (!block->in_use) {
+		dev_err(lwis_dev->dev, "Allocator double free detected for ptr %p\n", ptr);
+		spin_unlock_irqrestore(&lwis_dev->allocator_lock, flags);
+		return;
+	}
+	block->in_use = false;
 
 	if (block->type > LWIS_MAX_SLAB_IDX) {
 		struct lwis_allocator_block *b;

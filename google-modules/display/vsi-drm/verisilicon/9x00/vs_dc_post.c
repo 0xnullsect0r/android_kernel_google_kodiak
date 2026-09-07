@@ -766,15 +766,15 @@ static void vs_dc_enable(struct device *dev, struct drm_crtc *crtc,
 	/* enable configuration programming flag */
 	dc_hw_config_display_status(&dc->hw, vs_crtc->id, true);
 
-	dc_hw_enable_frame_irqs(&dc->hw, vs_crtc->id, true);
-	if (!is_underrun_wa_needed(dc, &dc->hw.display[vs_crtc->id]))
-		dc_hw_enable_underrun_interrupt(&dc->hw, vs_crtc->id, true);
 	dc_hw_enable_shadow_register(&dc->hw, display_id, false);
 
 	/* Serialize with vblank irq enable to prevent race condition */
 	spin_lock_irqsave(&vs_crtc->vblank_enable_lock, flags);
 	vs_dc_display_set_mode(dev, crtc, state);
 	spin_unlock_irqrestore(&vs_crtc->vblank_enable_lock, flags);
+	dc_hw_enable_frame_irqs(&dc->hw, vs_crtc->id, true);
+	if (!is_underrun_wa_needed(dc, &dc->hw.display[vs_crtc->id]))
+		dc_hw_enable_underrun_interrupt(&dc->hw, vs_crtc->id, true);
 
 	vs_qos_set_qos_config(dev, crtc);
 
@@ -1352,130 +1352,104 @@ end:
 	return 0;
 }
 
-static int check_sram_pool_dma_size(const struct vs_dc *dc, struct drm_crtc *crtc,
-				    struct drm_crtc_state *crtc_state)
-{
-	struct device *dev = dc->hw.dev;
-	struct drm_plane *plane;
-	const struct drm_plane_state *plane_state;
-	struct vs_plane_state *vs_plane_state;
-	struct vs_plane *vs_plane;
-	struct vs_plane_info *vs_plane_info;
-	const struct vs_dc_info *dc_info = dc->hw.info;
-	u32 fe0_dma_sram_used = 0;
-	u32 fe1_dma_sram_used = 0;
-	u32 fe0_dma_sram_size = dc_info->fe0_dma_sram_size << 10;
-	u32 fe1_dma_sram_size = dc_info->fe1_dma_sram_size << 10;
-
-	/* accumulate dma sram pool usage */
-	drm_atomic_crtc_state_for_each_plane_state(plane, plane_state, crtc_state) {
-		vs_plane_state = to_vs_plane_state(plane_state);
-		vs_plane = to_vs_plane(plane);
-		vs_plane_info = get_plane_info(vs_plane->id, dc->hw.info);
-
-		if (!vs_plane_info->dma_sram_max_size_kb)
-			continue;
-
-		if (vs_plane_info->fe_id == VS_FE_NONE)
-			continue;
-
-		if (vs_plane_info->fe_id == VS_FE_0)
-			fe0_dma_sram_used += vs_plane_state->dma_sram_size;
-		else if (vs_plane_info->fe_id == VS_FE_1)
-			fe1_dma_sram_used += vs_plane_state->dma_sram_size;
-
-		dev_dbg(dev, "%s: plane id %d fe id %d dma_sram_size %u\n", __func__,
-			vs_plane_info->id, vs_plane_info->fe_id, vs_plane_state->dma_sram_size);
-	}
-
-	/* check against FE0 maximum supported */
-	if (fe0_dma_sram_used > fe0_dma_sram_size) {
-		dev_err(dev, "%s: SRAM DMA FE[0] exceeded allocation (%u > %u)\n", __func__,
-			fe0_dma_sram_used, fe0_dma_sram_size);
-		return -ENOMEM;
-	}
-
-	/* check against FE1 maximum supported */
-	if (fe1_dma_sram_used > fe1_dma_sram_size) {
-		dev_err(dev, "%s: SRAM DMA FE[1] exceeded allocation (%u > %u)\n", __func__,
-			fe1_dma_sram_used, fe1_dma_sram_size);
-		return -ENOMEM;
-	}
-
-	dev_dbg(dev, "%s: SRAM DMA used FE[0] %u FE[1] %u)", __func__, fe0_dma_sram_used,
-		fe1_dma_sram_used);
-
-	return 0;
-}
-
-static int check_sram_pool_scl_size(const struct vs_dc *dc, struct drm_crtc *crtc,
-				    struct drm_crtc_state *crtc_state)
-{
-	struct device *dev = dc->hw.dev;
-	struct drm_plane *plane;
-	const struct drm_plane_state *plane_state;
-	struct vs_plane_state *vs_plane_state;
-	struct vs_plane *vs_plane;
-	struct vs_plane_info *vs_plane_info;
-	const struct vs_dc_info *dc_info = dc->hw.info;
-	u32 fe0_scl_sram_used = 0;
-	u32 fe1_scl_sram_used = 0;
-	u32 fe0_scl_sram_size = dc_info->fe0_scl_sram_size << 10;
-	u32 fe1_scl_sram_size = dc_info->fe1_scl_sram_size << 10;
-
-	/* accumulate scl sram pool usage */
-	drm_atomic_crtc_state_for_each_plane_state(plane, plane_state, crtc_state) {
-		vs_plane_state = to_vs_plane_state(plane_state);
-		vs_plane = to_vs_plane(plane);
-		vs_plane_info = get_plane_info(vs_plane->id, dc->hw.info);
-
-		if (!vs_plane_info->scl_sram_max_size_kb)
-			continue;
-
-		if (vs_plane_info->fe_id == VS_FE_NONE)
-			continue;
-
-		if (vs_plane_info->fe_id == VS_FE_0)
-			fe0_scl_sram_used += vs_plane_state->scl_sram_size;
-		else if (vs_plane_info->fe_id == VS_FE_1)
-			fe1_scl_sram_used += vs_plane_state->scl_sram_size;
-
-		dev_dbg(dev, "%s: plane id %d fe id %d scl_sram_size %u\n", __func__,
-			vs_plane_info->id, vs_plane_info->fe_id, vs_plane_state->scl_sram_size);
-	}
-
-	/* check against FE0 maximum supported */
-	if (fe0_scl_sram_used > fe0_scl_sram_size) {
-		dev_err(dev, "%s: SRAM SCL FE[0] exceeded allocation (%u > %u)\n", __func__,
-			fe0_scl_sram_used, fe0_scl_sram_size);
-		return -ENOMEM;
-	}
-
-	/* check against FE1 maximum supported */
-	if (fe1_scl_sram_used > fe1_scl_sram_size) {
-		dev_err(dev, "%s: SRAM SCL FE[1] exceeded allocation (%u > %u)\n", __func__,
-			fe1_scl_sram_used, fe1_scl_sram_size);
-		return -ENOMEM;
-	}
-
-	dev_dbg(dev, "%s: SRAM SCL used FE[0] %u, FE[1] %u)", __func__, fe0_scl_sram_used,
-		fe1_scl_sram_used);
-
-	return 0;
-}
-
 static int check_sram_pool(const struct vs_dc *dc, struct drm_crtc *crtc,
 			   struct drm_crtc_state *crtc_state)
 {
-	int ret;
+	int i;
+	struct drm_atomic_state *state = crtc_state->state;
+	struct drm_private_state *priv_state;
+	struct vs_drm_private *priv = dc->drm_dev->dev_private;
+	struct vs_drm_private_state *vs_priv_state;
+	struct drm_plane *plane;
+	struct drm_plane_state *old_plane_state, *new_plane_state;
+	int fe0_dma_sram_delta = 0, fe1_dma_sram_delta = 0;
+	int fe0_scl_sram_delta = 0, fe1_scl_sram_delta = 0;
 
-	ret = check_sram_pool_dma_size(dc, crtc, crtc_state);
-	if (ret)
-		return ret;
+	for_each_oldnew_plane_in_state(state, plane, old_plane_state, new_plane_state, i) {
+		struct vs_plane_state *vs_old = to_vs_plane_state(old_plane_state);
+		struct vs_plane_state *vs_new = to_vs_plane_state(new_plane_state);
+		struct vs_plane_info *info = get_plane_info(to_vs_plane(plane)->id, dc->hw.info);
 
-	ret = check_sram_pool_scl_size(dc, crtc, crtc_state);
-	if (ret)
-		return ret;
+		if (!info || info->fe_id == VS_FE_NONE)
+			continue;
+
+		/* Only process planes related to this CRTC to avoid double counting */
+		if (old_plane_state->crtc != crtc && new_plane_state->crtc != crtc)
+			continue;
+
+		/* Remove old allocations from the pool */
+		if (old_plane_state->visible && old_plane_state->crtc == crtc) {
+			if (info->fe_id == VS_FE_0) {
+				fe0_dma_sram_delta -= vs_old->dma_sram_size;
+				fe0_scl_sram_delta -= vs_old->scl_sram_size;
+			} else if (info->fe_id == VS_FE_1) {
+				fe1_dma_sram_delta -= vs_old->dma_sram_size;
+				fe1_scl_sram_delta -= vs_old->scl_sram_size;
+			}
+		}
+
+		/* Add new allocations to the pool */
+		if (new_plane_state->visible && new_plane_state->crtc == crtc) {
+			if (info->fe_id == VS_FE_0) {
+				fe0_dma_sram_delta += vs_new->dma_sram_size;
+				fe0_scl_sram_delta += vs_new->scl_sram_size;
+			} else if (info->fe_id == VS_FE_1) {
+				fe1_dma_sram_delta += vs_new->dma_sram_size;
+				fe1_scl_sram_delta += vs_new->scl_sram_size;
+			}
+		}
+
+		dev_dbg(dc->hw.dev,
+			"[%s] SRAM plane id %d fe_id %d visible(old:%d new:%d) DMA (old:%u new:%u) SCL (old:%u new:%u)\n",
+			crtc->name, info->id, info->fe_id, old_plane_state->visible,
+			new_plane_state->visible, vs_old->dma_sram_size, vs_new->dma_sram_size,
+			vs_old->scl_sram_size, vs_new->scl_sram_size);
+
+		dev_dbg(dc->hw.dev,
+			"[%s] SRAM DMA delta FE[0] %d FE[1] %d, SCL delta FE[0] %d FE[1] %d\n",
+			crtc->name, fe0_dma_sram_delta, fe1_dma_sram_delta, fe0_scl_sram_delta,
+			fe1_scl_sram_delta);
+	}
+
+	if (!fe0_dma_sram_delta && !fe1_dma_sram_delta && !fe0_scl_sram_delta &&
+	    !fe1_scl_sram_delta)
+		return 0;
+
+	/* Only retrieve the private state (implies capturing the object lock) */
+	priv_state = drm_atomic_get_private_obj_state(state, &priv->private_state_obj);
+	if (IS_ERR(priv_state))
+		return PTR_ERR(priv_state);
+
+	vs_priv_state = to_vs_drm_private_state(priv_state);
+	vs_priv_state->fe0_dma_sram_used += fe0_dma_sram_delta;
+	vs_priv_state->fe1_dma_sram_used += fe1_dma_sram_delta;
+	vs_priv_state->fe0_scl_sram_used += fe0_scl_sram_delta;
+	vs_priv_state->fe1_scl_sram_used += fe1_scl_sram_delta;
+
+	dev_dbg(dc->hw.dev, "[%s] SRAM DMA used FE[0] %u FE[1] %u, SCL used FE[0] %u FE[1] %u\n",
+		crtc->name, vs_priv_state->fe0_dma_sram_used, vs_priv_state->fe1_dma_sram_used,
+		vs_priv_state->fe0_scl_sram_used, vs_priv_state->fe1_scl_sram_used);
+
+	/* Globally validate limits */
+	if (vs_priv_state->fe0_dma_sram_used > (dc->hw.info->fe0_dma_sram_size << 10)) {
+		dev_err(dc->hw.dev, "[%s] SRAM DMA FE[0] exceeded allocation\n", crtc->name);
+		return -ENOMEM;
+	}
+
+	if (vs_priv_state->fe1_dma_sram_used > (dc->hw.info->fe1_dma_sram_size << 10)) {
+		dev_err(dc->hw.dev, "[%s] SRAM DMA FE[1] exceeded allocation\n", crtc->name);
+		return -ENOMEM;
+	}
+
+	if (vs_priv_state->fe0_scl_sram_used > (dc->hw.info->fe0_scl_sram_size << 10)) {
+		dev_err(dc->hw.dev, "[%s] SRAM SCL FE[0] exceeded allocation\n", crtc->name);
+		return -ENOMEM;
+	}
+
+	if (vs_priv_state->fe1_scl_sram_used > (dc->hw.info->fe1_scl_sram_size << 10)) {
+		dev_err(dc->hw.dev, "[%s] SRAM SCL FE[1] exceeded allocation\n", crtc->name);
+		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -1727,17 +1701,18 @@ static void dc_wait_earliest_process_time(struct drm_crtc *crtc, struct drm_atom
 }
 
 /**
- * dc_wait_for_prev_commit_done_on_plane_swap() - Waits for pending frames on plane swap.
+ * dc_wait_for_prev_commit_done() - Waits for pending frames to complete.
  * @dev: The device structure.
  * @crtc: The DRM CRTC object.
  * @state: The DRM atomic state.
  *
- * This function checks if a plane is being swapped to the given CRTC. If a
- * plane swap is detected and there are frames pending on the CRTC, it waits
- * for the pending frames to complete.
+ * This function checks if a plane is being swapped or if the secure state
+ * of an active plane is being enabled. If either condition is detected and
+ * there are frames pending on the CRTC, it waits for the pending frames
+ * to complete before returning.
  */
-static void dc_wait_for_prev_commit_done_on_plane_swap(struct device *dev, struct drm_crtc *crtc,
-							struct drm_atomic_state *state)
+static void dc_wait_for_prev_commit_done(struct device *dev, struct drm_crtc *crtc,
+					 struct drm_atomic_state *state)
 {
 	int ret;
 	struct vs_dc *dc = dev_get_drvdata(dev);
@@ -1746,32 +1721,41 @@ static void dc_wait_for_prev_commit_done_on_plane_swap(struct device *dev, struc
 	const struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state, crtc);
 	const struct drm_crtc_state *new_crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 	const struct vs_crtc_state *vs_new_crtc_state = to_vs_crtc_state(new_crtc_state);
+	u32 swapped_plane_mask, enabling_secure_mask;
 
-	if (old_crtc_state && vs_new_crtc_state->swapped_plane_mask &&
-	    atomic_read(&vs_crtc->frames_pending) > 0) {
-		DPU_ATRACE_BEGIN(__func__);
-		trace_disp_commit_wait_begin(display_id, old_crtc_state->plane_mask,
-					     new_crtc_state->plane_mask,
-					     vs_new_crtc_state->swapped_plane_mask,
-					     atomic_read(&vs_crtc->frames_pending));
-		dev_dbg(dev,
-			"plane_swap: wait for pending frame on display-%d, plane_mask %#x %#x, swapped_plane_mask %#x, frames_pending %d\n",
-			display_id, old_crtc_state->plane_mask, new_crtc_state->plane_mask,
-			vs_new_crtc_state->swapped_plane_mask,
-			atomic_read(&vs_crtc->frames_pending));
+	if (!old_crtc_state)
+		return;
 
-		ret = wait_event_timeout(vs_crtc->framedone_waitq,
-					 atomic_read(&vs_crtc->frames_pending) == 0,
-					 msecs_to_jiffies(100));
-		if (!ret)
-			dev_warn(dev, "plane_swap: display-%d timed out waiting for frame done\n",
-				 display_id);
-		trace_disp_commit_wait_done(display_id, old_crtc_state->plane_mask,
-					    new_crtc_state->plane_mask,
-					    vs_new_crtc_state->swapped_plane_mask,
-					    atomic_read(&vs_crtc->frames_pending));
-		DPU_ATRACE_END(__func__);
-	}
+	/* Only wait when there is a plane swap or an active plane enabling secure */
+	swapped_plane_mask = vs_new_crtc_state->swapped_plane_mask;
+	enabling_secure_mask = vs_crtc_state_active_planes_enabling_secure_mask(old_crtc_state,
+										new_crtc_state);
+	if (!(swapped_plane_mask || enabling_secure_mask))
+		return;
+
+	/* Only wait if there is at least one pending frame */
+	if (atomic_read(&vs_crtc->frames_pending) <= 0)
+		return;
+
+	DPU_ATRACE_BEGIN(__func__);
+	trace_disp_commit_wait_begin(display_id, swapped_plane_mask, enabling_secure_mask,
+				     atomic_read(&vs_crtc->frames_pending));
+
+	dev_dbg(dev,
+		"wait for pending frame on display-%d, swapped_plane_mask %#x, enabling_secure_mask %#x, frames_pending %d\n",
+		display_id, swapped_plane_mask, enabling_secure_mask,
+		atomic_read(&vs_crtc->frames_pending));
+
+	ret = wait_event_timeout(vs_crtc->framedone_waitq,
+				 atomic_read(&vs_crtc->frames_pending) == 0, msecs_to_jiffies(100));
+	if (!ret)
+		dev_warn(dev,
+			"display-%d timed out waiting for frame done (swapped_plane_mask %#x, enabling_secure_mask %#x)\n",
+			display_id, swapped_plane_mask, enabling_secure_mask);
+
+	trace_disp_commit_wait_done(display_id, swapped_plane_mask, enabling_secure_mask,
+				    atomic_read(&vs_crtc->frames_pending));
+	DPU_ATRACE_END(__func__);
 }
 
 static void vs_dc_commit(struct device *dev, struct drm_crtc *crtc, struct drm_atomic_state *state)
@@ -1814,8 +1798,11 @@ static void vs_dc_commit(struct device *dev, struct drm_crtc *crtc, struct drm_a
 	dc_hw_wb_commit(&dc->hw, display_id);
 
 	/* Program non-shadow features */
-	dc_wait_for_prev_commit_done_on_plane_swap(dev, crtc, state);
+	dc_wait_for_prev_commit_done(dev, crtc, state);
 	dc_hw_plane_commit_non_shadow(&dc->hw, display_id);
+
+	/* Only update secure bit here if it is being enabled */
+	dc_hw_plane_set_secure_bits(&dc->hw, display_id, true);
 
 	dc_hw_enable_shadow_register(&dc->hw, display_id, true);
 
@@ -2699,13 +2686,34 @@ static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 		       dc_info->urgent_vid_config, sizeof(*dc_info->urgent_vid_config));
 	}
 
+	dc->display_debugfs[display_id] = dentry_display;
+
 	return 0;
+}
+
+static void vs_dc_display_debugfs_deinit(struct vs_dc *dc)
+{
+	const struct vs_dc_info *dc_info = dc->hw.info;
+	int i;
+
+	for (i = 0; i < dc_info->display_num; i++) {
+		int hw_id = dc_info->displays[i].id;
+
+		if (dc->display_debugfs[hw_id]) {
+			debugfs_remove_recursive(dc->display_debugfs[hw_id]);
+			dc->display_debugfs[hw_id] = NULL;
+		}
+	}
 }
 #else
 static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 				      const struct vs_dc_info *dc_info, int display_id)
 {
 	return 0;
+}
+
+static void vs_dc_display_debugfs_deinit(struct vs_dc *dc)
+{
 }
 #endif /* CONFIG_DEBUG_FS */
 
@@ -2880,16 +2888,13 @@ err_cleanup_crtcs:
 
 static void be_unbind(struct device *dev, struct device *master, void *data)
 {
-	struct drm_device *drm_dev = data;
-	struct drm_crtc *drm_crtc = data;
 	struct vs_dc *dc = dev_get_drvdata(dev);
 
 	dc_component_disable_irqs(dev, &dc->be_irq_info);
 
 	dc_be_hw_deinit(&dc->hw);
 
-	drm_for_each_crtc(drm_crtc, drm_dev)
-		vs_crtc_destroy(drm_crtc);
+	vs_dc_display_debugfs_deinit(dc);
 }
 
 static const struct component_ops be_component_ops = {
@@ -2914,12 +2919,26 @@ static int dc_be_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
 
-	return component_add(dev, &be_component_ops);
+	ret = dc_component_grab_handoff_vote(dev, &dc->be_handoff_vote);
+	if (ret)
+		return ret;
+
+	ret = component_add(dev, &be_component_ops);
+	if (ret) {
+		dc_component_release_handoff_vote(dev, &dc->be_handoff_vote);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void dc_be_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+
+	if (dc && dc->be_handoff_vote)
+		dc_component_release_handoff_vote(dev, &dc->be_handoff_vote);
 
 	component_del(dev, &be_component_ops);
 
@@ -3061,10 +3080,18 @@ err_cleanup_planes:
 
 static void wb_unbind(struct device *dev, struct device *master, void *data)
 {
-	struct drm_connector *drm_connector = data;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	int i;
 
-	drm_connector_cleanup(drm_connector);
-	kfree(drm_connector);
+	if (!dc)
+		return;
+
+	for (i = 0; i < DC_WB_NUM; i++) {
+		struct vs_writeback_connector *writeback = dc->writeback[i];
+
+		if (writeback && writeback->dev == dev)
+			dc->writeback[i] = NULL;
+	}
 }
 
 static const struct component_ops wb_component_ops = {

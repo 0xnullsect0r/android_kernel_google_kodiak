@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022, 2024-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -216,11 +216,42 @@ uint8_t wlan_p2p_psoc_priv_get_sta_vdev_id(struct wlan_objmgr_psoc *psoc)
 	return p2p_psoc_priv_get_sta_vdev_id(psoc);
 }
 
+bool wlan_p2p_check_random_mac(struct wlan_objmgr_psoc *psoc, uint32_t vdev_id,
+			       uint8_t *random_mac_addr)
+{
+	return p2p_check_random_mac(psoc, vdev_id, random_mac_addr);
+}
+
+QDF_STATUS
+wlan_p2p_add_random_mac(struct wlan_objmgr_psoc *soc, uint32_t vdev_id,
+			uint8_t *mac, uint32_t freq, uint64_t rnd_cookie)
+{
+	return p2p_add_random_mac(soc, vdev_id, mac, freq, rnd_cookie);
+}
+
 QDF_STATUS
 wlan_p2p_del_random_mac(struct wlan_objmgr_psoc *soc, uint32_t vdev_id,
 			uint64_t rnd_cookie)
 {
 	return p2p_del_random_mac(soc, vdev_id, rnd_cookie);
+}
+
+QDF_STATUS
+wlan_p2p_request_random_mac(struct wlan_objmgr_psoc *soc, uint32_t vdev_id,
+			    uint8_t *mac, uint32_t freq, uint64_t rnd_cookie,
+			    uint32_t duration)
+{
+	return p2p_request_random_mac(soc, vdev_id, mac, freq, rnd_cookie,
+				      duration);
+}
+
+QDF_STATUS
+wlan_p2p_random_mac_handle_tx_done(struct wlan_objmgr_psoc *soc,
+				   uint32_t vdev_id, uint64_t rnd_cookie,
+				   uint32_t duration)
+{
+	return p2p_random_mac_handle_tx_done(soc, vdev_id, rnd_cookie,
+					     duration);
 }
 
 QDF_STATUS

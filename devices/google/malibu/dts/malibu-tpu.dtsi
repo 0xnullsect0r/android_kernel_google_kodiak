@@ -8,12 +8,27 @@
 #include <dt-bindings/interrupt-controller/mbu-gic.h>
 
 / {
+	guest0_tpu_mailboxes_pd: guest0_tpu_mailboxes_pd {
+		compatible = "google,edgetpu-device-assignment-pd";
+		#power-domain-cells = <0>;
+	};
+
+	guest1_tpu_mailboxes_pd: guest1_tpu_mailboxes_pd {
+		compatible = "google,edgetpu-device-assignment-pd";
+		#power-domain-cells = <0>;
+	};
+
+	guest2_tpu_mailboxes_pd: guest2_tpu_mailboxes_pd {
+		compatible = "google,edgetpu-device-assignment-pd";
+		#power-domain-cells = <0>;
+	};
+
 	/*
 	 * Assignable devices must be at the root of the device-tree, so they're declared here
 	 * despite being part of sswrp_tpu.
 	 */
 	guest0_tpu_mailboxes: tpu_mailboxes@36514000 {
-		compatible = "vfio-platform";
+		compatible = "google,edgetpu-device-assignment";
 		reg = <0x0 0x36514000 0x0 0x002000>,
 		      <0x0 0x36516000 0x0 0x002000>,
 		      <0x0 0xa0a00000 0x0 0x200000>;
@@ -31,10 +46,13 @@
 			<&tpu_smmu 0x140>, /* DiveCluster0/TpuControlCore0 */
 			<&tpu_smmu 0x180>, /* Dma330A */
 			<&tpu_smmu 0x190>; /* Dma330B */
+		power-domains = <&guest0_tpu_mailboxes_pd>;
 	};
 
 	guest1_tpu_mailboxes: tpu_mailboxes@36518000 {
-		compatible = "vfio-platform";
+		/* tpu_smmu only has 9 bits of SID enabled, so this device cannot be used. */
+		status = "disabled";
+		compatible = "google,edgetpu-device-assignment";
 		reg = <0x0 0x36518000 0x0 0x002000>,
 		      <0x0 0x3651a000 0x0 0x002000>,
 		      <0x0 0xa0c00000 0x0 0x200000>;
@@ -52,10 +70,13 @@
 			<&tpu_smmu 0x240>, /* DiveCluster0/TpuControlCore0 */
 			<&tpu_smmu 0x280>, /* Dma330A */
 			<&tpu_smmu 0x290>; /* Dma330B */
+		power-domains = <&guest1_tpu_mailboxes_pd>;
 	};
 
 	guest2_tpu_mailboxes: tpu_mailboxes@3651c000 {
-		compatible = "vfio-platform";
+		/* tpu_smmu only has 9 bits of SID enabled, so this device cannot be used. */
+		status = "disabled";
+		compatible = "google,edgetpu-device-assignment";
 		reg = <0x0 0x3651c000 0x0 0x002000>,
 		      <0x0 0x3651e000 0x0 0x002000>,
 		      <0x0 0xa0e00000 0x0 0x200000>;
@@ -73,6 +94,7 @@
 			<&tpu_smmu 0x340>, /* DiveCluster0/TpuControlCore0 */
 			<&tpu_smmu 0x380>, /* Dma330A */
 			<&tpu_smmu 0x390>; /* Dma330B */
+		power-domains = <&guest2_tpu_mailboxes_pd>;
 	};
 
 	sswrp_tpu: sswrp_tpu@36000000 {

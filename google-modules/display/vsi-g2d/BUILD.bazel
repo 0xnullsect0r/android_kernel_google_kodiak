@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "ddk_uapi_headers")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -79,13 +84,10 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":ddk_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/display/common/gs_drm",
+        "//private/google-modules/display/common/gs_drm:gs-drm-connector",
         "//private/google-modules/perf/core/google_pm_qos",
         "//private/google-modules/perf/core/gs_perf_domain:perf_domain",
         "//private/google-modules/soc/rdo:rdo_soc_headers",

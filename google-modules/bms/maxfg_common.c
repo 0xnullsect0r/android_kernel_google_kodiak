@@ -16,6 +16,7 @@
 
 #include <linux/of.h>
 #include <linux/debugfs.h>
+#include <misc/logbuffer.h>
 #include "maxfg_common.h"
 
 /* dump FG model data */

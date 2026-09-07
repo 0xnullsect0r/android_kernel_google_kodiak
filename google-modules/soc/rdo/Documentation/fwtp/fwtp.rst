@@ -268,6 +268,20 @@ Examples::
 .. kernel-doc:: private/google-modules/soc/rdo/drivers/soc/google/fwtp/fwtp.c
    :identifiers: fwtp_debugfs_trace_show
 
+notify_bytes
+------------
+
+Read-write. Configures the threshold byte count for triggering a notification to
+the kernel.
+
+Examples::
+
+  echo 512 > /sys/kernel/debug/fwtp-cpm/cpm/notify_bytes
+  cat /sys/kernel/debug/fwtp_gdmc/notify_bytes
+
+.. kernel-doc:: private/google-modules/soc/rdo/drivers/soc/google/fwtp/fwtp.c
+   :identifiers: fwtp_debugfs_notify_bytes_read fwtp_debugfs_notify_bytes_write
+
 Testing
 =======
 

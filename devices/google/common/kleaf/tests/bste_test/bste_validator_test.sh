@@ -6,12 +6,12 @@
 
 set -u
 
-# Path to the validator binary, resolved relatively from the script's location
-# inside the runfiles tree to avoid hardcoding the workspace-relative path.
-# We do NOT use realpath here because realpath would resolve symlinks back to the
-# source tree, where the built py_binary executable does not exist.
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-VALIDATOR="${SCRIPT_DIR}/../../impl/bste/bste_validator"
+VALIDATOR="$1"
+
+if [[ -z "${VALIDATOR}" ]]; then
+  echo "ERROR: Missing validator binary argument" >&2
+  exit 1
+fi
 
 if [[ ! -f "${VALIDATOR}" ]]; then
   echo "ERROR: Cannot find validator binary at ${VALIDATOR}" >&2

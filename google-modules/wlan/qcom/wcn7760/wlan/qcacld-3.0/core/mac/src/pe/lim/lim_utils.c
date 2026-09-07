@@ -4555,6 +4555,8 @@ void lim_process_add_sta_rsp(struct mac_context *mac_ctx,
 		lim_ndp_add_sta_rsp(mac_ctx, session, msg->bodyptr);
 	else if (add_sta_params->staType == STA_ENTRY_TDLS_PEER)
 		lim_process_tdls_add_sta_rsp(mac_ctx, msg->bodyptr, session);
+	else if (LIM_IS_PASSTHRU_ROLE(session))
+		lim_passthru_add_sta_rsp(mac_ctx, session, msg->bodyptr);
 	else
 		lim_process_mlm_add_sta_rsp(mac_ctx, msg, session);
 
@@ -6227,7 +6229,9 @@ lim_get_bw_for_mcs_set(struct mac_context *mac_ctx,
 		return ch_width;
 
 	bw = ch_width;
-	max_ch_width = wlan_mlme_get_max_bw();
+	max_ch_width = wlan_mlme_get_max_curr_bw(mac_ctx->pdev,
+						 session->curr_op_freq,
+						 ch_width);
 	/*
 	 * If the session is in STA or P2P Client mode, and the current channel
 	 * width is 80 MHz, while the maximum supported channel width is
@@ -6463,12 +6467,37 @@ void lim_del_pmf_sa_query_timer(struct mac_context *mac_ctx, struct pe_session *
 	}
 }
 
+/**
+ * lim_shift_arr_index(): move element of provided index to last
+ * @arr: elements
+ * @curr_index: index of element that will be moved to last
+ * @arr_len: total no of elements
+ *
+ * Return: NA
+ */
+static void
+lim_shift_arr_index(uint8_t *arr, uint8_t curr_index, uint8_t arr_len)
+{
+	uint8_t i;
+
+	/** element to remove is already at last index in array **/
+	if (curr_index == arr_len - 1)
+		return;
+
+	for (i = curr_index; i < arr_len - 1; i++)
+		arr[i] = arr[i+1];
+
+	return;
+}
+
 QDF_STATUS lim_strip_supp_op_class_update_struct(struct mac_context *mac_ctx,
 		uint8_t *addn_ie, uint16_t *addn_ielen,
-		tDot11fIESuppOperatingClasses *dst)
+		tDot11fIESuppOperatingClasses *dst, bool eht_capable)
 {
 	uint8_t extracted_buff[DOT11F_IE_SUPPOPERATINGCLASSES_MAX_LEN + 2];
 	QDF_STATUS status;
+	uint8_t *class;
+	uint8_t i;
 
 	qdf_mem_zero((uint8_t *)&extracted_buff[0],
 		    DOT11F_IE_SUPPOPERATINGCLASSES_MAX_LEN + 2);
@@ -6489,6 +6518,19 @@ QDF_STATUS lim_strip_supp_op_class_update_struct(struct mac_context *mac_ctx,
 		return QDF_STATUS_E_FAILURE;
 	}
 
+	/* Remove op class 137 if connection is not EHT */
+	if (!eht_capable) {
+		class = &extracted_buff[2];
+		for(i = 0; i < (uint8_t)extracted_buff[1]; i++) {
+			if (*(class + i) == 137) {
+				lim_shift_arr_index(class, i,
+						    extracted_buff[1]);
+				extracted_buff[1] =
+						(uint8_t)extracted_buff[1] -1;
+				break;
+			}
+		}
+	}
 	/* update the extracted supp op class to struct*/
 	if (DOT11F_PARSE_SUCCESS != dot11f_unpack_ie_supp_operating_classes(
 	    mac_ctx, &extracted_buff[2], extracted_buff[1], dst, false)) {
@@ -9231,6 +9273,82 @@ void lim_update_tdls_sta_eht_capable(struct mac_context *mac,
 #endif
 #endif
 
+#ifdef DRIVER_PASSTHRU_MODE
+QDF_STATUS
+lim_passthru_mlme_vdev_disconnect_peers(struct vdev_mlme_obj *vdev_mlme,
+					uint16_t data_len, void *data)
+{
+	struct pe_session *session;
+	struct mac_context *mac_ctx;
+	uint8_t i = 0;
+	tpDphHashNode sta_ds = NULL;
+	QDF_STATUS status;
+
+	if (!data) {
+		mac_ctx = cds_get_context(QDF_MODULE_ID_PE);
+		if (!mac_ctx) {
+			pe_err("mac ctx is null");
+			return QDF_STATUS_E_INVAL;
+		}
+		session = pe_find_session_by_vdev_id(mac_ctx,
+				vdev_mlme->vdev->vdev_objmgr.vdev_id);
+		if (!session) {
+			pe_err("session is NULL");
+			return QDF_STATUS_E_INVAL;
+		}
+	} else {
+		session = (struct pe_session *)data;
+		mac_ctx = session->mac_ctx;
+	}
+
+	if (!(session && LIM_IS_PASSTHRU_ROLE(session))) {
+		pe_info("session not in passthru mode");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	for (i = 1; i < session->dph.dphHashTable.size; i++) {
+		sta_ds = dph_get_hash_entry(mac_ctx, i,
+					    &session->dph.dphHashTable);
+		if (!sta_ds || !sta_ds->valid)
+			continue;
+		status = lim_del_sta(mac_ctx, sta_ds, false, session);
+		if (QDF_STATUS_SUCCESS == status) {
+			lim_delete_dph_hash_entry(mac_ctx, sta_ds->staAddr,
+						  sta_ds->assocId, session);
+			lim_release_peer_idx(mac_ctx, sta_ds->assocId, session);
+		} else {
+			pe_err("lim_del_sta failed with Status: %d", status);
+			QDF_ASSERT(0);
+		}
+	}
+
+	return QDF_STATUS_SUCCESS;
+}
+
+void lim_update_passthru_config(struct mac_context *mac,
+				tpAddStaParams add_sta_params,
+				tpDphHashNode sta_ds,
+				struct pe_session *session_entry)
+{
+	if (sta_ds->staType != STA_ENTRY_PASSTHRU_PEER) {
+		pe_err("Invalid peer type");
+		return;
+	}
+	add_sta_params->eht_capable = 0;
+	add_sta_params->he_capable = sta_ds->mlmStaContext.he_capable;
+	if (add_sta_params->he_capable)
+		qdf_mem_copy(&add_sta_params->he_config, &sta_ds->he_config,
+			     sizeof(add_sta_params->he_config));
+	add_sta_params->ht_caps = (*(uint16_t *)&session_entry->ht_config);
+	add_sta_params->vht_caps = session_entry->vht_config.caps;
+	add_sta_params->create_only =
+		session_entry->passthru_pending_create_only;
+	pe_debug("passthru eht_capable: %d he_capable: %d create_only: %d",
+		 add_sta_params->eht_capable, add_sta_params->he_capable,
+		 add_sta_params->create_only);
+}
+#endif
+
 void lim_update_sta_eht_capable(struct mac_context *mac,
 				tpAddStaParams add_sta_params,
 				tpDphHashNode sta_ds,
@@ -11846,7 +11964,9 @@ bool lim_update_channel_width(struct mac_context *mac_ctx,
 		oper_mode = CH_WIDTH_20MHZ;
 	}
 
-	fw_vht_ch_wd = wlan_mlme_get_max_bw();
+	fw_vht_ch_wd = wlan_mlme_get_max_curr_bw(mac_ctx->pdev,
+						 session->curr_op_freq,
+						 ch_width);
 
 	if (ch_width > fw_vht_ch_wd) {
 		pe_debug_rl(QDF_MAC_ADDR_FMT ": Downgrade new bw: %d to max %d",

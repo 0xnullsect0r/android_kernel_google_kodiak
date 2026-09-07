@@ -3215,7 +3215,11 @@ static void sec_ts_fw_update_work(struct work_struct *work)
 
 	int ret;
 
+#ifdef SEC_TS_FW_UPDATE_ON_PROBE
+	LOGI("start firmware update on probe.\n");
+#else
 	LOGI("start firmware update after probe.\n");
+#endif
 
 	ret = sec_ts_firmware_update_on_probe(ts, false);
 	if (ret < 0)

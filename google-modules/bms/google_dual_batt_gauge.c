@@ -28,6 +28,7 @@
 #include <linux/slab.h>
 #include <linux/debugfs.h>
 #include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
 #include "google_psy.h"
@@ -74,6 +75,8 @@ struct dual_fg_drv {
 
 	struct power_supply *first_fg_psy;
 	struct power_supply *second_fg_psy;
+	struct device_link *first_fg_link;
+	struct device_link *second_fg_link;
 
 	struct mutex stats_lock;
 
@@ -115,6 +118,8 @@ struct dual_fg_drv {
 	struct gbms_ce_tier_stats base_batt_stats;
 	struct gbms_ce_tier_stats sec_batt_stats;
 	union gbms_charger_state chg_state;
+	int chg_vin_mv;
+	int chg_iin_ma;
 	ktime_t last_update;
 
 	struct seq_soc_drop_wa seq_wa;
@@ -671,12 +676,14 @@ static void gdbatt_stats_init(struct dual_fg_drv *dual_fg_drv)
 }
 
 /* call holding stats_lock */
-static int gbatt_update_batt_stats(struct power_supply *psy, ktime_t elap,
+static int gbatt_update_batt_stats(struct power_supply *psy, u32 now, ktime_t elap,
 				   struct gbms_ce_tier_stats *tier,
 				   struct gbms_chg_profile *profile,
-				   union gbms_charger_state *chg_state)
+				   union gbms_charger_state *chg_state,
+				   int vin_mv, int iin_ma)
 {
 	int ret, temp, temp_idx, ibatt_ma, cc, soc_in;
+	int vbatt_uv, vbatt_mv = 0;
 
 	ret = gdbatt_get_temp(psy, &temp);
 	if (ret < 0)
@@ -701,7 +708,12 @@ static int gbatt_update_batt_stats(struct power_supply *psy, ktime_t elap,
 		soc_in = -1;
 	}
 
-	gbms_stats_update_tier(temp_idx, ibatt_ma, temp, elap, cc, chg_state, -1, soc_in, tier);
+	vbatt_uv = GPSY_GET_INT_PROP(psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &ret);
+	if (ret == 0 && vbatt_uv > 0)
+		vbatt_mv = vbatt_uv / 1000;
+
+	gbms_stats_update_tier(now, temp_idx, ibatt_ma, temp, elap, cc, chg_state, -1, soc_in,
+			       vin_mv, iin_ma, vbatt_mv, tier);
 
 	return 0;
 }
@@ -725,10 +737,18 @@ static void gbatt_update_stats(struct dual_fg_drv *dual_fg_drv)
 	if (!dual_fg_drv->batt_psy)
 		dual_fg_drv->batt_psy = power_supply_get_by_name("battery");
 
-	if (dual_fg_drv->batt_psy)
+	if (dual_fg_drv->batt_psy) {
 		dual_fg_drv->chg_state.v = GPSY_GET_INT64_PROP(dual_fg_drv->batt_psy,
 							       GBMS_PROP_CHARGE_CHARGER_STATE,
 							       &ret);
+		if (ret == 0) {
+			int v = GPSY_GET_PROP(dual_fg_drv->batt_psy, GBMS_PROP_INPUT_VOLTAGE_NOW);
+			int i = GPSY_GET_PROP(dual_fg_drv->batt_psy, GBMS_PROP_INPUT_CURRENT_NOW);
+
+			dual_fg_drv->chg_vin_mv = v < 0 ? 0 : v;
+			dual_fg_drv->chg_iin_ma = i < 0 ? 0 : i;
+		}
+	}
 	if (ret < 0) {
 		pr_info("fail to get charge state from battery (%d)\n", ret);
 		return;
@@ -739,18 +759,22 @@ static void gbatt_update_stats(struct dual_fg_drv *dual_fg_drv)
 	dual_fg_drv->last_update = now;
 
 	if (dual_fg_drv->first_fg_psy)
-		ret = gbatt_update_batt_stats(dual_fg_drv->first_fg_psy, elap,
+		ret = gbatt_update_batt_stats(dual_fg_drv->first_fg_psy, now, elap,
 					      &dual_fg_drv->base_batt_stats,
 					      &dual_fg_drv->base_profile,
-					      &dual_fg_drv->chg_state);
+					      &dual_fg_drv->chg_state,
+					      dual_fg_drv->chg_vin_mv,
+					      dual_fg_drv->chg_iin_ma);
 	if (ret < 0)
 		pr_info("fail to update base battery stats (%d)\n", ret);
 
 	if (dual_fg_drv->second_fg_psy)
-		ret = gbatt_update_batt_stats(dual_fg_drv->second_fg_psy, elap,
+		ret = gbatt_update_batt_stats(dual_fg_drv->second_fg_psy, now, elap,
 					      &dual_fg_drv->sec_batt_stats,
 					      &dual_fg_drv->sec_profile,
-					      &dual_fg_drv->chg_state);
+					      &dual_fg_drv->chg_state,
+					      dual_fg_drv->chg_vin_mv,
+					      dual_fg_drv->chg_iin_ma);
 
 	if (ret < 0)
 		pr_info("fail to update sec battery stats (%d)\n", ret);
@@ -1322,6 +1346,21 @@ static void google_dual_batt_gauge_init_work(struct work_struct *work)
 
 	gdbatt_stats_init(dual_fg_drv);
 
+	if (dual_fg_drv->first_fg_psy && dual_fg_drv->first_fg_psy->dev.parent) {
+		dual_fg_drv->first_fg_link = device_link_add(dual_fg_drv->device,
+							     dual_fg_drv->first_fg_psy->dev.parent,
+							     DL_FLAG_STATELESS);
+		if (!dual_fg_drv->first_fg_link)
+			dev_err(dual_fg_drv->device, "failed to add first fg link\n");
+	}
+	if (dual_fg_drv->second_fg_psy && dual_fg_drv->second_fg_psy->dev.parent) {
+		dual_fg_drv->second_fg_link = device_link_add(dual_fg_drv->device,
+							      dual_fg_drv->second_fg_psy->dev.parent,
+							      DL_FLAG_STATELESS);
+		if (!dual_fg_drv->second_fg_link)
+			dev_err(dual_fg_drv->device, "failed to add second fg link\n");
+	}
+
 	dual_fg_drv->init_complete = true;
 	mod_delayed_work(system_wq, &dual_fg_drv->gdbatt_work, 0);
 	dev_info(dual_fg_drv->device, "google_dual_batt_gauge_init_work done\n");
@@ -1521,6 +1560,11 @@ static void google_dual_batt_gauge_remove(struct platform_device *pdev)
 
 	if (!dual_fg_drv)
 		return;
+
+	if (dual_fg_drv->first_fg_link)
+		device_link_del(dual_fg_drv->first_fg_link);
+	if (dual_fg_drv->second_fg_link)
+		device_link_del(dual_fg_drv->second_fg_link);
 
 	power_supply_unreg_notifier(&dual_fg_drv->fg_nb);
 	gbms_free_chg_profile(&dual_fg_drv->chg_profile);

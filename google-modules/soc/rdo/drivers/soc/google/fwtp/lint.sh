@@ -10,6 +10,7 @@
 # Get the parent directory of this script.
 SCRIPT_FILE_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "${SCRIPT_FILE_PATH}")"
+SCRIPTS_DIR="$(realpath "${SCRIPT_DIR}/../../../../../../../../common/ack/scripts")"
 
 # Define the files to exclude from lint using a grep pattern.
 # cpm_decoder has multiple lint findings that won't be fixed.
@@ -30,16 +31,16 @@ CHECKPATCH_IGNORE="NEW_TYPEDEFS"
 # Run lint on C files.
 for LINT_FILE in ${C_FILES}; do
   echo Linting "${LINT_FILE}"
-  scripts/checkpatch.pl --ignore "${CHECKPATCH_IGNORE}" --show-types -q \
+  "${SCRIPTS_DIR}/checkpatch.pl" --ignore "${CHECKPATCH_IGNORE}" --show-types -q \
                         --no-tree --file "${SCRIPT_DIR}/${LINT_FILE}"
   clang-format "${SCRIPT_DIR}/${LINT_FILE}" | diff "${SCRIPT_DIR}/${LINT_FILE}" -
-  scripts/kernel-doc -Werror -none "${SCRIPT_DIR}/${LINT_FILE}"
+  "${SCRIPTS_DIR}/kernel-doc" -Werror -none "${SCRIPT_DIR}/${LINT_FILE}"
 done
 
 # Run lint on shell files.
 for LINT_FILE in ${SH_FILES}; do
   echo Linting "${LINT_FILE}"
-  scripts/checkpatch.pl --ignore "${CHECKPATCH_IGNORE}" -q --no-tree --file \
+  "${SCRIPTS_DIR}/checkpatch.pl" --ignore "${CHECKPATCH_IGNORE}" -q --no-tree --file \
                         "${SCRIPT_DIR}/${LINT_FILE}"
 done
 
@@ -48,4 +49,3 @@ for LINT_FILE in ${BUILD_FILES}; do
   echo Linting "${LINT_FILE}"
   buildifier -d --diff_command="diff" -lint="warn" "${SCRIPT_DIR}/${LINT_FILE}"
 done
-

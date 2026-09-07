@@ -538,24 +538,28 @@
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_DPU_PDMA_0>;
 			power-domains = <&sswrp_dpu_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		dpu_pdma_iis1: dpu-pdma-iis1 {
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_DPU_PDMA_1>;
 			power-domains = <&sswrp_dpu_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		dpu_pdma_iis2: dpu-pdma-iis2 {
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_DPU_PDMA_2>;
 			power-domains = <&sswrp_dpu_pd>;
+			#access-controller-cells = <0>;
 		};
 
 		dpu_pdma_iis3: dpu-pdma-iis3 {
 			compatible = "google,iis";
 			google,ta-iis-id = <TA_IIS_DEV_DPU_PDMA_3>;
 			power-domains = <&sswrp_dpu_pd>;
+			#access-controller-cells = <0>;
 		};
 	};
 };

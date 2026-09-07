@@ -2344,7 +2344,7 @@ osl_spin_lock(void *lock)
 	if (lock) {
 #ifdef DHD_USE_SPIN_LOCK_BH
 		/* Calling spin_lock_bh with both irq and non-irq context will lead to deadlock */
-		ASSERT(!in_irq());
+		ASSERT(!in_irq() && !irqs_disabled());
 		spin_lock_bh((spinlock_t *)lock);
 #else
 		spin_lock_irqsave((spinlock_t *)lock, flags);
@@ -2360,7 +2360,7 @@ osl_spin_unlock(void *lock, unsigned long flags)
 	if (lock) {
 #ifdef DHD_USE_SPIN_LOCK_BH
 		/* Calling spin_lock_bh with both irq and non-irq context will lead to deadlock */
-		ASSERT(!in_irq());
+		ASSERT(!in_irq() && !irqs_disabled());
 		spin_unlock_bh((spinlock_t *)lock);
 #else
 		spin_unlock_irqrestore((spinlock_t *)lock, flags);
@@ -2384,30 +2384,6 @@ osl_spin_unlock_irq(void *lock, unsigned long flags)
 {
 	if (lock)
 		spin_unlock_irqrestore((spinlock_t *)lock, flags);
-}
-
-unsigned long
-osl_spin_lock_bh(void *lock)
-{
-	unsigned long flags = 0;
-
-	if (lock) {
-		/* Calling spin_lock_bh with both irq and non-irq context will lead to deadlock */
-		ASSERT(!in_irq());
-		spin_lock_bh((spinlock_t *)lock);
-	}
-
-	return flags;
-}
-
-void
-osl_spin_unlock_bh(void *lock, unsigned long flags)
-{
-	if (lock) {
-		/* Calling spin_lock_bh with both irq and non-irq context will lead to deadlock */
-		ASSERT(!in_irq());
-		spin_unlock_bh((spinlock_t *)lock);
-	}
 }
 
 void *

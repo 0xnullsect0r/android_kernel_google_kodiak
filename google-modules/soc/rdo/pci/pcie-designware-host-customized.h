@@ -9,8 +9,6 @@
 #include "pcie-designware.h"
 #include <linux/version.h>
 
-void goog_setup_chained_irq_handler(struct dw_pcie_rp *pp);
-void goog_pci_bottom_unmask(struct irq_data *d);
 int goog_pcie_msi_host_init(struct dw_pcie_rp *pp);
 
 #define MAX_NR_LANES	16

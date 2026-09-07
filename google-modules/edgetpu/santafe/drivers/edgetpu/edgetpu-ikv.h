@@ -2,17 +2,21 @@
 /*
  * Virtual Inference Interface, implements the protocol between AP kernel and TPU firmware.
  *
- * Copyright (C) 2023-2025 Google LLC
+ * Copyright (C) 2023-2026 Google LLC
  */
 
 #ifndef __EDGETPU_IKV_H__
 #define __EDGETPU_IKV_H__
 
-#include <linux/list.h>
+#include <linux/kconfig.h>
+#include <linux/kref.h>
 #include <linux/mutex.h>
 #include <linux/seq_file.h>
-#include <linux/spinlock.h>
+#include <linux/spinlock_types.h>
+#include <linux/types.h>
+#include <linux/wait.h>
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-fence-array.h>
 #include <gcip/gcip-mailbox.h>
 #include <gcip/gcip-memory.h>
@@ -21,49 +25,48 @@
 #include "edgetpu-device-group.h"
 #include "edgetpu-ikv-additional-info.h"
 #include "edgetpu-internal.h"
-#include "edgetpu-mailbox.h"
 
 #ifdef EDGETPU_IKV_TIMEOUT
-#define IKV_TIMEOUT	EDGETPU_IKV_TIMEOUT
+#define IKV_TIMEOUT EDGETPU_IKV_TIMEOUT
 #elif IS_ENABLED(CONFIG_EDGETPU_TEST)
 /* fake-firmware could respond in a short time */
-#define IKV_TIMEOUT	(2000)
+#define IKV_TIMEOUT (2000)
 #else
 /* Wait for up to 2 minutes for FW to respond. */
-#define IKV_TIMEOUT	(120000)
+#define IKV_TIMEOUT (120000)
 #endif
+
+/**
+ * struct edgetpu_ikv_rsp_mgr - Manages pending and ready VII/IKV responses.
+ * @etdev: Pointer to the EdgeTPU device.
+ * @kref: Reference count of this manager.
+ * @enable_lock: Read/write lock protecting @enable.
+ * @enable: True if the manager is enabled and accepting new responses.
+ * @list_lock: Spin lock protecting @rslt_list.
+ * @rslt_list: List of ready/completed responses.
+ * @cancel_reason: Reason for cancelling IKV commands in this manager.
+ * @ikv_credits: Number of additional IKV commands this client is allowed to enqueue.
+ * @event_mgr: Event manager for notifying clients of response availability.
+ */
+struct edgetpu_ikv_rsp_mgr {
+	struct edgetpu_dev *etdev;
+	struct kref kref;
+	rwlock_t enable_lock;
+	bool enable;
+	spinlock_t list_lock;
+	struct list_head rslt_list;
+	int cancel_reason;
+	atomic_t ikv_credits;
+	struct gcip_event_mgr *event_mgr;
+};
 
 struct edgetpu_ikv_response {
 	struct edgetpu_ikv *etikv;
 	struct list_head list_entry;
 	/* Pointer to the VII response packet. */
 	void *resp;
-	/*
-	 * The queue this response will be added to when it has been submitted to the mailbox.
-	 *
-	 * Access to this queue must be protected by `queue_lock`.
-	 */
-	struct list_head *pending_queue;
-	/*
-	 * The queue this response will be added to when it has arrived.
-	 *
-	 * Access to this queue must be protected by `queue_lock`.
-	 */
-	struct list_head *dest_queue;
-	/*
-	 * Indicates whether this response has already been handled (either prepared for a client or
-	 * marked as timedout).
-	 * This flag is used to detect and handle races between response arrival and timeout.
-	 *
-	 * Accessing this value must be done while holding `queue_lock`.
-	 */
-	bool processed;
-	/*
-	 * Lock to synchronize arrival, timeout, and consumption of this response.
-	 *
-	 * Protects `pending_queue`, `dest_queue` and `processed`.
-	 */
-	spinlock_t *queue_lock;
+	/* The response manager managing this response. */
+	struct edgetpu_ikv_rsp_mgr *rsp_mgr;
 	/*
 	 * Mailbox awaiter this response was delivered in.
 	 * Must be released with `gcip_mailbox_awaiter_put()` after this response has been
@@ -79,14 +82,12 @@ struct edgetpu_ikv_response {
 	 * using conflicting numbers (e.g. Client A and Client B both send commands with seq=3).
 	 */
 	u64 client_seq;
-	/*
-	 * A group to notify with the EDGETPU_EVENT_RESPDATA event when this response arrives.
-	 */
-	struct edgetpu_device_group *group_to_notify;
 	/* Fences which the command is waiting on. */
 	struct gcip_fence_array *in_fence_array;
 	/* Fences to signal on timeout or completion. */
 	struct gcip_fence_array *out_fence_array;
+	/* Callbacks for polling on IIF in-fences. Size = in_fence_array->size. */
+	struct edgetpu_iif_poll_cb *poll_cb_array;
 	/*
 	 * Pointer to an IIF being used as a proxy for any DMA in-fences for the command.
 	 * Saved here so the proxying thread can be stopped when this response arrives or is
@@ -219,9 +220,7 @@ void edgetpu_ikv_clear_active_clients(struct edgetpu_ikv *etikv);
  *
  * Returns 0 on success, -errno on error.
  */
-int edgetpu_ikv_send_cmd(struct edgetpu_ikv *etikv, void *cmd, struct list_head *pending_queue,
-			 struct list_head *ready_queue, spinlock_t *queue_lock,
-			 struct edgetpu_device_group *group_to_notify,
+int edgetpu_ikv_send_cmd(struct edgetpu_ikv *etikv, void *cmd, struct edgetpu_device_group *group,
 			 struct gcip_fence_array *in_fence_array,
 			 struct gcip_fence_array *out_fence_array, struct iif_fence *iif_dma_fence,
 			 struct edgetpu_ikv_additional_info *additional_info,
@@ -272,5 +271,42 @@ void edgetpu_ikv_send_iif_unblock_notification(struct edgetpu_ikv *etikv, int fe
  * Dumps in-kernel VII queue addresses for debug mappings.
  */
 void edgetpu_ikv_mappings_show(struct edgetpu_ikv *etikv, struct seq_file *s);
+
+/**
+ * edgetpu_ikv_rsp_mgr_create() - Allocates and initializes a response manager.
+ * @etdev: Pointer to the EdgeTPU device.
+ * @event_mgr: The event manager to register with.
+ *
+ * The created object must be destroyed by calling edgetpu_ikv_rsp_mgr_destroy().
+ *
+ * Return: A pointer to the allocated response manager, or ERR_PTR(-ENOMEM) on failure.
+ */
+struct edgetpu_ikv_rsp_mgr *edgetpu_ikv_rsp_mgr_create(struct edgetpu_dev *etdev,
+						       struct gcip_event_mgr *event_mgr);
+
+/**
+ * edgetpu_ikv_rsp_mgr_destroy() - Disables the manager, cleans up awaiters and drops reference.
+ * @rsp_mgr: The response manager.
+ *
+ * This function also drops the reference count of @rsp_mgr instead of directly freeing it.
+ */
+void edgetpu_ikv_rsp_mgr_destroy(struct edgetpu_ikv_rsp_mgr *rsp_mgr);
+
+/**
+ * edgetpu_ikv_rsp_mgr_get() - Increments the reference count of the manager.
+ * @rsp_mgr: The response manager.
+ *
+ * Return: The pointer to the response manager.
+ */
+struct edgetpu_ikv_rsp_mgr *edgetpu_ikv_rsp_mgr_get(struct edgetpu_ikv_rsp_mgr *rsp_mgr);
+
+/**
+ * edgetpu_ikv_rsp_mgr_put() - Decrements the reference count of the manager.
+ * @rsp_mgr: The response manager.
+ *
+ * When the reference count reaches 0, this function releases the memory allocated for the manager.
+ * To properly release internal resources, we should use edgetpu_ikv_rsp_mgr_destroy() instead.
+ */
+void edgetpu_ikv_rsp_mgr_put(struct edgetpu_ikv_rsp_mgr *rsp_mgr);
 
 #endif /* __EDGETPU_IKV_H__*/

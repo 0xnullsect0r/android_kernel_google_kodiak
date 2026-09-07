@@ -20,6 +20,7 @@
 #include "arm_smmu_v3.h"
 #include "arm-smmu-v3-module.h"
 #include "hyp-arm-smmu-v3-common-telemetry.h"
+#include "hyp-arm-smmu-v3-telemetry.h"
 
 #ifdef MODULE
 void *memset(void *dst, int c, size_t count)
@@ -65,15 +66,6 @@ size_t __ro_after_init kvm_hyp_arm_smmu_v3_count;
 struct hyp_arm_smmu_v3_device *kvm_hyp_arm_smmu_v3_smmus;
 struct hyp_arm_smmu_v3_err *kvm_hyp_smmu_last_err;
 struct hyp_arm_smmu_v3_global_config kvm_hyp_smmu_global_config;
-
-hyp_spinlock_t telemetry_lock;
-
-struct hyp_shared_arm_smmu_telemetry *kvm_hyp_shared_arm_smmu_telemetry;
-
-static u32 smmu_dev_to_id(struct hyp_arm_smmu_v3_device *smmu)
-{
-	return (smmu - kvm_hyp_arm_smmu_v3_smmus);
-}
 
 /*
  * Wait until @cond is true.
@@ -181,86 +173,6 @@ struct hyp_arm_smmu_v3_nested_domain {
 };
 
 /* IOMMU telemetry APIs */
-static bool smmu_telemetry_is_enable(void)
-{
-	return !!(kvm_hyp_shared_arm_smmu_telemetry->enabled);
-}
-
-static struct hyp_arm_smmu_domain_telemetry *domain_id_to_hasdt(pkvm_handle_t domain_id)
-{
-	if (domain_id >= MAX_SMMU_DOMAIN) {
-		/*
-		 * This is fatal. Number of domains are more than what's defined in MAX_SMMU_DOMAIN.
-		 * Increase MAX_SMMU_DOMAIN sufficiently.
-		 */
-		WARN_ON(1);
-		return NULL;
-	}
-
-	return &kvm_hyp_shared_arm_smmu_telemetry->hyp_dom_tel_arr[domain_id];
-}
-
-static void smmu_telemetry_inc_s2_tlb_invals(void)
-{
-	if (!smmu_telemetry_is_enable())
-		return;
-
-	kvm_hyp_shared_arm_smmu_telemetry->hs2t.num_s2_tlb_invalidates++;
-}
-
-static void smmu_telemetry_s1_pgtable_in_use(int count)
-{
-	if (!smmu_telemetry_is_enable())
-		return;
-
-	hyp_spin_lock(&telemetry_lock);
-	kvm_hyp_shared_arm_smmu_telemetry->cur_s1_pgtable_usage += count;
-	kvm_hyp_shared_arm_smmu_telemetry->max_s1_pgtable_usage =
-			max(kvm_hyp_shared_arm_smmu_telemetry->max_s1_pgtable_usage,
-			    kvm_hyp_shared_arm_smmu_telemetry->cur_s1_pgtable_usage);
-	hyp_spin_unlock(&telemetry_lock);
-}
-
-static void smmu_telemetry_atomic_pages(int count)
-{
-	if (!smmu_telemetry_is_enable())
-		return;
-
-	if (count > 0)
-		kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.alloc_reqs++;
-	else if (count < 0)
-		kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.free_reqs++;
-
-	kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.pages_in_use += count;
-	kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.max_pages_used =
-		max(kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.max_pages_used,
-		    kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_atomic_pages.pages_in_use);
-}
-
-static void smmu_telemetry_cmdq_sync_latency(struct hyp_arm_smmu_v3_device *smmu,
-					     u64 timer_tick_diff)
-{
-	struct hyp_arm_smmu_device_telemetry *telemetry;
-	u32 index = smmu_dev_to_id(smmu);
-
-	if (index >= MAX_SMMU_DEVICE) {
-		WARN_ON(1);
-		return;
-	}
-	telemetry = &kvm_hyp_shared_arm_smmu_telemetry->hyp_dev_tel_arr[index];
-
-	telemetry->cmdq_tel.sync_cmd_cnt++;
-	telemetry->cmdq_tel.sync_cmd_total_timer_tick += timer_tick_diff;
-	telemetry->cmdq_tel.sync_cmd_max_timer_tick =
-		max(timer_tick_diff, telemetry->cmdq_tel.sync_cmd_max_timer_tick);
-}
-
-static const struct arm_smmu_v3_telemetry_cb smmu_telemetry_cb = {
-	.is_enabled = smmu_telemetry_is_enable,
-	.s1_pages_tel = smmu_telemetry_s1_pgtable_in_use,
-	.atomic_pages_tel = smmu_telemetry_atomic_pages,
-};
-
 static enum pgsize_idx get_pgsize_idx(size_t size)
 {
 	switch (size) {
@@ -514,6 +426,7 @@ static bool smmu_cmdq_empty(struct hyp_arm_smmu_v3_device *smmu)
 
 static int smmu_build_cmd(u64 *cmd, struct arm_smmu_cmdq_ent *ent)
 {
+	memset(cmd, 0, CMDQ_ENT_DWORDS << 3);
 	cmd[0] |= FIELD_PREP(CMDQ_0_OP, ent->opcode);
 
 	switch (ent->opcode) {
@@ -1112,20 +1025,11 @@ static int smmu_init(void)
 	smmu_share_pages(hyp_virt_to_phys(kvm_hyp_shared_arm_smmu_telemetry),
 			 PAGE_ALIGN(sizeof(*kvm_hyp_shared_arm_smmu_telemetry)));
 
-	for (int i = 0; i < MAX_SMMU_DOMAIN; i++) {
-		struct hyp_arm_smmu_domain_telemetry *hasdt;
-
-		hasdt = &kvm_hyp_shared_arm_smmu_telemetry->hyp_dom_tel_arr[i];
-		hasdt->map_counters.pgt_version = U64_MAX;
-	}
-	kvm_hyp_shared_arm_smmu_telemetry->hs2t.s2_map_counters.pgt_version = U64_MAX;
-
 	/* Guaranteed to be set by KVM */
 	arch_timer_rate = read_sysreg(cntfrq_el0);
 	smmu_poll_timeout_cycle = ((u64)ARM_SMMU_POLL_TIMEOUT_US * arch_timer_rate / 1000000);
-	kvm_hyp_shared_arm_smmu_telemetry->arch_timer_rate = arch_timer_rate;
+	smmu_init_telemetry(arch_timer_rate);
 
-	hyp_spin_lock_init(&telemetry_lock);
 	for_each_smmu(smmu) {
 		ret = smmu_init_device(smmu);
 		if (ret)
@@ -1187,6 +1091,8 @@ static int smmu_alloc_domain(struct kvm_hyp_iommu_domain *domain, int type)
 	hyp_spin_lock_init(&smmu_domain->pgt_lock);
 	domain->priv = (void *)smmu_domain;
 	if (domain->domain_id < MAX_SMMU_DOMAIN) {
+		smmu_telemetry_init_domain_data(domain->domain_id);
+
 		hyp_spin_lock(&smmu_domains_lock);
 		smmu_domains[domain->domain_id] = smmu_domain;
 		hyp_spin_unlock(&smmu_domains_lock);
@@ -1329,7 +1235,7 @@ static int smmu_tlb_inv_range_smmu(struct hyp_arm_smmu_v3_device *smmu,
 	unsigned long end = iova + size, num_pages = 0, tg = 0;
 	size_t inv_range = granule;
 	struct hyp_arm_smmu_v3_domain *smmu_domain = domain->priv;
-	struct arm_smmu_cmdq_batch cmds;
+	struct arm_smmu_cmdq_batch cmds = { };
 
 	kvm_iommu_lock(&smmu->iommu);
 	if (smmu->iommu.power_is_off)
@@ -1429,7 +1335,7 @@ static void smmu_tlb_inv_range(struct kvm_hyp_iommu_domain *domain,
 	struct hyp_arm_smmu_v3_device *smmu;
 	struct domain_iommu_node *iommu_node;
 	unsigned long end = iova + size;
-	struct arm_smmu_cmdq_ent cmd;
+	struct arm_smmu_cmdq_ent cmd = { };
 	bool sync_tlb_inv = kvm_hyp_smmu_global_config.use_smc_s2 &&
 			    domain->domain_id == KVM_IOMMU_DOMAIN_IDMAP_ID;
 
@@ -2233,9 +2139,12 @@ out_unlock:
 		if (kvm_hyp_smmu_global_config.use_smc_s2)
 			smmu_set_ns_ipa_tbl(s2_smmu_domain);
 
+		kvm_hyp_shared_arm_smmu_telemetry->hs2t.host_mem_usage = 0;
 		ret = kvm_iommu_snapshot_host_stage2(s2_domain);
-		if (!ret)
+		if (!ret) {
 			s2_smmu_domain->snapshot_done = true;
+			smmu_telemetry_rec_idmap_snapshot();
+		}
 	}
 
 	return ret;
@@ -2346,9 +2255,12 @@ out_unlock:
 		if (kvm_hyp_smmu_global_config.use_smc_s2)
 			smmu_set_ns_ipa_tbl(smmu_domain);
 
+		kvm_hyp_shared_arm_smmu_telemetry->hs2t.host_mem_usage = 0;
 		ret = kvm_iommu_snapshot_host_stage2(domain);
-		if (!ret)
+		if (!ret) {
 			smmu_domain->snapshot_done = true;
+			smmu_telemetry_rec_idmap_snapshot();
+		}
 	}
 
 	return ret;
@@ -2931,6 +2843,9 @@ static void __smmu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
 						     pgsize, pgcount, prot, 0, &mapped);
 			size -= mapped;
 			start += mapped;
+			if (mapped && smmu_phys_is_dram(start - mapped))
+				smmu_telemetry_req_idmap_map(mapped, smmu_domain->snapshot_done);
+
 			if (!mapped || ret)
 				return;
 		}
@@ -2944,6 +2859,10 @@ static void __smmu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
 			start += unmapped;
 			if (WARN_ON(!unmapped))
 				return;
+
+			if (smmu_phys_is_dram(start - unmapped))
+				smmu_telemetry_req_idmap_unmap(unmapped,
+							       smmu_domain->snapshot_done);
 		}
 	}
 }

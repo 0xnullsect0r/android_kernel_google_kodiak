@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/sync_file.h>
 #include <linux/uaccess.h>
+#include <linux/overflow.h>
 
 #include "lwis_ioctl_past.h"
 #include "lwis_allocator.h"
@@ -44,6 +45,7 @@
 #define STRINGIFY(x) #x
 
 #define MAX_CMD_COUNT 10
+#define MAX_ECHO_SIZE (40 * 1024)
 
 static void create_top_device_worker_thread(struct lwis_client *client)
 {
@@ -345,7 +347,7 @@ static int construct_io_entry(struct lwis_device *lwis_dev, struct lwis_io_entry
 	uint8_t *k_buf;
 	/* Following variables are used to avoid lwis integer overflow */
 	int read_entries = 0;
-	size_t read_buf_size = 0;
+	size_t accumulated_read_size = 0;
 	const int reg_value_bytewidth = lwis_dev->native_read_value_bitwidth / 8;
 
 	ret = copy_io_entries_from_user(lwis_dev, num_io_entries, user_entries, &k_entries);
@@ -360,8 +362,6 @@ static int construct_io_entry(struct lwis_device *lwis_dev, struct lwis_io_entry
 	 * will be allocated in the form of lwis_io_result in io processing.
 	 */
 	for (i = 0; i < num_io_entries; ++i) {
-		const size_t remaining_capacity = LWIS_IO_ENTRY_READ_RESTRICTION - read_buf_size -
-						  read_entries * sizeof(struct lwis_io_result);
 		if (k_entries[i].type == LWIS_IO_ENTRY_WRITE_BATCH ||
 		    k_entries[i].type == LWIS_IO_ENTRY_WRITE_BATCH_V2) {
 			user_buf = k_entries[i].rw_batch.buf;
@@ -389,23 +389,34 @@ static int construct_io_entry(struct lwis_device *lwis_dev, struct lwis_io_entry
 				goto error_free_buf;
 			last_buf_alloc_idx = i;
 		} else if (k_entries[i].type == LWIS_IO_ENTRY_READ ||
-			   k_entries[i].type == LWIS_IO_ENTRY_READ_V2) {
-			/* Check for size_t overflow. */
-			if (reg_value_bytewidth > remaining_capacity ||
-			    ++read_entries >= LWIS_IO_ENTRY_READ_OVERFLOW_BOUND) {
-				ret = -EOVERFLOW;
-				goto error_free_buf;
-			}
-			read_buf_size += reg_value_bytewidth;
-		} else if (k_entries[i].type == LWIS_IO_ENTRY_READ_BATCH ||
+			   k_entries[i].type == LWIS_IO_ENTRY_READ_V2 ||
+			   k_entries[i].type == LWIS_IO_ENTRY_READ_BATCH ||
 			   k_entries[i].type == LWIS_IO_ENTRY_READ_BATCH_V2) {
-			/* Check for size_t overflow. */
-			if (k_entries[i].rw_batch.size_in_bytes > remaining_capacity ||
+			size_t size_in_bytes;
+			size_t new_accumulated_size = 0;
+			size_t total_entry_size = 0;
+
+			if (k_entries[i].type == LWIS_IO_ENTRY_READ ||
+			    k_entries[i].type == LWIS_IO_ENTRY_READ_V2) {
+				size_in_bytes = reg_value_bytewidth;
+			} else {
+				size_in_bytes = k_entries[i].rw_batch.size_in_bytes;
+			}
+
+			if (check_add_overflow(size_in_bytes, sizeof(struct lwis_io_result),
+					       &total_entry_size) ||
+			    check_add_overflow(accumulated_read_size, total_entry_size,
+					       &new_accumulated_size) ||
+			    new_accumulated_size > LWIS_IO_ENTRY_READ_RESTRICTION ||
 			    ++read_entries >= LWIS_IO_ENTRY_READ_OVERFLOW_BOUND) {
+				dev_err(lwis_dev->dev,
+					"%s: Read entry %d accumulated size %zu (total entry size %zu) overflowed bounds\n",
+					__func__, read_entries, new_accumulated_size,
+					total_entry_size);
 				ret = -EOVERFLOW;
 				goto error_free_buf;
 			}
-			read_buf_size += k_entries[i].rw_batch.size_in_bytes;
+			accumulated_read_size = new_accumulated_size;
 		}
 	}
 
@@ -445,14 +456,20 @@ static int cmd_echo(struct lwis_device *lwis_dev, struct lwis_cmd_pkt *header,
 		return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
 	}
 
+	if (echo_msg.msg.size > MAX_ECHO_SIZE) {
+		dev_err(lwis_dev->dev, "Echo message size over the limit\n");
+		header->ret_code = -EINVAL;
+		return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
+	}
+
 	buffer = kmalloc(echo_msg.msg.size + 1, GFP_KERNEL);
 	if (!buffer) {
 		header->ret_code = -ENOMEM;
 		return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
 	}
 	if (copy_from_user(buffer, (void __user *)echo_msg.msg.msg, echo_msg.msg.size)) {
-		dev_err(lwis_dev->dev, "Failed to copy %zu bytes echo message from user\n",
-			echo_msg.msg.size);
+		dev_err(lwis_dev->dev, "Failed to copy %llu bytes echo message from user\n",
+			(unsigned long long)echo_msg.msg.size);
 		kfree(buffer);
 		header->ret_code = -EFAULT;
 		return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
@@ -1084,8 +1101,8 @@ static int cmd_dma_buffer_enroll(struct lwis_client *lwis_client, struct lwis_cm
 
 	mutex_lock(&lwis_client->lock);
 	ret = lwis_buffer_enroll(lwis_client, buffer);
-	mutex_unlock(&lwis_client->lock);
 	if (ret) {
+		mutex_unlock(&lwis_client->lock);
 		dev_err(lwis_dev->dev, "Failed to enroll buffer\n");
 		goto error_enroll;
 	}
@@ -1096,12 +1113,12 @@ static int cmd_dma_buffer_enroll(struct lwis_client *lwis_client, struct lwis_cm
 	buf_info.header.ret_code = ret;
 	ret = copy_pkt_to_user(lwis_dev, u_msg, (void *)&buf_info, sizeof(buf_info));
 	if (ret) {
-		mutex_lock(&lwis_client->lock);
 		lwis_buffer_disenroll(lwis_client, buffer);
 		mutex_unlock(&lwis_client->lock);
 		goto error_enroll;
 	}
 
+	mutex_unlock(&lwis_client->lock);
 	return ret;
 
 error_enroll:
@@ -1196,16 +1213,16 @@ static int cmd_dma_buffer_alloc(struct lwis_client *lwis_client, struct lwis_cmd
 		/* Reallocate a new buffer to the partition */
 		mutex_lock(&lwis_client->lock);
 		ret = lwis_buffer_realloc(lwis_client, &alloc_info.info, buffer);
-		mutex_unlock(&lwis_client->lock);
 		if (ret) {
+			mutex_unlock(&lwis_client->lock);
 			dev_err(lwis_dev->dev, "Failed to reallocate buffer\n");
 			goto error_alloc;
 		}
 	} else {
 		mutex_lock(&lwis_client->lock);
 		ret = lwis_buffer_alloc(lwis_client, &alloc_info.info, buffer);
-		mutex_unlock(&lwis_client->lock);
 		if (ret) {
+			mutex_unlock(&lwis_client->lock);
 			dev_err(lwis_dev->dev, "Failed to allocate buffer\n");
 			goto error_alloc;
 		}
@@ -1213,13 +1230,13 @@ static int cmd_dma_buffer_alloc(struct lwis_client *lwis_client, struct lwis_cmd
 	alloc_info.header.ret_code = 0;
 	ret = copy_pkt_to_user(lwis_dev, u_msg, (void *)&alloc_info, sizeof(alloc_info));
 	if (ret) {
-		mutex_lock(&lwis_client->lock);
 		lwis_buffer_free(lwis_client, buffer);
 		mutex_unlock(&lwis_client->lock);
 		ret = -EFAULT;
 		goto error_alloc;
 	}
 
+	mutex_unlock(&lwis_client->lock);
 	return ret;
 
 error_alloc:
@@ -1440,14 +1457,14 @@ static int cmd_event_dequeue(struct lwis_client *lwis_client, struct lwis_cmd_pk
 		return -EFAULT;
 	}
 
-	mutex_lock(&lwis_dev->client_lock);
+	mutex_lock(&lwis_client->lock);
 	/* Peek at the front element of error event queue first */
 	ret = lwis_client_error_event_peek_front(lwis_client, &event);
 	if (ret == 0) {
 		is_error_event = true;
 	} else if (ret != -ENOENT) {
 		dev_err(lwis_dev->dev, "Error dequeueing error event: %d\n", ret);
-		mutex_unlock(&lwis_dev->client_lock);
+		mutex_unlock(&lwis_client->lock);
 		header->ret_code = ret;
 		return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
 	} else {
@@ -1456,7 +1473,7 @@ static int cmd_event_dequeue(struct lwis_client *lwis_client, struct lwis_cmd_pk
 		if (ret) {
 			if (ret != -ENOENT)
 				dev_err(lwis_dev->dev, "Error dequeueing event: %d\n", ret);
-			mutex_unlock(&lwis_dev->client_lock);
+			mutex_unlock(&lwis_client->lock);
 			header->ret_code = ret;
 			return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
 		}
@@ -1479,9 +1496,9 @@ static int cmd_event_dequeue(struct lwis_client *lwis_client, struct lwis_cmd_pk
 			if (copy_to_user((void __user *)info.info.payload_buffer,
 					 (void *)event->event_info.payload_buffer,
 					 event->event_info.payload_size)) {
-				dev_err(lwis_dev->dev, "Failed to copy %zu bytes to user\n",
-					event->event_info.payload_size);
-				mutex_unlock(&lwis_dev->client_lock);
+				dev_err(lwis_dev->dev, "Failed to copy %llu bytes to user\n",
+					(unsigned long long)event->event_info.payload_size);
+				mutex_unlock(&lwis_client->lock);
 				return -EFAULT;
 			}
 		}
@@ -1499,12 +1516,12 @@ static int cmd_event_dequeue(struct lwis_client *lwis_client, struct lwis_cmd_pk
 
 		if (ret) {
 			dev_err(lwis_dev->dev, "Error dequeueing event: %d\n", ret);
-			mutex_unlock(&lwis_dev->client_lock);
+			mutex_unlock(&lwis_client->lock);
 			header->ret_code = ret;
 			return copy_pkt_to_user(lwis_dev, u_msg, (void *)header, sizeof(*header));
 		}
 	}
-	mutex_unlock(&lwis_dev->client_lock);
+	mutex_unlock(&lwis_client->lock);
 	/* Now let's copy the actual info struct back to user */
 	info.header.ret_code = err;
 	return copy_pkt_to_user(lwis_dev, u_msg, (void *)&info, sizeof(info));
@@ -1535,7 +1552,8 @@ static int cmd_release_fence_create(struct lwis_client *lwis_client, struct lwis
 		goto err_close_fences;
 	}
 
-	fence_pending_signal = kmalloc(sizeof(struct lwis_fence_pending_signal), GFP_KERNEL);
+	fence_pending_signal = lwis_allocator_allocate(
+		lwis_client->lwis_dev, sizeof(struct lwis_fence_pending_signal), GFP_KERNEL);
 	if (!fence_pending_signal) {
 		ret = -ENOMEM;
 		goto err_release_fence;
@@ -1748,8 +1766,8 @@ static int cmd_transaction_submit(struct lwis_client *client, struct lwis_cmd_pk
 
 	if (k_transaction->info.trigger_condition.num_nodes > LWIS_TRIGGER_NODES_MAX_NUM) {
 		dev_err(lwis_dev->dev,
-			"Trigger condition contains %lu node, more than the limit of %d\n",
-			k_transaction->info.trigger_condition.num_nodes,
+			"Trigger condition contains %llu node, more than the limit of %d\n",
+			(unsigned long long)k_transaction->info.trigger_condition.num_nodes,
 			LWIS_TRIGGER_NODES_MAX_NUM);
 		ret = -EINVAL;
 		goto err_free_cmd;
@@ -1780,8 +1798,11 @@ static int cmd_transaction_submit(struct lwis_client *client, struct lwis_cmd_pk
 		struct lwis_io_bundle *bundle = lwis_allocator_allocate(
 			lwis_dev, sizeof(struct lwis_io_bundle), GFP_KERNEL);
 		if (!bundle) {
+			dev_err(lwis_dev->dev,
+				"Transaction %llu (%s) failed to allocate io_bundle struct\n",
+				k_transaction->info.id, k_transaction->info.transaction_name);
 			ret = -ENOMEM;
-			lwis_transaction_free(lwis_dev, &k_transaction);
+			lwis_transaction_free(client, &k_transaction);
 			goto err_free_cmd;
 		}
 		atomic_set(&bundle->refcount, 1);
@@ -1806,13 +1827,13 @@ static int cmd_transaction_submit(struct lwis_client *client, struct lwis_cmd_pk
 
 	ret = lwis_initialize_transaction_fences(client, k_transaction);
 	if (ret) {
-		lwis_transaction_free(lwis_dev, &k_transaction);
+		lwis_transaction_free(client, &k_transaction);
 		goto err_free_cmd;
 	}
 
 	ret = lwis_transaction_prepare_response(client, k_transaction);
 	if (ret) {
-		lwis_transaction_free(lwis_dev, &k_transaction);
+		lwis_transaction_free(client, &k_transaction);
 		goto err_free_cmd;
 	}
 
@@ -1831,7 +1852,7 @@ static int cmd_transaction_submit(struct lwis_client *client, struct lwis_cmd_pk
 		dev_err(client->lwis_dev->dev,
 			"%s: client is suspended or flushing during submit\n", __func__);
 		ret = -EBUSY;
-		lwis_transaction_free(lwis_dev, &k_transaction);
+		lwis_transaction_free(client, &k_transaction);
 		goto err_free_cmd;
 	}
 	ret = lwis_transaction_submit_locked(client, k_transaction);
@@ -1839,7 +1860,7 @@ static int cmd_transaction_submit(struct lwis_client *client, struct lwis_cmd_pk
 	spin_unlock_irqrestore(&client->transaction_lock, flags);
 
 	if (ret)
-		lwis_transaction_free(lwis_dev, &k_transaction);
+		lwis_transaction_free(client, &k_transaction);
 
 	resp_header = cmd;
 	resp_header->cmd_id = header->cmd_id;

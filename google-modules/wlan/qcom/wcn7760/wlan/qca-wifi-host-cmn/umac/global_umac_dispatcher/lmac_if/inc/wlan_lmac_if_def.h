@@ -42,6 +42,8 @@
 #include "wlan_crypto_global_def.h"
 #include "wifi_pos_public_struct.h"
 
+struct wmi_rtt_peer_meas_req_cmd_params;
+
 #ifdef WLAN_CFR_ENABLE
 #include "wlan_cfr_utils_api.h"
 #endif
@@ -1077,6 +1079,8 @@ struct wlan_lmac_if_iot_sim_tx_ops {
  *                                    request buffer.
  * @send_rtt_pasn_auth_status: Send PASN peers authentication status
  * @send_rtt_pasn_deauth: Send PASN peer deauth command
+ * @send_rtt_peer_meas_req: Send peer measurement request command to FW
+ * @send_rtt_peer_meas_cancel: Send peer measurement cancel command to FW
  */
 struct wlan_lmac_if_wifi_pos_tx_ops {
 	QDF_STATUS (*wifi_pos_register_events)(struct wlan_objmgr_psoc *psoc);
@@ -1099,6 +1103,12 @@ struct wlan_lmac_if_wifi_pos_tx_ops {
 			 struct wlan_pasn_auth_status *data);
 	QDF_STATUS (*send_rtt_pasn_deauth)(struct wlan_objmgr_psoc *psoc,
 					   struct qdf_mac_addr *peer_mac);
+	QDF_STATUS (*send_rtt_peer_meas_req)(
+			struct wlan_objmgr_psoc *psoc,
+			struct wmi_rtt_peer_meas_req_cmd_params *params);
+	QDF_STATUS (*send_rtt_peer_meas_cancel)(
+			struct wlan_objmgr_psoc *psoc,
+			uint32_t req_id);
 };
 #endif
 
@@ -2671,6 +2681,8 @@ struct wlan_lmac_if_iot_sim_rx_ops {
  * confirm event for PASN Peer.
  * @wifi_pos_ranging_peer_delete_cb: Ranging peer delete handle function
  * pointer.
+ * @wifi_pos_rtt_peer_meas_report_cb: Callback to handle RTT peer measurement
+ * report event.
  * @wifi_pos_vdev_delete_all_ranging_peers_rsp_cb: Callback to handle vdev
  * delete all ranging peers response
  * @wifi_pos_vdev_delete_all_ranging_peers_cb: Delete all ranging peers for
@@ -2693,6 +2705,9 @@ struct wlan_lmac_if_wifi_pos_rx_ops {
 			(struct wlan_objmgr_psoc *psoc,
 			 struct wlan_pasn_request *info,
 			 uint8_t vdev_id, uint8_t num_peers);
+	QDF_STATUS (*wifi_pos_rtt_peer_meas_report_cb)
+			(struct wlan_objmgr_psoc *psoc,
+			 struct wifi_pos_peer_meas_report *report);
 	QDF_STATUS (*wifi_pos_vdev_delete_all_ranging_peers_rsp_cb)
 			(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id);
 	QDF_STATUS (*wifi_pos_vdev_delete_all_ranging_peers_cb)

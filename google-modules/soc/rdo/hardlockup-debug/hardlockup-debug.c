@@ -146,9 +146,9 @@ static int hardlockup_debug_bug_handler(struct pt_regs *regs, unsigned long esr)
 	static atomic_t dump_tasks_once = ATOMIC_INIT(1);
 	int cpu = raw_smp_processor_id();
 	unsigned int val;
-	unsigned long flags;
 	unsigned long last_pc;
 	int log_lock_acquired;
+	bool pm_panic = false;
 
 	hardlockup_debug_disable_fiq();
 
@@ -228,14 +228,19 @@ static int hardlockup_debug_bug_handler(struct pt_regs *regs, unsigned long esr)
 		}
 	}
 
-	spin_lock_irqsave(&pm_suspend_task_lock, flags);
-	if (pm_suspend_task) {
-		pr_emerg("pm_suspend_task '%s' %d hung (state=%d)",
-				pm_suspend_task->comm, pm_suspend_task->pid,
-				pm_suspend_task->__state);
-		sched_show_task(pm_suspend_task);
+	if (pm_suspend_task && !test_and_set_bit(0, &pm_panic_once)) {
+		if (spin_trylock(&pm_suspend_task_lock)) {
+			pr_emerg("pm_suspend_task '%s' %d hung (state=%d)\n",
+					pm_suspend_task->comm, pm_suspend_task->pid,
+					pm_suspend_task->__state);
+			sched_show_task(pm_suspend_task);
+			spin_unlock(&pm_suspend_task_lock);
+		} else {
+			pr_warn("Failed to get pm_suspend_task_lock\n");
+		}
+
+		pm_panic = true;
 	}
-	spin_unlock_irqrestore(&pm_suspend_task_lock, flags);
 
 	set_bit(cpu, &hardlockup_core_handled_mask);
 
@@ -248,7 +253,7 @@ static int hardlockup_debug_bug_handler(struct pt_regs *regs, unsigned long esr)
 		//TODO(b/205354981): If we can request warm reset from here
 	}
 
-	if (pm_suspend_task && !test_and_set_bit(0, &pm_panic_once)) {
+	if (pm_panic) {
 		/*
 		 * Wait 1 second max for all CPUs to complete their logging
 		 * A 1-second ceiling is pragmatic to allow slow UART consoles to drain
@@ -268,6 +273,7 @@ static int hardlockup_debug_bug_handler(struct pt_regs *regs, unsigned long esr)
 			pr_emerg("Timeout waiting for cores: expected_mask=%#lx, handled_mask=%#lx\n",
 				 hardlockup_core_mask, READ_ONCE(hardlockup_core_handled_mask));
 
+		/* Panic here also sets the string as Ramdump Reason */
 		panic("PM suspend timeout");
 	}
 	/* If cpu is locked, wait for WDT reset without executing code anymore. */

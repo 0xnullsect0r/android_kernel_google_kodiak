@@ -1,7 +1,7 @@
 /*
  * Wifi Virtual Interface implementaion
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -2148,10 +2148,12 @@ wl_cfg80211_set_channel(struct wiphy *wiphy, struct net_device *dev,
 	}
 #endif /* WL_DUAL_STA */
 
+	{
 		if (IS_P2P_GO(dev->ieee80211_ptr) && (CHSPEC_IS6G(chspec))) {
 			WL_ERR(("P2P GO not allowed on 6G\n"));
 			return -ENOTSUPP;
 		}
+	}
 
 #ifndef WL_SOFTAP_6G
 	if (IS_AP_IFACE(dev->ieee80211_ptr) && (CHSPEC_IS6G(chspec))) {
@@ -2756,7 +2758,8 @@ wl_validate_wpa2ie(struct net_device *dev, const bcm_tlv_t *wpa2ie, s32 bssidx)
 				wpa_auth |= WPA3_AUTH_DPP_AKM;
 				break;
 			default:
-				WL_ERR(("No Key Mgmt Info in WFA_OUI\n"));
+				WL_ERR(("No Key Mgmt Info in WFA_OUI, type %d\n",
+					mgmt->list[cnt].type));
 			}
 		} else {
 			switch (mgmt->list[cnt].type) {
@@ -2793,7 +2796,7 @@ wl_validate_wpa2ie(struct net_device *dev, const bcm_tlv_t *wpa2ie, s32 bssidx)
 				wpa_auth |= WPA3_AUTH_OWE;
 				break;
 			default:
-				WL_ERR(("No Key Mgmt Info\n"));
+				WL_ERR(("No Key Mgmt Info , type %d\n", mgmt->list[cnt].type));
 			}
 		}
 	}
@@ -3499,16 +3502,15 @@ wl_cfg80211_bcn_validate_sec(
 				bss->security_mode = false;
 				return BCME_ERROR;
 			}
-		}
-		else {
+		} else
 #endif /* SUPPORT_SOFTAP_WPAWPA2_MIXED */
-		if ((ies->wpa2_ie || ies->wpa_ie) &&
-			((wl_validate_wpa2ie(dev, ies->wpa2_ie, bssidx)  < 0 ||
-			wl_validate_wpaie(dev, ies->wpa_ie, bssidx) < 0))) {
-			bss->security_mode = false;
-			return BCME_ERROR;
-		}
-
+		{
+			if ((ies->wpa2_ie || ies->wpa_ie) &&
+				((wl_validate_wpa2ie(dev, ies->wpa2_ie, bssidx)  < 0 ||
+				wl_validate_wpaie(dev, ies->wpa_ie, bssidx) < 0))) {
+				bss->security_mode = false;
+				return BCME_ERROR;
+			}
 		}
 
 		if (ies->fils_ind_ie &&
@@ -3689,17 +3691,19 @@ static s32 wl_cfg80211_bcn_set_params(
 	if ((info->ssid) && (info->ssid_len > 0) &&
 		(info->ssid_len <= DOT11_MAX_SSID_LEN)) {
 		WL_DBG(("SSID (%s) len:%zd \n", info->ssid, info->ssid_len));
-		if (dev_role == NL80211_IFTYPE_AP) {
-			/* Store the hostapd SSID */
-			bzero(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN);
-			memcpy(cfg->hostapd_ssid.SSID, info->ssid, info->ssid_len);
-			cfg->hostapd_ssid.SSID_len = (uint32)info->ssid_len;
-		} else {
-				/* P2P GO */
+		if (dev_role == NL80211_IFTYPE_P2P_GO) {
 			bzero(cfg->p2p->ssid.SSID, DOT11_MAX_SSID_LEN);
 			memcpy(cfg->p2p->ssid.SSID, info->ssid, info->ssid_len);
 			cfg->p2p->ssid.SSID_len = (uint32)info->ssid_len;
 		}
+		/* Store the hostapd SSID */
+		bzero(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN);
+		err = memcpy_s(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN, info->ssid,
+			info->ssid_len);
+		if (err != BCME_OK) {
+			return err;
+		}
+		cfg->hostapd_ssid.SSID_len = (uint32)info->ssid_len;
 	}
 
 	return err;
@@ -5944,6 +5948,10 @@ wl_cfgvif_notify_owe_event(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	u32 len = ntoh32(e->datalen);
 	struct cfg80211_update_owe_info owe_info = {0};
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || \
+	defined(WL_AP_OWE_BKPORT)
+	owe_info.assoc_link_id = -1;
+#endif /* LINUX_VERSION_CODE >= (6, 3, 0) || WL_AP_OWE_BKPORT */
 	if (event == WLC_E_OWE_INFO) {
 		if (!data) {
 			WL_ERR(("No DH-IEs present in ASSOC/REASSOC_IND"));

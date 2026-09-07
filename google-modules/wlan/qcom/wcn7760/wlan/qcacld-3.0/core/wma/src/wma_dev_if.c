@@ -1652,6 +1652,195 @@ wma_passthru_get_tsf_timer(struct ocb_get_tsf_timer_param *req,
 
 	return status;
 }
+
+QDF_STATUS
+wma_vdev_get_chan_hop_status(struct vdev_chan_hop_status_req *req,
+			     wma_chan_hop_status_cb cb, void *ctx)
+{
+	tp_wma_handle wma_handle;
+	QDF_STATUS status;
+
+	wma_handle = cds_get_context(QDF_MODULE_ID_WMA);
+	if (!wma_handle) {
+		wma_err("WMA handle is NULL");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	if (!req) {
+		wma_err("Invalid request parameter");
+		return QDF_STATUS_E_INVAL;
+	}
+
+	/* Store callback and context for response handling */
+	wma_handle->chan_hop_status_cb = cb;
+	wma_handle->chan_hop_status_cb_ctx = ctx;
+
+	/* Send command to firmware via WMI */
+	status = wmi_unified_vdev_get_chan_hop_status(wma_handle->wmi_handle,
+						      req);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		wma_err("vdev_id: %d get chan hop status send failed",
+			req->vdev_id);
+		/* Clear callback on failure */
+		wma_handle->chan_hop_status_cb = NULL;
+		wma_handle->chan_hop_status_cb_ctx = NULL;
+	}
+
+	return status;
+}
+
+/**
+ * wma_add_passthru_sta() - process add sta request in passthru mode
+ * @wma: wma handle
+ * @add_sta: add sta params
+ *
+ * Return: none
+ */
+static void wma_add_passthru_sta(tp_wma_handle wma, tpAddStaParams add_sta)
+{
+	QDF_STATUS status;
+	int32_t ret;
+	struct wma_target_req *msg;
+	bool peer_assoc_cnf = false;
+	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+	uint8_t pdev_id = OL_TXRX_PDEV_ID;
+
+	wma_debug("vdev:%d Type: %d updateSta: %d create_only: %d staMac: "
+		  QDF_MAC_ADDR_FMT,
+		  add_sta->smesessionId, add_sta->staType,
+		  add_sta->updateSta, add_sta->create_only,
+		  QDF_MAC_ADDR_REF(add_sta->staMac));
+
+	/*
+	 * updateSta=0, create_only=0: full path — create + assoc (legacy)
+	 * updateSta=0, create_only=1: NEW action — create peer only
+	 * updateSta=1, create_only=0: UPDATE action — assoc only (no create)
+	 */
+	if (!add_sta->updateSta) {
+		status = wma_create_peer(wma, add_sta->staMac, add_sta,
+					 WMI_PEER_TYPE_DEFAULT,
+					 add_sta->smesessionId, NULL, false);
+		if (QDF_IS_STATUS_ERROR(status)) {
+			wma_err("Failed to create peer for " QDF_MAC_ADDR_FMT,
+				QDF_MAC_ADDR_REF(add_sta->staMac));
+			add_sta->status = status;
+			goto send_rsp;
+		}
+		if (!cdp_find_peer_exist_on_vdev(soc, add_sta->smesessionId,
+						 add_sta->staMac)) {
+			wma_err("Failed to find peer handle using peer mac "
+				QDF_MAC_ADDR_FMT,
+				QDF_MAC_ADDR_REF(add_sta->staMac));
+			add_sta->status = QDF_STATUS_E_FAILURE;
+			wma_remove_peer(wma, add_sta->staMac,
+					add_sta->smesessionId, false);
+			goto send_rsp;
+		}
+	}
+
+	if (add_sta->create_only)
+		goto send_rsp;
+
+	/* WMI_PEER_ASSOC_CMDID */
+	if (wmi_service_enabled(wma->wmi_handle, wmi_service_peer_assoc_conf)) {
+		peer_assoc_cnf = true;
+		msg = wma_fill_hold_req(wma, add_sta->smesessionId,
+					WMA_ADD_STA_REQ,
+					WMA_PEER_ASSOC_CNF_START, NULL, add_sta,
+					WMA_PEER_ASSOC_TIMEOUT);
+		if (!msg) {
+			wma_err("Failed to alloc request for vdev_id %d",
+				add_sta->smesessionId);
+			add_sta->status = QDF_STATUS_E_FAILURE;
+			wma_remove_req(wma, add_sta->smesessionId,
+				       WMA_PEER_ASSOC_CNF_START);
+			wma_remove_peer(wma, add_sta->staMac,
+					add_sta->smesessionId, false);
+			peer_assoc_cnf = false;
+			goto send_rsp;
+		}
+	} else {
+		wma_debug("WMI_SERVICE_PEER_ASSOC_CONF not enabled");
+	}
+
+	ret = wma_send_peer_assoc(wma, add_sta->nwType, add_sta);
+	if (ret) {
+		wma_err("peer assoc failed");
+		add_sta->status = QDF_STATUS_E_FAILURE;
+		wma_remove_peer(wma, add_sta->staMac,
+				add_sta->smesessionId, false);
+		cdp_peer_add_last_real_peer(soc, pdev_id,
+					    add_sta->smesessionId);
+		wma_remove_req(wma, add_sta->smesessionId,
+			       WMA_PEER_ASSOC_CNF_START);
+		peer_assoc_cnf = false;
+
+		goto send_rsp;
+	}
+
+send_rsp:
+	/* Do not send add stat resp when peer assoc cnf is enabled */
+	if (peer_assoc_cnf)
+		return;
+
+	wma_send_msg_high_priority(wma, WMA_ADD_STA_RSP, (void *)add_sta, 0);
+}
+
+static QDF_STATUS
+wma_delete_sta_passthru_mode(tp_wma_handle wma,
+			     tpDeleteStaParams del_sta)
+{
+	QDF_STATUS status;
+	uint8_t vdev_id = del_sta->smesessionId;
+	struct wma_target_req *del_req;
+
+	wma_debug("Remove peer "QDF_MAC_ADDR_FMT" vdevid %d",
+		  QDF_MAC_ADDR_REF(del_sta->staMac), vdev_id);
+	status = wma_remove_peer(wma, del_sta->staMac, vdev_id, false);
+	del_sta->status = status;
+
+	if (QDF_IS_STATUS_SUCCESS(status) &&
+	    wmi_service_enabled(wma->wmi_handle,
+				wmi_service_sync_delete_cmds)) {
+		wma_debug("Wait for the peer delete. vdev_id %d", vdev_id);
+		del_req = wma_fill_hold_req(wma, vdev_id, WMA_DELETE_STA_REQ,
+					    WMA_DELETE_STA_RSP_START,
+					    del_sta->staMac, del_sta,
+					    WMA_DELETE_STA_TIMEOUT);
+		if (!del_req) {
+			wma_err("Failed to allocate request for vdev_id %d",
+				vdev_id);
+			status = QDF_STATUS_E_NULL_VALUE;
+			goto send_rsp;
+		}
+
+		return QDF_STATUS_SUCCESS;
+	}
+
+send_rsp:
+	if (del_sta->respReqd) {
+		wma_debug("Sending del rsp to umac (status: %d)",
+			  del_sta->status);
+		wma_send_msg_high_priority(wma, WMA_DELETE_STA_RSP, del_sta, 0);
+	} else {
+		wma_debug("Paathru Del Sta resp not needed");
+		qdf_mem_free(del_sta);
+	}
+
+	return status;
+}
+#else
+static inline
+void wma_add_passthru_sta(tp_wma_handle wma, tpAddStaParams add_sta)
+{
+}
+
+static inline QDF_STATUS
+wma_delete_sta_passthru_mode(tp_wma_handle wma,
+			     tpDeleteStaParams del_sta)
+{
+	return QDF_STATUS_E_INVAL;
+}
 #endif
 
 /**
@@ -2093,6 +2282,9 @@ static int wma_get_obj_mgr_peer_type(tp_wma_handle wma, uint8_t vdev_id,
 		obj_peer_type = WLAN_PEER_IBSS;
 	} else if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_NDI) {
 		obj_peer_type = WLAN_PEER_NDP;
+	} else if (wma->interfaces[vdev_id].type ==
+					WMI_VDEV_TYPE_WIFI_PASSTHRU) {
+		obj_peer_type = WLAN_PEER_PASSTHRU;
 	} else {
 		wma_err("Couldn't find peertype for type %d and sub type %d",
 			 wma->interfaces[vdev_id].type,
@@ -3766,6 +3958,8 @@ int wma_peer_assoc_conf_handler(void *handle, uint8_t *cmd_param_info,
 	WMI_PEER_ASSOC_CONF_EVENTID_param_tlvs *param_buf;
 	wmi_peer_assoc_conf_event_fixed_param *event;
 	struct wma_target_req *req_msg;
+	struct wlan_objmgr_vdev *vdev;
+	cdp_config_param_type val;
 	uint8_t macaddr[QDF_MAC_ADDR_SIZE];
 	int status = 0;
 
@@ -3807,6 +4001,16 @@ int wma_peer_assoc_conf_handler(void *handle, uint8_t *cmd_param_info,
 		}
 
 		/* peer assoc conf event means the cmd succeeds */
+		vdev = wma->interfaces[event->vdev_id].vdev;
+		if (vdev && wlan_vdev_mlme_get_opmode(vdev) == QDF_PASSTHRU_MODE) {
+			wma_debug("Set peer_assoc state for passthru peer");
+			val.cdp_peer_param_assoc_done = true;
+			cdp_txrx_set_peer_param(cds_get_context(QDF_MODULE_ID_SOC),
+						event->vdev_id, macaddr,
+						CDP_CONFIG_PEER_ASSOC_STATE,
+						val);
+		}
+
 		params->status = event->status;
 		wma_debug("Send ADD_STA_RSP: statype %d vdev_id %d aid %d bssid "QDF_MAC_ADDR_FMT" status %d",
 			 params->staType, params->smesessionId,
@@ -6438,6 +6642,8 @@ void wma_add_sta(tp_wma_handle wma, tpAddStaParams add_sta)
 
 	if (WMA_IS_VDEV_IN_NDI_MODE(wma->interfaces, vdev_id))
 		oper_mode = BSS_OPERATIONAL_MODE_NDI;
+	if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_WIFI_PASSTHRU)
+		oper_mode = BSS_OPERATIONAL_MODE_PASSTHRU;
 	switch (oper_mode) {
 	case BSS_OPERATIONAL_MODE_STA:
 		wma_add_sta_req_sta_mode(wma, add_sta);
@@ -6449,6 +6655,9 @@ void wma_add_sta(tp_wma_handle wma, tpAddStaParams add_sta)
 	case BSS_OPERATIONAL_MODE_NDI:
 		status = wma_add_sta_ndi_mode(wma, add_sta);
 		break;
+	case BSS_OPERATIONAL_MODE_PASSTHRU:
+		wma_add_passthru_sta(wma, add_sta);
+		return;
 	}
 
 	/*
@@ -6524,7 +6733,13 @@ void wma_delete_sta(tp_wma_handle wma, tpDeleteStaParams del_sta)
 	if (del_sta->staType == STA_ENTRY_NDI_PEER)
 		oper_mode = BSS_OPERATIONAL_MODE_NDI;
 
-	wma_debug("vdev %d oper_mode %d", vdev_id, oper_mode);
+	wma_debug("vdev %d oper_mode %d, staType %d",
+		  vdev_id, oper_mode, del_sta->staType);
+
+	if (IS_PASSTHRU_PEER(del_sta->staType)) {
+		wma_delete_sta_passthru_mode(wma, del_sta);
+		return;
+	}
 
 	switch (oper_mode) {
 	case BSS_OPERATIONAL_MODE_STA:

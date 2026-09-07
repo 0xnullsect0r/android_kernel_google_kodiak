@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -685,6 +685,35 @@ QDF_STATUS wifi_pos_register_send_action(
 	return QDF_STATUS_SUCCESS;
 }
 
+QDF_STATUS
+wifi_pos_send_rtt_peer_meas_req(struct wlan_objmgr_psoc *psoc,
+				struct wmi_rtt_peer_meas_req_cmd_params *params)
+{
+	struct wlan_lmac_if_wifi_pos_tx_ops *tx_ops;
+
+	tx_ops = wifi_pos_get_tx_ops(psoc);
+	if (!tx_ops || !tx_ops->send_rtt_peer_meas_req) {
+		wifi_pos_err("tx_ops is null");
+		return QDF_STATUS_E_NULL_VALUE;
+	}
+
+	return tx_ops->send_rtt_peer_meas_req(psoc, params);
+}
+
+QDF_STATUS wifi_pos_send_rtt_peer_meas_cancel(struct wlan_objmgr_psoc *psoc,
+					      uint32_t req_id)
+{
+	struct wlan_lmac_if_wifi_pos_tx_ops *tx_ops;
+
+	tx_ops = wifi_pos_get_tx_ops(psoc);
+	if (!tx_ops || !tx_ops->send_rtt_peer_meas_cancel) {
+		wifi_pos_err("tx_ops is null");
+		return QDF_STATUS_E_NULL_VALUE;
+	}
+
+	return tx_ops->send_rtt_peer_meas_cancel(psoc, req_id);
+}
+
 QDF_STATUS wifi_pos_register_osif_callbacks(struct wifi_pos_osif_ops *ops)
 {
 	struct wifi_pos_psoc_priv_obj *wifi_pos_obj =
@@ -778,5 +807,22 @@ uint32_t wifi_pos_get_rsta_11az_ranging_cap(void)
 	qdf_spin_unlock_bh(&wifi_pos_psoc->wifi_pos_lock);
 
 	return value;
+}
+#endif
+
+#if defined(CFG80211_PD_SUPPORT) && defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+QDF_STATUS
+wifi_pos_get_pmsr_fw_caps(struct wlan_objmgr_psoc *psoc,
+			  struct wifi_pos_pmsr_fw_caps **fw_caps)
+{
+	struct wifi_pos_psoc_priv_obj *wifi_pos_obj;
+
+	wifi_pos_obj = wifi_pos_get_psoc_priv_obj(psoc);
+	if (!wifi_pos_obj)
+		return QDF_STATUS_E_FAILURE;
+
+	*fw_caps = &wifi_pos_obj->pmsr_fw_caps;
+
+	return QDF_STATUS_SUCCESS;
 }
 #endif

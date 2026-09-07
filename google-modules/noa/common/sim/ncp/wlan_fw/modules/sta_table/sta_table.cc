@@ -251,6 +251,7 @@ int32_t StaTableAddStation(StaTable *const table, const uint8_t sta_idx,
 	entry->dscp_tid_map_id = sta_info->dscp_tid_map_id;
 	entry->addry_en = sta_info->addry_en;
 	entry->addrx_en = sta_info->addrx_en;
+	entry->fw_metadata = sta_info->fw_metadata;
 	memcpy(entry->mac_addr, sta_info->mac_addr, kMacAddressLen);
 
 	// Updates QoS to flowid mapping.

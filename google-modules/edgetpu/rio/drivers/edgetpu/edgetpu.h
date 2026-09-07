@@ -25,7 +25,7 @@
  * This number must be incremented when new features or fields are added, or when existing features
  * are marked deprecated.
  */
-#define _EDGETPU_INTERFACE_VERSION_MINOR 3
+#define _EDGETPU_INTERFACE_VERSION_MINOR 5
 
 /*
  * Interface version history:
@@ -33,6 +33,8 @@
  * 1.1: Initial support for interface versioning.
  * 1.2: Add EDGETPU_TRIM_ENABLE; earlier versions to be considered not supporting trim.
  * 1.3: Add EDGETPU_IDENTIFY_CLIENT.
+ * 1.4: EDGETPU_MAP_COHERENT implies EDGETPU_MAP_SKIP_CPU_SYNC for Zuma and beyond; remove PBHA.
+ * 1.5: Remove HWTRACE hardware tracing interfaces.
  */
 
 /*
@@ -57,7 +59,6 @@
 #define EDGETPU_MMAP_TRACE2_BUFFER_OFFSET 0x2000000
 #define EDGETPU_MMAP_LOG3_BUFFER_OFFSET 0x2100000
 #define EDGETPU_MMAP_TRACE3_BUFFER_OFFSET 0x2200000
-#define EDGETPU_MMAP_HWTRACE_BUFFER_OFFSET 0x2300000
 
 /* EdgeTPU map flag macros */
 
@@ -77,10 +78,8 @@ typedef __u32 edgetpu_map_flag_t;
 #define EDGETPU_MAP_CPU_NONACCESSIBLE	(1u << 3)
 /* Skip CPU sync on unmap */
 #define EDGETPU_MAP_SKIP_CPU_SYNC	(1u << 4)
-/* Offset and mask to set the PBHA bits of IOMMU mappings */
-#define EDGETPU_MAP_ATTR_PBHA_SHIFT	5
-#define EDGETPU_MAP_ATTR_PBHA_MASK	0xf
-/* Create coherent mapping of the buffer */
+/* Bits 5-8 unused. */
+/* Create coherent mapping of the buffer (implies EDGETPU_MAP_SKIP_CPU_SYNC for Zuma and beyond) */
 #define EDGETPU_MAP_COHERENT		(1u << 9)
 /* Map buffer "trimmable" on request from Pixel trim subsystem when client enables trimming */
 #define EDGETPU_MAP_TRIMMABLE		(1u << 10)
@@ -119,7 +118,7 @@ struct edgetpu_map_ioctl {
 	 *               0 = Don't skip CPU sync. Default DMA API behavior.
 	 *               1 = Skip CPU sync.
 	 *             Note: This bit is ignored on the map call.
-	 *   [8:5]   - Value of PBHA bits for IOMMU mappings. For Abrolhos only.
+	 *   [8:5]   - Unused.
 	 *   [9:9]   - Coherent Mapping:
 	 *              0 = Create non-coherent mappings of the buffer.
 	 *              1 = Create coherent mappings of the buffer.
@@ -263,7 +262,6 @@ struct edgetpu_mailbox_attr {
  */
 #define EDGETPU_PERDIE_EVENT_LOGS_AVAILABLE		0x1000
 #define EDGETPU_PERDIE_EVENT_TRACES_AVAILABLE		0x1001
-#define EDGETPU_PERDIE_EVENT_HWTRACES_AVAILABLE		0x1002
 
 /*
  * Set eventfd for notification of per-die events from kernel.
@@ -345,9 +343,6 @@ struct edgetpu_map_dmabuf_ioctl {
 	/*
 	 * Flags indicating mapping attributes. See edgetpu_map_ioctl.flags for
 	 * details.
-	 *
-	 * Note: the SKIP_CPU_SYNC and PBHA flags are ignored, DMA flags to be
-	 * used is controlled by the dma-buf exporter.
 	 */
 	edgetpu_map_flag_t flags;
 	/*

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Platform device driver to power on/off google soc power domains
- * Copyright (C) 2023-2025 Google LLC.
+ * Copyright (C) 2023-2026 Google LLC.
  */
 
 #include <linux/arm-smccc.h>
@@ -14,6 +14,8 @@
 #include <linux/completion.h>
 #include <linux/dev_printk.h>
 #include <linux/pm_domain.h>
+#include <linux/pm_runtime.h>
+#include <linux/device.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
@@ -61,7 +63,25 @@
 
 static u32 mbx_send_timeout_ms = 3000;
 static u32 mbx_receive_timeout_ms = 3000;
+static bool dump_sswrp_on_suspend;
 
+static ssize_t dump_sswrp_on_suspend_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", dump_sswrp_on_suspend);
+}
+
+static ssize_t dump_sswrp_on_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (kstrtobool(buf, &dump_sswrp_on_suspend))
+		return -EINVAL;
+
+	return count;
+}
+
+static struct device_attribute attr_dump_sswrp_on_suspend =
+	__ATTR_RW(dump_sswrp_on_suspend);
 /*
  * This data has to remain global in order to support external client APIs that
  * call directly to power controller without device context.
@@ -588,8 +608,8 @@ static int set_power_state(struct generic_pm_domain *domain,
 
 	if (pd->boot_stay_on) {
 		dev_warn(pd->power_controller->dev,
-			"%s: skipping power request to %s (boot-stay-on)\n",
-			pd->name, ON_OFF_STR(state));
+			"%s: skipping %s (boot-stay-on), current state:%d\n",
+			pd->name, ON_OFF_STR(state), atomic_read(&pd->state));
 		return 0;
 	}
 
@@ -730,7 +750,17 @@ static int parse_pd_attributes(struct power_domain *pd,
 	if (of_property_read_bool(child_np, "active-wakeup"))
 		pd->genpd.flags |= GENPD_FLAG_ACTIVE_WAKEUP;
 
-	pd->boot_stay_on = of_property_read_bool(child_np, "google,boot-stay-on");
+	if (of_property_read_bool(child_np, "google,boot-stay-on")) {
+		if (atomic_read(&pd->state) == PD_STATE_OFF) {
+			ret = power_on(&pd->genpd);
+			if (ret) {
+				dev_err(dev, "%s: failed to turn ON: %d\n", pd->name,
+					ret);
+				return ret;
+			}
+		}
+		pd->boot_stay_on = true;
+	}
 
 	return NO_ERROR;
 }
@@ -908,11 +938,13 @@ struct power_controller_desc {
 	enum gpu_dts_version version;
 	const struct cpm_mappings *cpm_map;
 	const char *syspm_root_path;
+	bool enable_sswrp_debug;
 };
 
 static struct power_controller_desc lga_power_controller_desc = {
 	.version = GPU_DTS_VERSION_2,
 	.cpm_map = &lga_cpm_mappings,
+	.enable_sswrp_debug = true,
 };
 
 static struct power_controller_desc mbu_power_controller_desc = {
@@ -1008,6 +1040,8 @@ static int power_controller_probe(struct platform_device *pdev)
 				pd->name);
 			goto cleanup_pds;
 		}
+		dev_dbg(dev, "%s: init power domain, state: %d", pd->name,
+			atomic_read(&pd->state));
 
 		/*
 		 * The `no-auto-resume` signifies power domain should not be
@@ -1057,6 +1091,13 @@ static int power_controller_probe(struct platform_device *pdev)
 
 	atomic_set_release(&power_controller->privdata->initialized, true);
 
+	if (desc->enable_sswrp_debug) {
+		ret = device_create_file(dev, &attr_dump_sswrp_on_suspend);
+		if (ret)
+			dev_err(dev,
+			"Failed to create attr_dump_sswrp_on_suspend ret: %d",
+			ret);
+	}
 	return 0;
 
 cleanup_pds:
@@ -1071,6 +1112,7 @@ static void power_controller_remove(struct platform_device *pdev)
 {
 	struct power_controller *power_controller = platform_get_drvdata(pdev);
 	struct device_node *child_np, *np = pdev->dev.of_node;
+	const struct power_controller_desc *desc;
 	int i;
 
 	pd_latency_profile_remove(pdev);
@@ -1083,6 +1125,10 @@ static void power_controller_remove(struct platform_device *pdev)
 	}
 	for (i = power_controller->privdata->pd_count - 1; i >= 0; i--)
 		pm_genpd_remove(&power_controller->privdata->pds[i].genpd);
+
+	desc = of_device_get_match_data(&pdev->dev);
+	if (desc && desc->enable_sswrp_debug)
+		device_remove_file(&pdev->dev, &attr_dump_sswrp_on_suspend);
 }
 
 static const struct of_device_id power_controller_of_match_table[] = {
@@ -1093,6 +1139,41 @@ static const struct of_device_id power_controller_of_match_table[] = {
 	[2] = {},
 };
 MODULE_DEVICE_TABLE(of, power_controller_of_match_table);
+
+static int dump_sswrp_status(struct device *dev)
+{
+	struct power_controller *controller = dev_get_drvdata(dev);
+	const struct power_controller_desc *desc;
+	struct power_domain *pd;
+	struct generic_pm_domain *genpd;
+	struct pm_domain_data *pdd;
+	enum power_state state;
+
+	desc = of_device_get_match_data(dev);
+	if (!desc || !desc->enable_sswrp_debug)
+		return 0;
+
+	if (!dump_sswrp_on_suspend)
+		return 0;
+
+	for (int i = 0; i < controller->privdata->pd_count; i++) {
+		pd = &controller->privdata->pds[i];
+		genpd = &pd->genpd;
+		state = atomic_read(&pd->state);
+
+		if (state == PD_STATE_OFF || (genpd->flags & GENPD_FLAG_ALWAYS_ON))
+			continue;
+
+		list_for_each_entry(pdd, &genpd->dev_list, list_node) {
+			if (pm_runtime_active(pdd->dev)) {
+				dev_err(dev, "pd: %s dev: %s active\n",
+					pd->name, dev_name(pdd->dev));
+			}
+		}
+	}
+	return 0;
+}
+
 static int power_controller_suspend_prepare(struct device *dev)
 {
 	struct power_controller *controller = dev_get_drvdata(dev);
@@ -1125,6 +1206,7 @@ static void power_controller_suspend_complete(struct device *dev)
 static const struct dev_pm_ops simple_pm_ops = {
 	.prepare = power_controller_suspend_prepare,
 	.complete = power_controller_suspend_complete,
+	.suspend = dump_sswrp_status,
 };
 
 static void power_controller_sync_state(struct device *dev)
@@ -1138,7 +1220,8 @@ static void power_controller_sync_state(struct device *dev)
 		struct power_domain *pd = &pc->privdata->pds[i];
 
 		if (pd->boot_stay_on) {
-			dev_dbg(dev, "Clearing boot_stay_on for %s\n", pd->name);
+			dev_dbg(dev, "    Clearing %s, current state: %d\n",
+				pd->name, atomic_read(&pd->state));
 			pd->boot_stay_on = false;
 		}
 	}

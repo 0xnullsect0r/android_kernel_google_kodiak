@@ -103,6 +103,9 @@ int devfreq_update_target(struct devfreq *devfreq, unsigned long freq);
 #define DEVFREQ_GOV_FIRMWARE_MAXFREQ			(102)
 #define DEVFREQ_GOV_UPDATE_UP_THRESHOLD			(103)
 #define DEVFREQ_GOV_UPDATE_DOWN_DIFFERENTIAL	(104)
+#if defined(SUPPORT_PDVFS_OPS)
+#define DEVFREQ_GOV_UPDATE_GOVERNOR				(105)
+#endif
 
 /* Setting min_freq or max_freq to zero resets the current constraint */
 #define DVFS_CONSTRAINTS_RESET_VALUE		(0)
@@ -192,6 +195,9 @@ PVRSRV_ERROR InitPDVFS(PPVRSRV_DEVICE_NODE psDeviceNode)
 #endif
 	psDVFSDeviceCfg->ui32UpThresholdInPct = 90;
 	psDVFSDeviceCfg->ui32DownDifferentialInPct = 5;
+#if defined(SUPPORT_PDVFS_OPS)
+	psDVFSDeviceCfg->ui32Governor = 0;
+#endif
 	return PVRSRV_OK;
 #endif
 }
@@ -326,6 +332,12 @@ static int pvr_governor_event_handler(struct devfreq *devfreq_dev,
 		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_UPDATE_DOWN_DIFFERENTIAL event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
+#if defined(SUPPORT_PDVFS_OPS)
+	case DEVFREQ_GOV_UPDATE_GOVERNOR:
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_UPDATE_GOVERNOR event.\n"));
+		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
+		break;
+#endif
 	default:
 		dev_err(&devfreq_dev->dev, "Unknown event.\n");
 		break;
@@ -661,6 +673,64 @@ static ssize_t down_differential_store(struct device *dev, struct device_attribu
 
 static DEVICE_ATTR_RW(down_differential);
 
+#if defined(SUPPORT_PDVFS_OPS)
+/*************************************************************************/ /*!
+@Function       fw_governor_show
+
+@Description    Report the current reactive governor to userspace
+
+@Input          dev               OS device node (child of devfreq node)
+@Input          attr              the device attributes (unused)
+@Input          buf               the buffer to write into
+
+@Return			the number of bytes printed into buf, or error
+*/ /**************************************************************************/
+static ssize_t fw_governor_show(struct device *dev, struct device_attribute *attr,
+	char *buf)
+{
+	PVRSRV_DEVICE_NODE *psDeviceNode =
+		PVRSRVGetDeviceInstanceByKernelDevID(GetDevID(dev->parent));
+	IMG_DVFS_DEVICE_CFG	*psDVFSDeviceCfg = &psDeviceNode->psDevConfig->sDVFS.sDVFSDeviceCfg;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+		psDVFSDeviceCfg->ui32Governor);
+}
+
+/*************************************************************************/ /*!
+@Function       fw_governor_store
+
+@Description    Update governor and notify the firmware if it's on
+
+@Input          dev               OS device node (child of devfreq node)
+@Input          attr              the device attributes (unused)
+@Input          buf               the buffer to read from
+@Input          count             number of valid bytes in buf
+
+@Return			the number of bytes read from buf, or error
+*/ /**************************************************************************/
+static ssize_t fw_governor_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	PVRSRV_DEVICE_NODE	*psDeviceNode = PVRSRVGetDeviceInstanceByKernelDevID(
+		GetDevID(dev->parent));
+	IMG_DVFS_DEVICE_CFG	*psDVFSDeviceCfg = &psDeviceNode->psDevConfig->sDVFS.sDVFSDeviceCfg;
+	struct devfreq *df = psDeviceNode->psDevConfig->sDVFS.sPDVFSDevice.psDevFreq;
+	IMG_UINT32 ui32Governor;
+
+	if (kstrtouint(buf, 0, &ui32Governor))
+		return -EINVAL;
+
+	psDVFSDeviceCfg->ui32Governor = ui32Governor;
+
+	df->governor->event_handler(df, DEVFREQ_GOV_UPDATE_GOVERNOR,
+				    &psDVFSDeviceCfg->ui32Governor);
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(fw_governor);
+#endif
+
 static int RegisterPDVFSParametersFile(struct devfreq *devfreq)
 {
 	int ret = sysfs_create_file(&devfreq->dev.kobj, &dev_attr_up_threshold.attr);
@@ -673,13 +743,23 @@ static int RegisterPDVFSParametersFile(struct devfreq *devfreq)
 	{
 		dev_warn(&devfreq->dev, "Unable to create down differential file");
 	}
+#if defined(SUPPORT_PDVFS_OPS)
+	ret = sysfs_create_file(&devfreq->dev.kobj, &dev_attr_fw_governor.attr);
+	if (ret < 0)
+	{
+		dev_warn(&devfreq->dev, "Unable to create fw_governor file");
+	}
+#endif
 	return ret;
 }
 
 static void UnregisterPDVFSParametersFile(struct devfreq *devfreq)
 {
-	sysfs_remove_file(&devfreq->dev.kobj, &dev_attr_up_threshold.attr);
+#if defined(SUPPORT_PDVFS_OPS)
+	sysfs_remove_file(&devfreq->dev.kobj, &dev_attr_fw_governor.attr);
+#endif
 	sysfs_remove_file(&devfreq->dev.kobj, &dev_attr_down_differential.attr);
+	sysfs_remove_file(&devfreq->dev.kobj, &dev_attr_up_threshold.attr);
 }
 
 struct dvfs_notifier_block
@@ -886,6 +966,14 @@ PVRSRV_ERROR PDVFSSendFirmwareCommand(struct device *dev,
 			eError = PDVFSSetDownDifferential(psDevInfo, *data);
 			break;
 		}
+#if defined(SUPPORT_PDVFS_OPS)
+		case DEVFREQ_GOV_UPDATE_GOVERNOR:
+		{
+			PVR_DPF((PVR_DBG_MESSAGE, "Send governor = %u", *data));
+			eError = PDVFSSetGovernor(psDevInfo, *data);
+			break;
+		}
+#endif
 		case DEVFREQ_GOV_FIRMWARE_CAPACITY:
 		{
 #if defined(SUPPORT_PDVFS_HEADROOM_EXT)

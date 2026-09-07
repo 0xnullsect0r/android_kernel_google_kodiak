@@ -6,6 +6,7 @@ Copy and optionally rename the files.
 
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@kleaf//build/kernel/kleaf:hermetic_tools.bzl", "hermetic_toolchain")
+load(":glob_match.bzl", "glob_match_any")
 load(":path_relative_to_package.bzl", "path_relative_to_package")
 
 # For strip_prefix, strip all directories.
@@ -32,15 +33,24 @@ def _rename(path, renames):
 
 def _copy_files_impl(ctx):
     hermetic_tools = hermetic_toolchain.get(ctx)
-    srcs = list(ctx.files.srcs)
+    srcs = ctx.files.srcs
 
+    include = ctx.attr.include
+    exclude = ctx.attr.exclude
     strip_prefix = ctx.attr.strip_prefix.strip("/")
     prefix = ctx.attr.prefix.strip("/")
     renames = {k.strip("/"): v.strip("/") for k, v in ctx.attr.renames.items()}
+    allow_empty = ctx.attr.allow_empty
 
     dst_src_map = {}
     for src in srcs:
         path = path_relative_to_package(src)
+
+        if include and not glob_match_any(path, include):
+            continue
+        if exclude and glob_match_any(path, exclude):
+            continue
+
         path = _strip_prefix(path, strip_prefix)
         path = _rename(path, renames)
         path = paths.join(prefix, path)
@@ -69,11 +79,18 @@ def _copy_files_impl(ctx):
             command = command,
         )
 
+    if not dst_src_map and not allow_empty:
+        fail("No files copied for {}".format(ctx.label))
+
     return [DefaultInfo(files = depset(dst_src_map.keys()))]
 
 copy_files = rule(
     implementation = _copy_files_impl,
     doc = """Copy and optionally rename the files.
+
+    Files in `srcs` are first filtered using `include` and `exclude` glob patterns.
+    A file is processed if it matches at least one pattern in `include` (or if
+    `include` is empty) and does not match any pattern in `exclude`.
 
     The output files' paths remain the same as in their source package.
     The following path modifications are applied in order:
@@ -113,6 +130,14 @@ copy_files = rule(
             doc = "List of source files.",
             allow_files = True,
         ),
+        "include": attr.string_list(
+            doc = "List of glob patterns to include. If empty, all files are included.",
+            default = [],
+        ),
+        "exclude": attr.string_list(
+            doc = "List of glob patterns to exclude. Exclusions take precedence over inclusions.",
+            default = [],
+        ),
         "strip_prefix": attr.string(
             doc = """Prefix to remove from the incoming files' paths
 
@@ -128,6 +153,10 @@ copy_files = rule(
             Keys are the file paths after applying `strip_prefix`.
             Values are the file paths before applying `prefix`.
             """,
+        ),
+        "allow_empty": attr.bool(
+            doc = "Whether to allow empty copy. If False, fails when no files are copied.",
+            default = False,
         ),
     },
     toolchains = [hermetic_toolchain.type],

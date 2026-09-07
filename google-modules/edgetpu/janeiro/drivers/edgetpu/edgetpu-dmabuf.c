@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/ktime.h>
 #include <linux/list.h>
+#include <linux/rcupdate.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -889,6 +890,8 @@ static void edgetpu_dma_fence_release(struct dma_fence *fence)
 		edgetpu_device_group_put(group);
 	}
 
+	/* Ensure RCU grace period elapses for RCU readers before free. */
+	synchronize_rcu();
 	kfree(etfence);
 }
 

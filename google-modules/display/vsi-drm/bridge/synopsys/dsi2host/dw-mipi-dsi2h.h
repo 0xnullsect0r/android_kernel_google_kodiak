@@ -16,6 +16,7 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/workqueue.h>
 
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_bridge.h>
@@ -339,6 +340,7 @@ struct dw_mipi_dsi2h {
 
 	bool enabled;
 	bool suppress_dsi_errors;
+	bool handoff_power_vote;
 	enum dsi2h_host_state state;
 
 	/* should dsi be fully powered off during panel self refresh, otherwise only enter ulps */
@@ -367,6 +369,13 @@ struct dw_mipi_dsi2h {
 
 	/** @coredump_funcs: Sub-System Core Dump (SSCD) callback functions */
 	struct sscd_funcs *coredump_funcs;
+
+	/** @handoff_work: Delayed work to poll power controller sync state */
+	struct delayed_work handoff_work;
+	/** @first_enable_done: True if DSI bridge has been enabled at least once */
+	bool first_enable_done;
+	/** @power_controller_synced: True when power controller finishes sync_state */
+	bool power_controller_synced;
 
 	const struct dw_mipi_dsi2h_plat_data *plat_data;
 	struct kthread_worker dsi2h_worker;

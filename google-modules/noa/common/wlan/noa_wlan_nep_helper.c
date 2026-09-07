@@ -101,7 +101,7 @@ int noa_wlan_client_ring_write(struct noa_wlan_client *client, noa_ring_producer
 		return -EINVAL;
 	}
 
-	ret = noa_ring_write(ring, data, NOA_DESC_WLAN_TX_BRCM_BYTE);
+	ret = noa_ring_write(ring, data, client->nep_tx_desc_sz);
 	if (ret < 0 && ret != -EAGAIN)
 		dev_err(client->dev, "Failed to write tx packet to NOA wlan fw input ring\n");
 

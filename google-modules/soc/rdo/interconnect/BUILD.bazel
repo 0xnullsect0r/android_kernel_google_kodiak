@@ -2,12 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -57,15 +55,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display:__subpackages__",
-        "//private/google-modules/image/cnm:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-        "//private/google-modules/video/cnm:__subpackages__",
-    ],
     deps = [
         ":google_icc_trace_headers",
         "//common:all_headers_aarch64",
@@ -104,12 +93,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/perf/core/irm_devfreq:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
     deps = [
         ":google_irm_trace_headers",
         "//common:all_headers_aarch64",

@@ -4,7 +4,7 @@
  *
  * Definitions subject to change without notice.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -3149,6 +3149,16 @@ enum wlc_capext_eht_subfeature_bitpos {
 	WLC_CAPEXT_EHT_BITPOS_MAX
 };
 
+/* New SET2 Features cap bits should be added here */
+#define WLC_CAPEXT_FEATURE_SET2_BUCKET WLC_CAPEXT_FEATURE_SET1_MAX, \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_START		= 200, \
+	WLC_CAPEXT_FEATURE_BITPOS_CSI_DMA               = 201, \
+	WLC_CAPEXT_FEATURE_BITPOS_LPCAP                 = 202, \
+	WLC_CAPEXT_FEATURE_BITPOS_MRSNO_AP              = 203, \
+	WLC_CAPEXT_FEATURE_BITPOS_P2P2		        = 204, \
+	/* Add here */ \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_END
+
 /* WLC features bit positions in top level WLC feature id. Features mentioned below are reported */
 enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_AP			= 0,	/* feature with sub-features */
@@ -3316,10 +3326,13 @@ enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_MPF_SCAN		= 138,
 	WLC_CAPEXT_FEATURE_BITPOS_MRSNO			= 139,
 	WLC_CAPEXT_FEATURE_BITPOS_AOP_SCAN		= 140,
-	WLC_CAPEXT_FEATURE_BITPOS_MRSNO_AP              = 141,
-	WLC_CAPEXT_FEATURE_BITPOS_CSI_DMA		= 142,
-	WLC_CAPEXT_FEATURE_BITPOS_LPCAP			= 143,
-
+	WLC_CAPEXT_FEATURE_BITPOS_TXSHAPER		= 141,
+	WLC_CAPEXT_FEATURE_BITPOS_SLIMEMLSR		= 142,
+	WLC_CAPEXT_FEATURE_BITPOS_SCF			= 143,
+	WLC_CAPEXT_FEATURE_BITPOS_AP_BCN_SSID_MITIGATE	= 144,
+	WLC_CAPEXT_FEATURE_BITPOS_SCAN_QUEUE_SUPPORT	= 145,
+	/* Please add SET2 features in WLC_CAPEXT_FEATURE_SET2_BUCKET */
+	WLC_CAPEXT_FEATURE_SET2_BUCKET,
 	WLC_CAPEXT_FEATURE_BITPOS_MAX
 };
 

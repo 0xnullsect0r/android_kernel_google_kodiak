@@ -99,11 +99,6 @@ function main() {
       fail "${kernel_modules_gcno_tar} not found!" \
         "Please build ${DEVICE} with --config=testing first."
     fi
-    local kunit_modules_gcno_tar="${DIST_DIR}/kunit_modules_install.gcno.tar.gz"
-    if [[ ! -f "${kunit_modules_gcno_tar}" ]]; then
-      fail "${kunit_modules_gcno_tar} not found!" \
-        "Please build ${DEVICE} with --config=testing first."
-    fi
     local build_config_constants="common/build.config.constants"
     if [[ ! -f "${build_config_constants}" ]]; then
       fail "${build_config_constants} not found! Please run this script at repo root."
@@ -117,7 +112,6 @@ function main() {
     echo "exec \"$(realpath "${llvm_cov}")\" gcov \"\$@\"" > "${GCOV_DIR}/gcov.sh"
     chmod +x "${GCOV_DIR}/gcov.sh"
     tar -xzof "${kernel_modules_gcno_tar}" -C "${GCOV_DIR}"
-    tar -xzof "${kunit_modules_gcno_tar}" -C "${GCOV_DIR}"
   fi
 
   adb root

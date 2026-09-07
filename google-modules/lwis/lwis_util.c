@@ -22,7 +22,8 @@ int lwis_device_single_register_write(struct lwis_device *lwis_dev, int bid, uin
 	if (!lwis_dev)
 		return -ENODEV;
 
-	if (lwis_dev->vops.register_io_locked == NULL) {
+	if (lwis_dev->vops.register_io_with_size_locked == NULL &&
+	    lwis_dev->vops.register_io_locked == NULL) {
 		dev_err(lwis_dev->dev, "%s: register_io undefined\n", __func__);
 		return -EINVAL;
 	}
@@ -36,7 +37,10 @@ int lwis_device_single_register_write(struct lwis_device *lwis_dev, int bid, uin
 		lwis_dev->vops.register_io_barrier(lwis_dev, /*use_read_barrier=*/false,
 						   /*use_write_barrier=*/true);
 	}
-	ret = lwis_dev->vops.register_io_locked(lwis_dev, &entry);
+	if (lwis_dev->vops.register_io_with_size_locked)
+		ret = lwis_dev->vops.register_io_with_size_locked(lwis_dev, &entry, access_size);
+	else
+		ret = lwis_dev->vops.register_io_locked(lwis_dev, &entry);
 	if (ret) {
 		dev_err(lwis_dev->dev,
 			"Register write bid %d offset 0x%llx value 0x%llx failed: %d", bid, offset,
@@ -54,7 +58,8 @@ int lwis_device_single_register_read(struct lwis_device *lwis_dev, int bid, uint
 	if (!lwis_dev)
 		return -ENODEV;
 
-	if (lwis_dev->vops.register_io_locked == NULL) {
+	if (lwis_dev->vops.register_io_with_size_locked == NULL &&
+	    lwis_dev->vops.register_io_locked == NULL) {
 		dev_err(lwis_dev->dev, "%s: register_io undefined\n", __func__);
 		return -EINVAL;
 	}
@@ -63,7 +68,10 @@ int lwis_device_single_register_read(struct lwis_device *lwis_dev, int bid, uint
 	entry.rw.offset = offset;
 	entry.rw.bid = bid;
 
-	ret = lwis_dev->vops.register_io_locked(lwis_dev, &entry);
+	if (lwis_dev->vops.register_io_with_size_locked)
+		ret = lwis_dev->vops.register_io_with_size_locked(lwis_dev, &entry, access_size);
+	else
+		ret = lwis_dev->vops.register_io_locked(lwis_dev, &entry);
 	if (lwis_dev->vops.register_io_barrier) {
 		lwis_dev->vops.register_io_barrier(lwis_dev, /*use_read_barrier=*/true,
 						   /*use_write_barrier=*/false);

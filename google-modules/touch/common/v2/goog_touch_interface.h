@@ -418,7 +418,7 @@ struct gti_context_changed {
 	union {
 		struct {
 		u32 screen_state : 1;
-		u32 display_refresh_rate : 1;
+		u32 reserved_bit : 1;
 		u32 touch_report_rate : 1;
 		u32 noise_state : 1;
 		u32 water_mode : 1;
@@ -432,14 +432,16 @@ struct gti_context_changed {
 
 struct gti_context_driver_cmd {
 	struct gti_context_changed context_changed;
-
 	u8 screen_state;
-	u8 display_refresh_rate;
-	u8 touch_report_rate;
+	u8 reserved1;
+	u16 touch_report_rate;
+
 	u8 noise_state;
 	u8 water_mode;
 	u8 charger_state;
+	u8 reserved2;
 	s16 hinge_angle;
+	u8 reserved3[2];
 
 	ktime_t offload_timestamp;
 };
@@ -934,9 +936,17 @@ struct pid_controller {
  * @v4l2: struct that used by v4l2.
  * @cmd: struct that used by vendor default handler.
  * @proc_dir: struct that used for procfs.
- * @proc_heatmap: struct that used for heatmap procfs.
+ * @proc_show: array of proc_dir_entry pointers for GTI procfs nodes.
+ * @pid: struct that used by pid controller.
  * @input_dev_mono_ktime: input timestamp used by input dev and input subsystem.
  * @input_timestamp: input timestamp from touch vendor driver.
+ * @sensing_timestamp: raw sensing timestamp from touch hardware.
+ * @last_sensing_timestamp: last recorded raw sensing timestamp.
+ * @sensing_timestamp_changed: flag indicating sensing timestamp changed.
+ * @default_report_rate: default touch reporting rate in Hz.
+ * @report_rate_request: requested touch report rate from user space.
+ * @report_rate_active: active touch report rate currently running on firmware.
+ * @frame_time: expected duration of a single frame based on active report rate.
  * @resample_latency: resample latency in nanoseconds.
  * @abs_x_min: minimum x of input resolution.
  * @abs_x_max: maximum x of input resolution.
@@ -948,12 +958,19 @@ struct pid_controller {
  * @screen_protector_mode_setting: the setting of screen protector mode.
  * @tbn_register_mask: the tbn_mask that used to request/release touch bus.
  * @pm: struct that used by gti pm.
+ * @sim: pointer to touch simulation context.
+ * @status_event_dev: struct used for touch driver status event character device.
  * @pm_qos_req: struct that used by pm qos.
+ * @display_state_notifier: notifier block for display state transitions.
+ * @tbn_event_notifier: notifier block for touch bus negotiator events.
  * @fw_status: firmware status such as water_mode, noise_level, etc.
  * @context_changed: flags that indicate driver status changing.
  * @offload_enabled: touch offload is enabled or not.
  * @v4l2_enabled: v4l2 is enabled or not.
  * @tbn_enabled: tbn is enabled or not.
+ * @vrr_enabled: variable report rate is enabled or not.
+ * @report_rate_changed: report rate setting has changed from default.
+ * @report_rate_update_deferred: report rate command execution is deferred.
  * @input_timestamp_changed: input timestamp changed from touch vendor driver.
  * @ignore_grip_update: Ignore fw_grip status updates made on offload state change.
  * @default_grip_enabled: the grip default setting.
@@ -963,10 +980,12 @@ struct pid_controller {
  * @reset_after_selftest: reset FW after running self-test.
  * @lptw_triggered: LPTW is triggered or not.
  * @lptw_suppress_coords_enabled: enable flag for suppressing the coords after lptw.
+ * @timestamp_correction_enabled: enable flag for timestamp correction.
  * @lptw_track_finger: flag for tracking the suppressed fingers.
  * @late_sense_on_enabled: enable flag for late sense-on.
- * @panel_map_from_tic: enable flag for readiing panel id from tic.
+ * @panel_map_from_tic: enable flag for reading panel id from tic.
  * @tbn_protection_enabled: enable flag for bus protection.
+ * @touch_sim_enabled: enable flag for touch simulation.
  * @lptw_track_min_x: minimum x of tracking area.
  * @lptw_track_max_x: maximum x of tracking area.
  * @lptw_track_min_y: minimum y of tracking area.
@@ -975,7 +994,15 @@ struct pid_controller {
  * @lptw_cancel_time: record the time for lptw cancel timeout.
  * @lptw_down: true if the finger is still on the screen.
  * @lptw_data: x, y, major, minor, angle for the tracking finger.
+ * @lptw_x: x coordinate of LPTW tracking finger.
+ * @lptw_y: y coordinate of LPTW tracking finger.
+ * @lptw_major: major axis of LPTW tracking finger.
+ * @lptw_minor: minor axis of LPTW tracking finger.
+ * @lptw_angle: angle of LPTW tracking finger.
+ * @lptw_finger_count: finger count during LPTW.
  * @ignore_force_active: Ignore the force_active sysfs request.
+ * @manual_heatmap_from_irq: enable flag for manual heatmap reading from IRQ.
+ * @offload_id_byte: byte array representation of offload ID.
  * @offload_id: id that used by touch offload.
  * @heatmap_buf: heatmap buffer that used by v4l2.
  * @heatmap_buf_size: heatmap buffer size that used by v4l2.
@@ -986,6 +1013,10 @@ struct pid_controller {
  * @slot_bit_lptw_track: bitmap of lptw suppressed fingers.
  * @dev_t: dev_t use by alloc_chrdev_region for google interface driver.
  * @panel_id: id of the display panel.
+ * @fw_name: name of the touch firmware binary.
+ * @config_name: name of the touch configuration file.
+ * @test_limits_name: name of the touch test limits file.
+ * @usb_psy_name: name of the USB power supply device.
  * @charger_state: indicates a USB charger is connected.
  * @charger_notifier: notifier for power_supply updates.
  * @ical_state: state of interactive calibration finite state machine.
@@ -1003,9 +1034,13 @@ struct pid_controller {
  * @vendor_suspend: touch vendor driver suspend operation.
  * @debug_warning_limit: limit number of warning logs.
  * @debug_input: struct that used to debug input.
+ * @debug_input_history: history array of input debug records.
  * @debug_fifo_input: kfifo struct to track input report.
  * @debug_healthcheck: struct that used for the health check.
+ * @debug_healthcheck_history: history array of healthcheck debug records.
  * @debug_fifo_healthcheck: kfifo struct to track touch interrupt information.
+ * @debug_offload_toggle_history: history array of offload toggle debug records.
+ * @debug_fifo_offload_toggle: kfifo struct to track offload toggle events.
  */
 
 struct goog_touch_interface {
@@ -1031,7 +1066,8 @@ struct goog_touch_interface {
 	u64 last_sensing_timestamp;
 	bool sensing_timestamp_changed;
 	u32 default_report_rate;
-	u32 report_rate;
+	u32 report_rate_request;
+	u32 report_rate_active;
 	ktime_t frame_time;
 	ktime_t resample_latency;
 
@@ -1059,6 +1095,9 @@ struct goog_touch_interface {
 	bool offload_enabled;
 	bool v4l2_enabled;
 	bool tbn_enabled;
+	bool vrr_enabled;
+	bool report_rate_changed;
+	bool report_rate_update_deferred;
 	bool input_timestamp_changed;
 	bool ignore_grip_update;
 	bool default_grip_enabled;

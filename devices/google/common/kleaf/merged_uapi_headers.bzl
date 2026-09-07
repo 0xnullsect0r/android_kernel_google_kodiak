@@ -53,7 +53,11 @@ def _merged_uapi_headers_impl(ctx):
             mkdir -p prebuilts/clang/host/linux-x86/clang-stable
             ln -s $(realpath {clang_lib_dir}) prebuilts/clang/host/linux-x86/clang-stable/lib
             for f in $(find {intermediates_dir} -type f -printf '%P\n'); do
-                {python3} {clean_header_py} -u -k {intermediates_dir} -d {intermediates_dir} ${{f}}
+                {python3} {clean_header_py} \
+                        -k {intermediates_dir} \
+                        -d {intermediates_dir} \
+                        -u ${{f}} \
+                        >/dev/null
             done
         """.format(
             intermediates_dir = intermediates_dir,

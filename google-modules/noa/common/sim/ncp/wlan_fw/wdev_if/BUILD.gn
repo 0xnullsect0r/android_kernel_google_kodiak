@@ -22,6 +22,26 @@ wlan_source_set("chip_brcm") {
   ]
 }
 
+wlan_source_set("chip_wcn") {
+  public_deps = [
+    ":headers",
+    "$dir_wlan_fw/sys_if:common",
+    "$dir_wlan_fw/sys_if:types",
+  ]
+  deps = [
+    "$dir_noa_drivers/hwio",
+    "$dir_wlan_fw:noa_desc",
+    "$dir_wlan_fw:wlan_cast",
+    "$dir_wlan_fw/modules/wlan_ring:wlan_ring",
+    "$dir_wlan_fw/sys_if:interrupt",
+    "$dir_wlan_fw/sys_if:io",
+    "$dir_wlan_fw/wlan_log",
+  ]
+  sources = [
+    "$dir_wlan_fw/wdev_if/chip/wcn7760/wdev_if_chip_wcn_7760.cc",
+  ]
+}
+
 wlan_source_set("hw_arch_brcm") {
   public_deps = [
     ":headers",
@@ -53,6 +73,26 @@ wlan_test("hw_arch_brcm_test") {
   ]
 }
 
+wlan_source_set("hw_arch_wcn") {
+  public_deps = [
+    ":headers",
+    "$dir_wlan_fw:noa_desc",
+    "$dir_wlan_fw/sys_if:common",
+    "$dir_wlan_fw/sys_if:types",
+  ]
+  deps = [
+    "$dir_wlan_fw:wlan_cast",
+    "$dir_wlan_fw/modules/wlan_buffer_management",
+    "$dir_wlan_fw/sys_if:memory",
+    "$dir_wlan_fw/wlan_debug_controller:wlan_debug_packet_sniffer",
+    "$dir_wlan_fw/wlan_log",
+  ]
+  sources = [
+    "$dir_wlan_fw/wdev_if/hw_arch/wcn7760/wdev_if_hw_arch_wcn7760.cc",
+    "$dir_wlan_fw/wdev_if/hw_arch/wcn7760/wdev_if_hw_arch_wcn7760.h",
+  ]
+}
+
 wlan_source_set("wdev_if") {
   public_deps = [
     ":headers",
@@ -66,6 +106,8 @@ wlan_source_set("wdev_if") {
   deps = [
     ":chip_brcm",
     ":hw_arch_brcm",
+    ":chip_wcn",
+    ":hw_arch_wcn",
     "$dir_wlan_fw:wlan_cast",
     "$dir_wlan_fw/wlan_log",
   ]
@@ -79,6 +121,9 @@ wlan_source_set("headers") {
     "$dir_wlan_fw/wdev_if/hw_arch/brcm/brcm_msgbuf.h",
     "$dir_wlan_fw/wdev_if/hw_arch/brcm/wdev_if_hw_arch_brcm.h",
     "$dir_wlan_fw/wdev_if/wdev_if.h",
+    "$dir_wlan_fw/wdev_if/chip/wcn7760/wdev_if_chip_wcn_7760.h",
+    "$dir_wlan_fw/wdev_if/hw_arch/wcn7760/wcn7760_msgbuf.h",
+    "$dir_wlan_fw/wdev_if/hw_arch/wcn7760/wdev_if_hw_arch_wcn7760.h",
   ]
   public_deps = [
     "$dir_wlan_fw:noa_desc",

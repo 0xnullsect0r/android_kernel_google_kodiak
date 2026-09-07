@@ -17,6 +17,7 @@
 #include <gcip/gcip-status-code.h>
 #include <gcip/gcip-thermal.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-gsa.h"
@@ -355,6 +356,9 @@ out:
 		/* Only send limits to FW if at least one has been set. */
 		if (etdev->pm->min_freq || etdev->pm->max_freq)
 			mobile_pwr_update_freq_limits_locked(etdev);
+		/* Restore Coresight remote tracing state if enabled. */
+		if (!IS_ERR_OR_NULL(etdev->coresight_remote))
+			gcip_coresight_remote_restore_state(etdev->coresight_remote);
 		mutex_unlock(&etdev->pm->freq_limits_lock);
 	}
 
@@ -374,9 +378,11 @@ static int mobile_power_up(void *data)
 
 static void mobile_firmware_down(struct edgetpu_dev *etdev)
 {
-	int ret;
+	int ret = 0;
 
-	ret = edgetpu_kci_shutdown(etdev->etkci);
+	if (!edgetpu_pm_always_on(etdev))
+		ret = edgetpu_kci_shutdown(etdev->etkci);
+
 	if (!ret)
 		return;
 
@@ -548,8 +554,8 @@ int edgetpu_pm_create(struct edgetpu_dev *etdev)
 
 	mutex_init(&etdev->pm->policy_lock);
 	etdev->pm->curr_policy = etdev->max_active_state;
-	/* Set always_on if enabled by chip headers and for unit tests. */
-	if (EDGETPU_FEATURE_ALWAYS_ON || IS_ENABLED(CONFIG_EDGETPU_TEST))
+	/* Set always_on for unit tests. */
+	if (IS_ENABLED(CONFIG_EDGETPU_TEST))
 		etdev->pm->always_on = true;
 	etdev->pm->gpm = gcip_pm_create(&args);
 	if (IS_ERR(etdev->pm->gpm)) {
@@ -570,7 +576,7 @@ void edgetpu_pm_destroy(struct edgetpu_dev *etdev)
 static int __maybe_unused edgetpu_pm_suspend(struct device *dev)
 {
 	struct edgetpu_dev *etdev = dev_get_drvdata(dev);
-	struct edgetpu_list_device_client *lc;
+	struct edgetpu_client *client;
 	int count;
 	bool suspendable;
 
@@ -601,20 +607,17 @@ static int __maybe_unused edgetpu_pm_suspend(struct device *dev)
 
 	if (!mutex_trylock(&etdev->clients_lock))
 		return -EAGAIN;
-	for_each_list_device_client(etdev, lc) {
-		if (!lc->client->wakelock.req_count)
+	list_for_each_entry(client, &etdev->clients, client_list_node) {
+		if (!client->wakelock.req_count)
 			continue;
-		if (lc->client->wakelock.suspendable)
+		if (client->wakelock.suspendable)
 			continue;
-		if (lc->client == etdev->debugfs_wakelock_client)
-			etdev_warn_ratelimited(etdev,
-					       "debugfs client count %d\n",
-					       lc->client->wakelock.req_count);
+		if (client == etdev->debugfs_wakelock_client)
+			etdev_warn_ratelimited(etdev, "debugfs client count %d\n",
+					       client->wakelock.req_count);
 		else
-			etdev_warn_ratelimited(
-				etdev,
-				"client %s tgid %d count %d\n",
-				lc->client->name, lc->client->tgid, lc->client->wakelock.req_count);
+			etdev_warn_ratelimited(etdev, "client %s tgid %d count %d\n", client->name,
+					       client->tgid, client->wakelock.req_count);
 	}
 	mutex_unlock(&etdev->clients_lock);
 	return -EAGAIN;

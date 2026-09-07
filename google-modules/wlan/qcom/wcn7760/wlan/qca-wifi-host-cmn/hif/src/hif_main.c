@@ -3511,10 +3511,12 @@ hif_affinity_mgr_set_qrg_irq_affinity(struct hif_softc *scn, uint32_t irq,
 				      qdf_cpu_mask *cpu_mask)
 {
 	struct hif_cpu_affinity *cfg;
+#if !IS_ENABLED(CONFIG_WCN_GOOGLE)
 	if (hif_affinity_override_enabled(scn)) {
 		hif_info_rl("Skip affinity mgr: affn override enabled");
 		return QDF_STATUS_SUCCESS;
 	}
+#endif
 	if (!scn->affinity_mgr_supported)
 		return hif_irq_set_affinity_hint(irq, cpu_mask);
 
@@ -3588,7 +3590,8 @@ hif_affinity_mgr_init_grp_irq(struct hif_softc *scn, int grp_id,
 #endif
 
 #if defined(HIF_CPU_PERF_AFFINE_MASK) || \
-	defined(FEATURE_ENABLE_CE_DP_IRQ_AFFINE)
+	defined(FEATURE_ENABLE_CE_DP_IRQ_AFFINE) || \
+	(defined(WLAN_DP_AFFINITY_OVERRIDE_FEATURE) && IS_ENABLED(CONFIG_WCN_GOOGLE))
 void hif_config_irq_set_perf_affinity_hint(
 	struct hif_opaque_softc *hif_ctx)
 {

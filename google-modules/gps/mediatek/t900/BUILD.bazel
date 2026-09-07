@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module", "ddk_uapi_headers")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -18,7 +23,6 @@ ddk_module(
     ],
     includes = ["include"],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",

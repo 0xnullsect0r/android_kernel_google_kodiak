@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Utility functions of mailbox protocol for Edge TPU ML accelerator.
  *
@@ -98,7 +98,7 @@ static int edgetpu_mailbox_request_irq(struct edgetpu_mailbox *mailbox, int irq)
 	int ret;
 
 	/* Physical interrupts are not supported in the test environment. */
-	if (IS_ENABLED(CONFIG_EDGETPU_TEST))
+	if (IS_ENABLED(CONFIG_EDGETPU_TEST) && !mailbox->msi_enabled)
 		return 0;
 
 	/* irq == 0 implies this mailbox does not route interrupts to the AP. */
@@ -114,7 +114,7 @@ static int edgetpu_mailbox_request_irq(struct edgetpu_mailbox *mailbox, int irq)
 }
 
 struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev, void __iomem *csr_base,
-					      int irq, uint index)
+					      int irq, uint index, bool msi_enabled)
 {
 	/*
 	 * TODO(b/376971597) switch from GFP_ATOMIC to GFP_KERNEL once this is no longer called
@@ -128,6 +128,7 @@ struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev, void __
 	mailbox->mailbox_id = index;
 	mailbox->etdev = etdev;
 	mailbox->csr_base = csr_base;
+	mailbox->msi_enabled = msi_enabled;
 	ret = edgetpu_mailbox_request_irq(mailbox, irq);
 	if (ret) {
 		etdev_err(etdev, "failed to request irq %d for mailbox %u: %d\n", mailbox->irq,

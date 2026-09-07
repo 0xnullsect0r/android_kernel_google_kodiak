@@ -2182,8 +2182,8 @@ static int link_load_gnss_image(struct link_device *ld,
 	void __user *src;
 
 	int ret = 0;
-	unsigned int gnss_shmem_size = 0;
 	struct mem_link_device *mld = to_mem_link_device(ld);
+	size_t gnss_region_size = cp_shmem_get_size(0, SHMEM_GNSS_FW);
 
 	memset(&img, 0, sizeof(struct gnss_image));
 
@@ -2200,7 +2200,22 @@ static int link_load_gnss_image(struct link_device *ld,
 		return ret;
 	}
 
-	gnss_shmem_size = cp_shmem_get_size(0, SHMEM_GNSS_FW);
+	if (!img.firmware_bin) {
+		mif_err("firmware_bin is NULL!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size == 0) {
+		mif_err("firmware_size is zero!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size > gnss_region_size ||
+			img.offset > gnss_region_size - img.firmware_size) {
+		mif_err("Invalid GNSS image parameters (offset=%u, size=%u)!\n",
+				img.offset, img.firmware_size);
+		return -EFAULT;
+	}
 
 	dst = (void __iomem *)(mld->gnss_v_base + img.offset);
 	src = (void __user *)((unsigned long)img.firmware_bin);
@@ -2208,12 +2223,6 @@ static int link_load_gnss_image(struct link_device *ld,
 	if (ret) {
 		mif_err("copy_from_user_memcpy_toio() fail:%d\n", ret);
 		return ret;
-	}
-
-	if (img.offset + img.firmware_size > gnss_shmem_size) {
-		mif_err("GNSS load OOB (offset: %#x, size: %#x, shmem_size: %#x)!\n",
-				img.offset, img.firmware_size, gnss_shmem_size);
-		return -EINVAL;
 	}
 
 	return ret;
@@ -2225,6 +2234,7 @@ static int link_read_gnss_image(struct link_device *ld,
 	struct gnss_image img;
 	int err = 0;
 	struct mem_link_device *mld = to_mem_link_device(ld);
+	size_t gnss_region_size = cp_shmem_get_size(0, SHMEM_GNSS_FW);
 
 	memset(&img, 0, sizeof(struct gnss_image));
 
@@ -2240,8 +2250,19 @@ static int link_read_gnss_image(struct link_device *ld,
 		return err;
 	}
 
-	if (img.offset + img.firmware_size > cp_shmem_get_size(0, SHMEM_GNSS_FW)) {
-		mif_err("offset:%d size:%d error\n",
+	if (!img.firmware_bin) {
+		mif_err("firmware_bin is NULL!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size == 0) {
+		mif_err("firmware_size is zero!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size > gnss_region_size ||
+		(img.offset > gnss_region_size - img.firmware_size)) {
+		mif_err("offset:%u size:%u error\n",
 			img.offset, img.firmware_size);
 		return -EFAULT;
 	}

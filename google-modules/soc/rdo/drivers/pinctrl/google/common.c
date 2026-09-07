@@ -60,13 +60,13 @@ static inline void google_pinctrl_check_set(struct google_pinctrl *gctl,
 	}
 }
 
-int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl)
+int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl, int pin)
 {
 	int ret = 0;
 
 	trace_google_pinctrl_get_csr_pd(gctl);
 
-	google_pinctrl_debugfs_inc_cnt(gctl, RPM_GET_CNT);
+	google_pinctrl_debugfs_inc_cnt(gctl, RPM_GET_CNT, pin);
 
 	if (IS_ERR_OR_NULL(gctl->csr_access_pd))
 		return ret;
@@ -81,11 +81,11 @@ int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl)
 	return ret;
 }
 
-void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl)
+void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl, int pin)
 {
 	trace_google_pinctrl_put_csr_pd(gctl);
 
-	google_pinctrl_debugfs_inc_cnt(gctl, RPM_PUT_CNT);
+	google_pinctrl_debugfs_inc_cnt(gctl, RPM_PUT_CNT, pin);
 
 	if (IS_ERR_OR_NULL(gctl->csr_access_pd))
 		return;
@@ -271,7 +271,7 @@ static int google_pinctrl_resume(struct device *dev)
 	int ret;
 
 	trace_google_pinctrl_resume(gctl);
-	google_pinctrl_debugfs_inc_cnt(gctl, SYS_RESM_CNT);
+	google_pinctrl_debugfs_inc_cnt(gctl, SYS_RESM_CNT, -1);
 
 	ret = pm_runtime_force_resume(dev);
 	if (ret)
@@ -321,7 +321,7 @@ static int google_pinctrl_runtime_suspend(struct device *dev)
 
 	trace_google_pinctrl_runtime_suspend(gctl);
 
-	google_pinctrl_debugfs_inc_cnt(gctl, RPM_SUSP_CNT);
+	google_pinctrl_debugfs_inc_cnt(gctl, RPM_SUSP_CNT, -1);
 	gctl->rpm_last_suspend_time = ktime_get();
 
 	google_pinctrl_disable_irqs(gctl);
@@ -344,7 +344,7 @@ static int google_pinctrl_runtime_resume(struct device *dev)
 
 	trace_google_pinctrl_runtime_resume(gctl);
 
-	google_pinctrl_debugfs_inc_cnt(gctl, RPM_RESM_CNT);
+	google_pinctrl_debugfs_inc_cnt(gctl, RPM_RESM_CNT, -1);
 
 	/* Calculate time delta since last suspend and save it */
 	now = ktime_get();
@@ -498,7 +498,7 @@ static int google_gpio_direction_input(struct gpio_chip *chip,
 
 	google_pinctrl_debugfs_inc_fops_cnt(gctl, DIR_I_CNT, group_selector);
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -516,7 +516,7 @@ static int google_gpio_direction_input(struct gpio_chip *chip,
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	return ret;
 }
@@ -538,7 +538,7 @@ static int google_gpio_direction_output(struct gpio_chip *chip,
 
 	google_pinctrl_debugfs_inc_fops_cnt(gctl, DIR_O_CNT, group_selector);
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -555,7 +555,7 @@ static int google_gpio_direction_output(struct gpio_chip *chip,
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	return ret;
 }
@@ -572,7 +572,7 @@ static int google_gpio_get_direction(struct gpio_chip *chip,
 	if (group_selector >= gctl->info->num_groups)
 		return -EINVAL;
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -590,7 +590,7 @@ static int google_gpio_get_direction(struct gpio_chip *chip,
 
 	trace_google_gpio_get_direction(gctl, group_selector, tx_reg.layout.oe);
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	return (tx_reg.layout.oe) ? GPIO_LINE_DIRECTION_OUT :
 				     GPIO_LINE_DIRECTION_IN;
@@ -609,7 +609,7 @@ static int google_gpio_get(struct gpio_chip *chip, unsigned int group_selector)
 
 	trace_google_gpio_get(gctl, group_selector, 0);
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -623,7 +623,7 @@ static int google_gpio_get(struct gpio_chip *chip, unsigned int group_selector)
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	return (val & BIT(GPIO_PAD_BIT));
 }
@@ -647,7 +647,7 @@ static void google_gpio_set(struct gpio_chip *chip, unsigned int group_selector,
 
 	google_pinctrl_debugfs_inc_fops_cnt(gctl, SET_CNT, group_selector);
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return;
 
@@ -662,7 +662,7 @@ static void google_gpio_set(struct gpio_chip *chip, unsigned int group_selector,
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 }
 
 static int google_gpio_set_config(struct gpio_chip *chip,
@@ -766,7 +766,7 @@ static int google_pinmux_set_mux(struct pinctrl_dev *pctldev,
 
 	new_mux_val = BIT(i);
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -777,7 +777,7 @@ static int google_pinmux_set_mux(struct pinctrl_dev *pctldev,
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	return ret;
 }
@@ -882,7 +882,7 @@ static int google_pinconf_group_get(struct pinctrl_dev *pctldev,
 	if (group_selector >= gctl->info->num_groups)
 		return -EINVAL;
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -892,7 +892,7 @@ static int google_pinconf_group_get(struct pinctrl_dev *pctldev,
 	p_reg.val = google_readl(get_reg2offset(PARAM_ID), gctl, g);
 	tx_reg.val = google_readl(get_reg2offset(TXDATA_ID), gctl, g);
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	/* Convert register value to pinconf value */
 	switch (param) {
@@ -980,13 +980,13 @@ static int google_pinconf_group_set(struct pinctrl_dev *pctldev,
 	g = &gctl->info->groups[group_selector];
 	param_format_type = (unsigned long) gctl->info->pins[group_selector].drv_data;
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
 	ret = google_pinctrl_trylock(gctl, &flags, true);
 	if (ret) {
-		google_pinctrl_put_csr_pd(gctl);
+		google_pinctrl_put_csr_pd(gctl, group_selector);
 		return ret;
 	}
 
@@ -1124,7 +1124,7 @@ static int google_pinconf_group_set(struct pinctrl_dev *pctldev,
 handle_err:
 	google_pinctrl_unlock(gctl, &flags);
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 
 	if (ret == -EOPNOTSUPP)
 		dev_err(gctl->dev, "Unsupported config parameter: %x\n", param);
@@ -1168,7 +1168,7 @@ static void google_gpio_irq_disable(struct irq_data *d)
 	group_selector = d->hwirq;
 	g = &gctl->info->groups[group_selector];
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return;
 
@@ -1183,7 +1183,7 @@ static void google_gpio_irq_disable(struct irq_data *d)
 
 			google_pinctrl_unlock(gctl, &flags);
 		}
-	} else {
+	} else if (gctl->irqinfo[irq_index].enabled_by_client) {
 		/*
 		 * For GIA-shared pins, the GPIO IMR might be re-enabled once ownership
 		 * is transferred to a peer subsystem (e.g., AoSS/AOC). To prevent a
@@ -1199,7 +1199,7 @@ static void google_gpio_irq_disable(struct irq_data *d)
 		gctl->irqinfo[irq_index].enabled_by_client = false;
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 }
 
 static void google_gpio_irq_enable(struct irq_data *d)
@@ -1216,7 +1216,7 @@ static void google_gpio_irq_enable(struct irq_data *d)
 	group_selector = d->hwirq;
 	g = &gctl->info->groups[group_selector];
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return;
 
@@ -1231,12 +1231,13 @@ static void google_gpio_irq_enable(struct irq_data *d)
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	if (irq_index >= 0 && gctl->irqinfo[irq_index].shared_via_irq_routing) {
+	if (irq_index >= 0 && gctl->irqinfo[irq_index].shared_via_irq_routing &&
+	    !gctl->irqinfo[irq_index].enabled_by_client) {
 		enable_irq(gctl->irqinfo[irq_index].virq);
 		gctl->irqinfo[irq_index].enabled_by_client = true;
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 }
 
 static void google_gpio_irq_mask_update(struct google_pinctrl *gctl,
@@ -1246,7 +1247,7 @@ static void google_gpio_irq_mask_update(struct google_pinctrl *gctl,
 	unsigned long flags;
 	int ret;
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, g->num);
 	if (ret < 0)
 		return;
 
@@ -1278,7 +1279,7 @@ static void google_gpio_irq_mask_update(struct google_pinctrl *gctl,
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, g->num);
 }
 
 static void google_gpio_irq_mask(struct irq_data *d)
@@ -1321,7 +1322,7 @@ static void google_gpio_irq_bus_lock(struct irq_data *d)
 	struct google_pinctrl *gctl = gpiochip_get_data(gc);
 
 	trace_google_gpio_irq_bus_lock(gctl, d->irq);
-	google_pinctrl_get_csr_pd(gctl);
+	google_pinctrl_get_csr_pd(gctl, d->hwirq);
 }
 
 static void google_gpio_irq_bus_sync_unlock(struct irq_data *d)
@@ -1330,7 +1331,7 @@ static void google_gpio_irq_bus_sync_unlock(struct irq_data *d)
 	struct google_pinctrl *gctl = gpiochip_get_data(gc);
 
 	trace_google_gpio_irq_bus_unlock(gctl, d->irq);
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, d->hwirq);
 }
 
 static void google_gpio_irq_ack(struct irq_data *d)
@@ -1386,7 +1387,7 @@ static int google_gpio_irq_set_type(struct irq_data *d, unsigned int flow_type)
 		}
 	}
 
-	ret = google_pinctrl_get_csr_pd(gctl);
+	ret = google_pinctrl_get_csr_pd(gctl, group_selector);
 	if (ret < 0)
 		return ret;
 
@@ -1400,7 +1401,7 @@ static int google_gpio_irq_set_type(struct irq_data *d, unsigned int flow_type)
 		google_pinctrl_unlock(gctl, &flags);
 	}
 
-	google_pinctrl_put_csr_pd(gctl);
+	google_pinctrl_put_csr_pd(gctl, group_selector);
 	return ret;
 }
 
@@ -1648,6 +1649,7 @@ static unsigned int google_gpio_irq_startup(struct irq_data *d)
 						google_gpio_irq_handler,
 						&gctl->irqinfo[irq_index]);
 	gctl->irqinfo[irq_index].requested_by_client = true;
+	gctl->irqinfo[irq_index].enabled_by_client = true;
 	google_gpio_irq_enable(d);
 
 	return 0;
@@ -1988,6 +1990,9 @@ int google_pinctrl_probe(struct platform_device *pdev,
 	gctl->chip = google_gpio_chip;
 
 	raw_spin_lock_init(&gctl->lock);
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	raw_spin_lock_init(&gctl->pins_rpm_stats_lock);
+#endif
 
 	gctl->desc.name = dev_name(&pdev->dev);
 	gctl->desc.pins = sswrp->pins;

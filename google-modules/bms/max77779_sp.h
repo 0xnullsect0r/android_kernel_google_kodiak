@@ -12,8 +12,7 @@
 #define RSOC_ADDR				10
 #define FWHI_ADDR				12
 #define FWSF_ADDR				16
-#define MDLV_ADDR				20
-#define BPST_ADDR				21
+#define MDLS_ADDR				20
 #define WLFW_ADDR				22
 #define BCLS_ADDR				30
 #define AAWC_ADDR				32
@@ -27,8 +26,7 @@
 #define OPCODE_USER_SPACE_R_RES_LEN 32
 #define FWHI_TAG_LENGTH				4
 #define FWSF_TAG_LENGTH				4
-#define MDLV_TAG_LENGTH				1
-#define BPST_TAG_LENGTH				1
+#define MDLS_TAG_LENGTH				1
 #define WLFW_TAG_LENGTH				4
 #define BCLS_TAG_LENGTH				1
 #define AACC_TAG_LENGTH				4

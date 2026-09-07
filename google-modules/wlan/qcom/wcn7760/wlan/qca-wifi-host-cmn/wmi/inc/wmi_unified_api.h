@@ -3809,9 +3809,28 @@ QDF_STATUS wmi_extract_sar_cap_service_ready_ext(
  * Return: QDF_STATUS_SUCCESS for success or error code
  */
 QDF_STATUS wmi_extract_sar_cap_service_ready_ext2(
-			wmi_unified_t wmi_handle,
+wmi_unified_t wmi_handle,
 			uint8_t *evt_buf,
 			struct wlan_psoc_host_service_ext2_param *ext2_param);
+
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+/* Forward declaration: full definition in wifi_pos_utils_i.h */
+struct wifi_pos_pmsr_fw_caps;
+
+/**
+ * wmi_extract_rtt_peer_meas_caps_service_ready_ext2() - extract RTT/FTM
+ *   peer measurement capabilities from service_ready_ext2 event.
+ * @wmi_handle: wmi handle
+ * @evt_buf: event buffer
+ * @caps: destination structure to fill
+ *
+ * Return: QDF_STATUS_SUCCESS on success, error code otherwise
+ */
+QDF_STATUS wmi_extract_rtt_peer_meas_caps_service_ready_ext2(
+		wmi_unified_t wmi_handle,
+		uint8_t *evt_buf,
+		struct wifi_pos_pmsr_fw_caps *caps);
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
 
 /**
  * wmi_unified_fw_test_cmd() - send fw test command to fw.
@@ -4795,6 +4814,41 @@ QDF_STATUS
 wmi_send_rtt_pasn_deauth_cmd(wmi_unified_t wmi, struct qdf_mac_addr *peer_mac);
 #endif
 
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+/**
+ * wmi_send_rtt_peer_meas_cancel_cmd - Send RTT peer measurement cancel command
+ * @wmi: WMI handle
+ * @req_id: request identifier to cancel
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS
+wmi_send_rtt_peer_meas_cancel_cmd(wmi_unified_t wmi, uint32_t req_id);
+
+/**
+ * wmi_send_rtt_peer_meas_req_cmd - Send RTT peer measurement request command
+ * @wmi: WMI handle
+ * @params: RTT peer measurement request parameters
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS
+wmi_send_rtt_peer_meas_req_cmd(wmi_unified_t wmi,
+			       struct wmi_rtt_peer_meas_req_cmd_params *params);
+
+/**
+ * wmi_extract_rtt_peer_meas_report() - Extract RTT peer measurement report
+ * @wmi: WMI handle
+ * @evt_buf: Event buffer
+ * @dst: Destination buffer pointer
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS
+wmi_extract_rtt_peer_meas_report(wmi_unified_t wmi, void *evt_buf,
+				 struct wifi_pos_peer_meas_report *dst);
+#endif
+
 /**
  * wmi_critical_events_in_flight() - get the number of critical events in flight
  *
@@ -5502,10 +5556,51 @@ wmi_unified_power_datapath_stats_request_send(
 QDF_STATUS
 wmi_unified_send_vdev_ch_hop_sched_cmd(wmi_unified_t wmi_handle,
 				       struct vdev_ch_hop_sched_params *params);
+
+/**
+ * wmi_unified_vdev_get_chan_hop_status() - Send channel hop status request
+ * @wmi_handle: wmi handle
+ * @req: Request parameters containing vdev_id
+ *
+ * Send WMI command to request channel hopping status from firmware.
+ *
+ * Return: QDF_STATUS_SUCCESS on success, error code on failure
+ */
+QDF_STATUS
+wmi_unified_vdev_get_chan_hop_status(struct wmi_unified *wmi_handle,
+				     struct vdev_chan_hop_status_req *req);
+
+/**
+ * wmi_extract_vdev_chan_hop_status() - extract vdev channel hop status
+ * @wmi_handle: wmi handle
+ * @evt_buf: pointer to event buffer
+ * @response: pointer to hold channel hop status response
+ *
+ * Return: QDF_STATUS_SUCCESS on success and QDF_STATUS_E_FAILURE for failure
+ */
+QDF_STATUS
+wmi_extract_vdev_chan_hop_status(struct wmi_unified *wmi_handle,
+				 void *evt_buf,
+				 struct vdev_chan_hop_status_response *response);
 #else
 static inline QDF_STATUS
 wmi_unified_send_vdev_ch_hop_sched_cmd(wmi_unified_t wmi_handle,
 				       struct vdev_ch_hop_sched_params *params)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+
+static inline QDF_STATUS
+wmi_unified_vdev_get_chan_hop_status(struct wmi_unified *wmi_handle,
+				     struct vdev_chan_hop_status_req *req)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+
+static inline QDF_STATUS
+wmi_extract_vdev_chan_hop_status(struct wmi_unified *wmi_handle,
+				 void *evt_buf,
+				 struct vdev_chan_hop_status_response *response)
 {
 	return QDF_STATUS_E_NOSUPPORT;
 }

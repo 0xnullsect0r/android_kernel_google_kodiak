@@ -13,31 +13,27 @@ int syna_set_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
 {
 	struct syna_tcm *tcm = private_data;
 	u16 config = 0;
-	int ret = 0;
 
-	if (goog_pm_wake_get_locks(tcm->gti) == 0 || tcm->pwr_state != PWR_ON) {
-		LOGI("Connot set report rate because touch is off");
+	if (tcm->pwr_state != PWR_ON) {
+		LOGW("Cannot set report rate because touch is off");
 		return -EPERM;
 	}
 
 	switch (cmd->setting) {
 	case 120:
-		config = 1;
-		LOGI("Set low report rate");
+		config = REPORT_RATE_120HZ;
 		break;
 	case 240:
-		config = 0;
-		LOGI("Set high report rate");
+		config = REPORT_RATE_240HZ;
 		break;
 	default:
-		LOGE("Invalid report rate %d", cmd->setting);
+		LOGE("Invalid report rate %u", cmd->setting);
 		return -EINVAL;
 	}
+	LOGI("Set report rate %uHz", cmd->setting);
 
-	ret = syna_tcm_set_dynamic_config(tcm->tcm_dev, DC_REPORT_RATE_SWITCH, config,
-					  CMD_RESPONSE_IN_ATTN);
-
-	return ret;
+	return syna_tcm_set_dynamic_config(tcm->tcm_dev, DC_REPORT_RATE_SWITCH, config,
+					   CMD_RESPONSE_IN_POLLING);
 }
 
 int syna_get_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
@@ -46,19 +42,29 @@ int syna_get_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
 	int ret = 0;
 	u16 config = 0;
 
-	if (goog_pm_wake_get_locks(tcm->gti) == 0 || tcm->pwr_state != PWR_ON) {
-		LOGI("Connot get report rate because touch is off");
+	if (tcm->pwr_state != PWR_ON) {
+		LOGW("Cannot get report rate because touch is off");
 		return -EPERM;
 	}
 
 	ret = syna_tcm_get_dynamic_config(tcm->tcm_dev, DC_REPORT_RATE_SWITCH, &config,
-					  CMD_RESPONSE_IN_ATTN);
-	if (ret < 0 || (config != 0 && config != 1)) {
-		LOGE("Fail to read report rate, ret: %d, config: %u", ret, config);
-		return -EINVAL;
+					  CMD_RESPONSE_IN_POLLING);
+	if (ret < 0) {
+		LOGE("Fail to read report rate, ret: %d", ret);
+		return ret;
 	}
 
-	cmd->setting = config == 0 ? 240 : 120;
+	switch (config) {
+	case REPORT_RATE_120HZ:
+		cmd->setting = 120;
+		break;
+	case REPORT_RATE_240HZ:
+		cmd->setting = 240;
+		break;
+	default:
+		LOGE("Fail to read report rate, config: %u", config);
+		return -EINVAL;
+	}
 	return ret;
 }
 

@@ -9,6 +9,7 @@
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
@@ -254,42 +255,150 @@ DEFINE_DEBUGFS_ATTRIBUTE(aoss_ssr_fops, aoss_ssr_read, aoss_ssr_write, "%llu\n")
 static int clocks_info_show(struct seq_file *s, void *data)
 {
 	struct dw_i3c_master *master = s->private;
-	u32 reg;
+	unsigned long core_rate;
+	u32 reg_pp, reg_od, reg_ext, reg_fmp, reg_fm, reg_sda_hold;
+	u32 pp_hcnt, pp_lcnt;
+	u32 od_hcnt, od_lcnt;
+	u32 ext_lcnt_1, ext_lcnt_2, ext_lcnt_3, ext_lcnt_4;
+	u32 fmp_hcnt, fmp_lcnt;
+	u32 fm_hcnt, fm_lcnt;
+	u32 sda_tx_hold, sda_pp_od_switch_dly, sda_od_pp_switch_dly;
+	u32 sda_tx_hold_ns, sda_pp_od_switch_dly_ns, sda_od_pp_switch_dly_ns;
+	u32 rise_ns = master->i2c_timings.scl_rise_ns;
+	u64 freq_pp = 0, freq_od = 0;
+	u64 freq_sdr1 = 0, freq_sdr2 = 0, freq_sdr3 = 0, freq_sdr4 = 0;
+	u64 freq_i2c_fm = 0, freq_i2c_fmp = 0;
+	u64 period_ps;
 	int ret;
 
 	ret = pm_runtime_resume_and_get(master->dev);
 	if (ret < 0) {
-		dev_err(master->dev,
-			"%s: cannot resume i3c bus master, err: %d\n", __func__,
-			ret);
+		dev_err(master->dev, "cannot resume i3c bus master, err: %d\n", ret);
 		return ret;
 	}
 
-	seq_printf(s, "core_clk: %lu\n", clk_get_rate(master->core_clk));
-	seq_printf(s, "apb_clk: %lu\n", clk_get_rate(master->apb_clk));
+	core_rate = clk_get_rate(master->core_clk);
+	if (!core_rate) {
+		dev_err(master->dev, "failed to get core clock rate\n");
+		pm_runtime_mark_last_busy(master->dev);
+		pm_runtime_put_autosuspend(master->dev);
+		return -EINVAL;
+	}
 
-	reg = readl(master->regs + SCL_I3C_PP_TIMING);
-	seq_printf(s, "PP clock: lcnt=%lu, hcnt=%lu\n",
-		   SCL_I3C_TIMING_LCNT_VAL(reg),
-		   SCL_I3C_TIMING_HCNT_VAL(reg));
+	reg_pp = readl(master->regs + SCL_I3C_PP_TIMING);
+	pp_hcnt = SCL_I3C_TIMING_HCNT_VAL(reg_pp);
+	pp_lcnt = SCL_I3C_TIMING_LCNT_VAL(reg_pp);
 
-	reg = readl(master->regs + SCL_I3C_OD_TIMING);
-	seq_printf(s, "OD clock: lcnt=%lu, hcnt=%lu\n",
-		   SCL_I3C_TIMING_LCNT_VAL(reg),
-		   SCL_I3C_TIMING_HCNT_VAL(reg));
+	reg_od = readl(master->regs + SCL_I3C_OD_TIMING);
+	od_hcnt = SCL_I3C_TIMING_HCNT_VAL(reg_od);
+	od_lcnt = SCL_I3C_TIMING_LCNT_VAL(reg_od);
 
-	reg = readl(master->regs + SCL_I2C_FMP_TIMING);
-	seq_printf(s, "I2C_FMP clock: lcnt=%lu, hcnt=%lu\n",
-		   SCL_I2C_FMP_TIMING_LCNT_VAL(reg),
-		   SCL_I2C_FMP_TIMING_HCNT_VAL(reg));
+	reg_ext = readl(master->regs + SCL_EXT_LCNT_TIMING);
+	ext_lcnt_1 = reg_ext & 0xff;
+	ext_lcnt_2 = (reg_ext >> 8) & 0xff;
+	ext_lcnt_3 = (reg_ext >> 16) & 0xff;
+	ext_lcnt_4 = (reg_ext >> 24) & 0xff;
 
-	reg = readl(master->regs + SCL_I2C_FM_TIMING);
-	seq_printf(s, "I2C_FM clock: lcnt=%lu, hcnt=%lu\n",
-		   SCL_I2C_FM_TIMING_LCNT_VAL(reg),
-		   SCL_I2C_FM_TIMING_HCNT_VAL(reg));
+	reg_fmp = readl(master->regs + SCL_I2C_FMP_TIMING);
+	fmp_hcnt = SCL_I2C_FMP_TIMING_HCNT_VAL(reg_fmp);
+	fmp_lcnt = SCL_I2C_FMP_TIMING_LCNT_VAL(reg_fmp);
+
+	reg_fm = readl(master->regs + SCL_I2C_FM_TIMING);
+	fm_hcnt = SCL_I2C_FM_TIMING_HCNT_VAL(reg_fm);
+	fm_lcnt = SCL_I2C_FM_TIMING_LCNT_VAL(reg_fm);
+
+	reg_sda_hold = readl(master->regs + SDA_HOLD_SWITCH_DLY_TIMING);
 
 	pm_runtime_mark_last_busy(master->dev);
 	pm_runtime_put_autosuspend(master->dev);
+
+	sda_tx_hold = SDA_TX_HOLD_VAL(reg_sda_hold);
+	sda_pp_od_switch_dly = SDA_PP_OD_SWITCH_DLY_VAL(reg_sda_hold);
+	sda_od_pp_switch_dly = SDA_OD_PP_SWITCH_DLY_VAL(reg_sda_hold);
+
+	sda_tx_hold_ns = DIV_ROUND_CLOSEST_ULL((u64)sda_tx_hold * NSEC_PER_SEC, core_rate);
+	sda_pp_od_switch_dly_ns = DIV_ROUND_CLOSEST_ULL((u64)sda_pp_od_switch_dly * NSEC_PER_SEC,
+							core_rate);
+	sda_od_pp_switch_dly_ns = DIV_ROUND_CLOSEST_ULL((u64)sda_od_pp_switch_dly * NSEC_PER_SEC,
+							core_rate);
+
+	if (pp_hcnt + pp_lcnt)
+		freq_pp = DIV_ROUND_CLOSEST_ULL((u64)core_rate, pp_hcnt + pp_lcnt);
+
+	if (od_hcnt + od_lcnt)
+		freq_od = DIV_ROUND_CLOSEST_ULL((u64)core_rate, od_hcnt + od_lcnt);
+
+	if (pp_hcnt + ext_lcnt_1)
+		freq_sdr1 = DIV_ROUND_CLOSEST_ULL((u64)core_rate, pp_hcnt + ext_lcnt_1);
+
+	if (pp_hcnt + ext_lcnt_2)
+		freq_sdr2 = DIV_ROUND_CLOSEST_ULL((u64)core_rate, pp_hcnt + ext_lcnt_2);
+
+	if (pp_hcnt + ext_lcnt_3)
+		freq_sdr3 = DIV_ROUND_CLOSEST_ULL((u64)core_rate, pp_hcnt + ext_lcnt_3);
+
+	if (pp_hcnt + ext_lcnt_4)
+		freq_sdr4 = DIV_ROUND_CLOSEST_ULL((u64)core_rate, pp_hcnt + ext_lcnt_4);
+
+	if (fm_hcnt + fm_lcnt) {
+		period_ps = DIV_ROUND_CLOSEST_ULL((u64)(fm_hcnt + fm_lcnt) * 1000000000000ULL,
+						  core_rate);
+		period_ps += (u64)rise_ns * 1000ULL;
+		if (period_ps)
+			freq_i2c_fm = DIV64_U64_ROUND_CLOSEST(1000000000000ULL, period_ps);
+	}
+
+	if (fmp_hcnt + fmp_lcnt) {
+		period_ps = DIV_ROUND_CLOSEST_ULL((u64)(fmp_hcnt + fmp_lcnt) * 1000000000000ULL,
+						  core_rate);
+		period_ps += (u64)rise_ns * 1000ULL;
+		if (period_ps)
+			freq_i2c_fmp = DIV64_U64_ROUND_CLOSEST(1000000000000ULL, period_ps);
+	}
+
+	seq_printf(s, "core_clk: %lu Hz\n", core_rate);
+	seq_printf(s, "apb_clk: %lu Hz\n\n", clk_get_rate(master->apb_clk));
+
+	seq_puts(s, "I3C Push-Pull (PP):\n");
+	seq_printf(s, "  Registers: HCNT=%u, LCNT=%u\n", pp_hcnt, pp_lcnt);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_pp);
+
+	seq_puts(s, "I3C Open-Drain (OD):\n");
+	seq_printf(s, "  Registers: HCNT=%u, LCNT=%u\n", od_hcnt, od_lcnt);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_od);
+
+	seq_puts(s, "I3C SDR1 (8 MHz Target):\n");
+	seq_printf(s, "  Registers: PP_HCNT=%u, SDR1_LCNT=%u\n", pp_hcnt, ext_lcnt_1);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_sdr1);
+
+	seq_puts(s, "I3C SDR2 (6 MHz Target):\n");
+	seq_printf(s, "  Registers: PP_HCNT=%u, SDR2_LCNT=%u\n", pp_hcnt, ext_lcnt_2);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_sdr2);
+
+	seq_puts(s, "I3C SDR3 (4 MHz Target):\n");
+	seq_printf(s, "  Registers: PP_HCNT=%u, SDR3_LCNT=%u\n", pp_hcnt, ext_lcnt_3);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_sdr3);
+
+	seq_puts(s, "I3C SDR4 (2 MHz Target):\n");
+	seq_printf(s, "  Registers: PP_HCNT=%u, SDR4_LCNT=%u\n", pp_hcnt, ext_lcnt_4);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_sdr4);
+
+	seq_puts(s, "Legacy I2C Fast Mode (FM) (400 kHz Target):\n");
+	seq_printf(s, "  Registers: HCNT=%u, LCNT=%u\n", fm_hcnt, fm_lcnt);
+	seq_printf(s, "  Configured Rise Time: %u ns\n", rise_ns);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_i2c_fm);
+
+	seq_puts(s, "Legacy I2C Fast Mode Plus (FMP) (1 MHz Target):\n");
+	seq_printf(s, "  Registers: HCNT=%u, LCNT=%u\n", fmp_hcnt, fmp_lcnt);
+	seq_printf(s, "  Configured Rise Time: %u ns\n", rise_ns);
+	seq_printf(s, "  Calculated Frequency: %llu Hz\n\n", freq_i2c_fmp);
+
+	seq_puts(s, "SDA Hold and Switch Delay Timing:\n");
+	seq_printf(s, "  Registers: TX_HOLD=%u, PP_OD_SWITCH_DLY=%u, OD_PP_SWITCH_DLY=%u\n",
+		   sda_tx_hold, sda_pp_od_switch_dly, sda_od_pp_switch_dly);
+	seq_printf(s, "  SDA TX Hold: %u ns\n", sda_tx_hold_ns);
+	seq_printf(s, "  SDA PP to OD Switch Delay: %u ns\n", sda_pp_od_switch_dly_ns);
+	seq_printf(s, "  SDA OD to PP Switch Delay: %u ns\n", sda_od_pp_switch_dly_ns);
 
 	return 0;
 }

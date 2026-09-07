@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 label_flag(
     name = "google-pcie",
     build_setting_default = ":no-pcie",
@@ -53,12 +58,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-        "//private/google-modules/wlan/bcmdhd:__subpackages__",
-        "//private/google-modules/wlan/qcom/wcn7760/cnss2:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
@@ -91,12 +90,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-        "//private/google-modules/wlan/bcmdhd:__subpackages__",
-        "//private/google-modules/wlan/qcom/wcn7760/cnss2:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
@@ -115,9 +108,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",

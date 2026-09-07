@@ -20,6 +20,7 @@ typedef enum WlanDeviceChipId {
 	kWlanDeviceChipIdBrcm4390,
 	kWlanDeviceChipIdGem5FakeBrcm4389,
 	kWlanDeviceChipIdGem5FakeBrcm4390,
+	kWlanDeviceChipIdWcn7760,
 	kWlanDeviceChipIdEnd,
 	kWlanDeviceChipIdNum = kWlanDeviceChipIdEnd,
 } WlanDeviceChipId;
@@ -30,6 +31,7 @@ typedef enum WlanDeviceArchType {
 	kWlanDeviceArchTypeUnknown = kWlanDeviceArchTypeStart,
 	kWlanDeviceArchTypeBrcmV0,
 	kWlanDeviceArchTypeBrcmV1,
+	kWlanDeviceArchTypeWcn7760,
 	kWlanDeviceArchTypeEnd,
 	kWlanDeviceArchTypeNum = kWlanDeviceArchTypeEnd,
 } WlanDeviceArchType;
@@ -138,6 +140,7 @@ typedef struct WdevIfChipOps {
 	void (*AcknowledgeInterrupt)(struct WdevIf *const wdev_if, int32_t irq_id);
 	void (*RingTxPostDoorbell)(struct WdevIf *const wdev_if, void *priv);
 	bool (*PcieCheckCmplTimeOut)(void);
+	bool (*FwTrapCheck)(uint64_t fw_trap_addr);
 } WdevIfChipOps;
 
 /// @brief WLAN device hardware architecture operations.
@@ -186,6 +189,8 @@ typedef struct WdevIf {
 	WdevIfHwArchOps hw_arch_ops;
 	/// @brief Statistics.
 	WdevIfStats stats;
+	/// @brief RX packet TLV size.
+	uint32_t rx_pkt_tlv_size;
 	/// @brief IRQ information.
 	WdevIrqInfo irq_info;
 	ExternalServices *ext_svc;
@@ -193,6 +198,7 @@ typedef struct WdevIf {
 	uint64_t doorbell_addr;
 	/// @brief Device private data.
 	void *dev_priv_data;
+	uint32_t cookie_base_addr;
 } WdevIf;
 
 /// @brief Deinitialize a WLAN device interface.
@@ -236,6 +242,17 @@ static inline bool WdevIfPcieCheckCmplTimeOut(WdevIf *const wdev_if)
 {
 	if (wdev_if->chip_ops.PcieCheckCmplTimeOut) {
 		return wdev_if->chip_ops.PcieCheckCmplTimeOut();
+	}
+
+	return false;
+}
+
+/// @brief Check if fw trap data is zero
+/// @return true if fw trap data is non zero, false otherwise.
+static inline bool WdevIfFwTrapCheck(const WdevIf *const wdev_if, uint64_t fw_trap_addr)
+{
+	if (wdev_if->chip_ops.FwTrapCheck) {
+		return wdev_if->chip_ops.FwTrapCheck(fw_trap_addr);
 	}
 
 	return false;
@@ -411,9 +428,10 @@ WdevIfGetPostValidateDescriptorMethod(WdevIf *const wdev_if)
 ///
 /// @param[in] wdev_if The WLAN device interface to initialize.
 /// @param[in] chip_id The chip ID.
+/// @param[in] rx_pkt_tlv_size The RX packet TLV size.
 /// @return 0 on success, negative error code on failure.
 extern int32_t WdevIfInit(WdevIf *const wdev_if, WlanDeviceChipId chip_id,
-			  ExternalServices *ext_svc);
+			  uint32_t rx_pkt_tlv_size, ExternalServices *ext_svc);
 
 /// @brief Set Wlan device doorbell address
 ///

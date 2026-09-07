@@ -134,3 +134,45 @@ void vs_crtc_trigger_recovery(struct vs_crtc *vs_crtc, u32 srcs)
 
 	queue_work(system_highpri_wq, &recovery->work);
 }
+
+void vs_execute_recovery_or_coredump_if_needed(struct vs_crtc_state *vs_crtc_state,
+					       u64 panel_errors,
+					       u64 dsi_errors,
+					       u64 pmic_errors,
+					       u32 srcs)
+{
+	struct drm_crtc *crtc = vs_crtc_state->base.crtc;
+	bool coredump_executed = false;
+	int i;
+
+	vs_crtc_state->recovery_info.panel_errors = panel_errors;
+	vs_crtc_state->recovery_info.dsi_errors = dsi_errors;
+	vs_crtc_state->recovery_info.pmic_errors = pmic_errors;
+
+	for (i = 0; i < SSCD_SRC_MAX; i++) {
+		if (!(srcs & BIT(i)))
+			continue;
+
+		/*
+		 * Marks the recovery as needing to happen; does not execute until the
+		 * commit proper occurs.
+		 */
+		if (vs_crtc_state_is_recovery_source_enabled(vs_crtc_state, i)) {
+			vs_crtc_state->recovery_info.needs_recovery = true;
+			vs_crtc_state->recovery_info.recovery_srcs |= BIT(i);
+		}
+
+		/*
+		 * Executes the coredump immediately. If multiple sources in the check would
+		 * coredump, we instead only do the first one, using the
+		 * coredump_executed pointer to keep track of whether we dumped this commit.
+		 */
+		if (!coredump_executed && coredump_source_enabled(i)) {
+			struct vs_crtc_state *old_vs_crtc_state = to_vs_crtc_state(crtc->state);
+
+			coredump_executed = true;
+			vs_crtc_trigger_panel_dsi_coredump(to_vs_crtc(crtc), old_vs_crtc_state,
+							   panel_errors, dsi_errors, i);
+		}
+	}
+}

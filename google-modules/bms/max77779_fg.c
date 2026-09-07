@@ -27,6 +27,7 @@
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <misc/logbuffer.h>
 #include "max77779_fg.h"
 
 /* sync from google/logbuffer.c */
@@ -3616,6 +3617,24 @@ static int max77779_fg_log_event(struct max77779_fg_chip *chip, gbms_tag_t tag)
 }
 
 /* handle recovery of FG state */
+static void max77779_fg_check_gmsr_data(struct max77779_fg_chip *chip)
+{
+	int ret;
+
+	if (!chip->model_data)
+		return;
+
+	if (!max77779_fg_model_check_version(chip->model_data) ||
+	    !max77779_fg_check_state(chip->model_data)) {
+		ret = max77779_reset_state_data(chip->model_data);
+		if (ret < 0)
+			dev_err(chip->dev, "GMSR: model data didn't erase ret=%d\n", ret);
+		else
+			dev_warn(chip->dev, "GMSR: model data erased\n");
+	}
+}
+
+/* handle recovery of FG state */
 static int max77779_fg_init_model_data(struct max77779_fg_chip *chip)
 {
 	int ret;
@@ -3625,11 +3644,6 @@ static int max77779_fg_init_model_data(struct max77779_fg_chip *chip)
 
 	if (!max77779_fg_model_check_version(chip->model_data) ||
 	    !max77779_fg_check_state(chip->model_data)) {
-		ret = max77779_reset_state_data(chip->model_data);
-		if (ret < 0)
-			dev_err(chip->dev, "GMSR: model data didn't erase ret=%d\n", ret);
-		else
-			dev_warn(chip->dev, "GMSR: model data erased\n");
 
 		gbms_logbuffer_devlog(chip->ce_log, chip->dev,
 				      LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
@@ -3759,6 +3773,9 @@ static int max77779_fg_init_chip(struct max77779_fg_chip *chip)
 	mutex_lock(&chip->model_lock);
 	max77779_fg_update_cycle_count(chip);
 	mutex_unlock(&chip->model_lock);
+
+	/* check if need to erase GMSR */
+	max77779_fg_check_gmsr_data(chip);
 
 	/* triggers loading of the model in the irq handler on POR */
 	if (!chip->por) {

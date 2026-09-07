@@ -143,9 +143,33 @@ int gcip_fence_signal_async(struct gcip_fence *fence, int errno);
  * If the caller is going to stop waiting on @fence in the un-sleepable context such as IRQ context
  * or spin lock, one should use the async one. It will release the block wakelock of the waiter
  * asynchronously.
+ *
+ * DEPRECATED: use `gcip_fence_waiter_completed*()` functions.
  */
 void gcip_fence_waited(struct gcip_fence *fence, enum iif_ip_type ip);
 void gcip_fence_waited_async(struct gcip_fence *fence, enum iif_ip_type ip);
+
+/*
+ * Notifies @fence that a command which signaled @fence has completed its work.
+ *
+ * This function is only meaningful when the fence type is GCIP_INTER_IP_FENCE.
+ *
+ * If the caller is going to notify fences in the un-sleepable context such as IRQ context, the
+ * async version should be used.
+ */
+void gcip_fence_signaler_completed(struct gcip_fence *fence);
+void gcip_fence_signaler_completed_async(struct gcip_fence *fence);
+
+/*
+ * Notifies @fence that a command of @ip which waited @fence has completed its work.
+ *
+ * This function is only meaningful when the fence type is GCIP_INTER_IP_FENCE.
+ *
+ * If the caller is going to notify fences in the un-sleepable context such as IRQ context, the
+ * async version should be used.
+ */
+void gcip_fence_waiter_completed(struct gcip_fence *fence, enum iif_ip_type ip);
+void gcip_fence_waiter_completed_async(struct gcip_fence *fence, enum iif_ip_type ip);
 
 /*
  * Registers a callback which will be called when all signalers are submitted for @fence and

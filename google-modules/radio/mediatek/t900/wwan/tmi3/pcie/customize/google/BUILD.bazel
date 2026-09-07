@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "ddk_headers",
     hdrs = [
@@ -67,11 +72,12 @@ ddk_module(
         "-include",
         "wwan_defines.h",
     ],
+    defconfig = select({
+        "//private/devices/google/common:soc_is_malibu": "malibu_defconfig",
+        "//conditions:default": "default_defconfig",
+    }),
+    kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio/mediatek:__subpackages__",
-    ],
     deps = [
         ":ddk_headers",
         "//common:all_headers_aarch64",
@@ -82,15 +88,5 @@ ddk_module(
         "//private/google-modules/soc/rdo/drivers/soc/google/cdd:gcdd",
         "//private/google-modules/soc/rdo/interconnect:google_icc",
         "//private/google-modules/soc/rdo/pci:google-pcie-v2",
-    ],
-)
-
-filegroup(
-    name = "radio_google.kconfig",
-    srcs = [
-        "Kconfig",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

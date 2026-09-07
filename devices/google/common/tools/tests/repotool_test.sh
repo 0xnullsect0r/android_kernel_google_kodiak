@@ -118,6 +118,9 @@ elif [[ "$*" == *"topic:ancestry-topic"* ]]; then
 elif [[ "$*" == *"topic:diverged-topic"* ]]; then
   echo ")]}'"
   echo '[{"project":"private/project1","_number":303},{"project":"private/project1","_number":404}]'
+elif [[ "$*" == *"custom-query"* ]]; then
+  echo ")]}'"
+  echo '[{"project":"private/project1","_number":12345}]'
 else
   echo ")]}'"
   echo '[]'
@@ -349,6 +352,31 @@ set -e
 if (( EXIT_CODE == 0 )) || ! grep -q "FAILED (Conflict): private/project1" <<<"${OUT}"; then
   fail "Should report conflict. Output: ${OUT}"
 fi
+pass
+
+echo -n "Testing merge (CONFLICT --continue-with-conflicts)... "
+reset_projects
+cd "${TEST_DIR}/private/project1"
+git checkout -B conflict_upstream -q
+echo "up" > file
+git add file
+git commit -m "up" -q
+git checkout main -q
+echo "local" > file
+git add file
+git commit -m "local" -q
+cd "${TEST_DIR}"
+OUT=$("${REPOTOOL}" merge --topic=conflict_cwc_topic \
+      --continue-with-conflicts conflict_upstream 2>&1 || true)
+if ! grep -q "MERGED (Conflict): private/project1" <<<"${OUT}"; then
+  fail "Should report MERGED (Conflict) if --continue-with-conflicts is used. Output: ${OUT}"
+fi
+cd "${TEST_DIR}/private/project1"
+COMMIT_MSG=$(git log -1 --pretty=%s)
+if [[ "${COMMIT_MSG}" != "[conflict] "* ]]; then
+  fail "Expected commit message to start with '[conflict] ', got '${COMMIT_MSG}'"
+fi
+cd "${TEST_DIR}"
 pass
 
 echo -n "Testing merge (ABORT_SUCCESS)... "
@@ -614,6 +642,14 @@ reset_projects
 OUT=$("${REPOTOOL}" download --topic=diverged-topic 2>&1 || true)
 if ! grep -q "have diverged" <<<"${OUT}" || ! grep -q "Tips:" <<<"${OUT}"; then
   fail "Should report divergence. Output: ${OUT}"
+fi
+pass
+
+echo -n "Testing download (with query)... "
+reset_projects
+OUT=$("${REPOTOOL}" download --topic=query-topic --query="custom-query" 2>&1 || true)
+if ! grep -q "DOWNLOADED: private/project1" <<<"${OUT}"; then
+  fail "download with query failed. Output: ${OUT}"
 fi
 pass
 

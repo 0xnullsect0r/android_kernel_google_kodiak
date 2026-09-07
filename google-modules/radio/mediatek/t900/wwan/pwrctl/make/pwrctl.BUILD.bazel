@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -43,11 +41,6 @@ ddk_module(
         "wwan_defines.h",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         ":wwan_gpio_pwrctl_headers",
         "//private/google-modules/radio/common/metrics_collection:headers",

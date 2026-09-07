@@ -263,8 +263,9 @@ static int i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 	/* Dummy read to avoid the register getting stuck on Bay Trail */
 	regmap_read(dev->map, DW_IC_ENABLE_STATUS, &dummy);
 
-	/* Reset interrupts counter */
+	/* Reset interrupts counters */
 	dev->irq_counter = 0;
+	dev->irq_events_idx = 0;
 
 	/* Clear and enable interrupts */
 	regmap_read(dev->map, DW_IC_CLR_INTR, &dummy);
@@ -683,9 +684,14 @@ i2c_dw_read(struct dw_i2c_dev *dev)
 
 static const unsigned int regs2read[] = { DW_IC_RAW_INTR_STAT, DW_IC_TXFLR, DW_IC_RXFLR,
 					  DW_IC_STATUS, DW_IC_ENABLE_STATUS, DW_IC_ENABLE,
-					  DW_IC_CON, DW_IC_TAR, DW_IC_INTR_MASK, DW_IC_INTR_STAT };
+					  DW_IC_CON, DW_IC_TAR, DW_IC_INTR_MASK, DW_IC_INTR_STAT,
+					  DW_IC_SS_SCL_HCNT, DW_IC_SS_SCL_LCNT, DW_IC_FS_SCL_HCNT,
+					  DW_IC_FS_SCL_LCNT, DW_IC_HS_SCL_HCNT, DW_IC_HS_SCL_LCNT,
+					  DW_IC_SDA_HOLD, DW_IC_TX_ABRT_SOURCE };
 static const char * const regs_names[] = { "RAWINT", "TXFLR", "RXFLR", "STAT", "EN_STAT", "EN",
-					   "CON", "TAR", "IR_MASK", "IR_STAT" };
+					   "CON", "TAR", "IR_MASK", "IR_STAT", "SS_HCNT", "SS_LCNT",
+					   "FS_HCNT", "FS_LCNT", "HS_HCNT", "HS_LCNT", "SDA_HOLD",
+					   "TX_ABRT_SRC" };
 #define DUMP_REGS_NUM ARRAY_SIZE(regs2read)
 
 static void dump_regs(struct dw_i2c_dev *dev)
@@ -706,6 +712,14 @@ static void dump_regs(struct dw_i2c_dev *dev)
 
 	dev_err(dev->dev, "dev_stat:%#lX xfer_stat:%#X\n",
 		dev->status & STATUS_ACTIVE, dev->msg_write_idx & dev->msg_read_idx);
+
+	regmap_read(dev->map, DW_IC_RAW_INTR_STAT, &reg_val);
+	if (reg_val & DW_IC_INTR_TX_ABRT) {
+		regmap_read(dev->map, DW_IC_TX_ABRT_SOURCE, &reg_val);
+		dev_err(dev->dev, "abort detected: %#X\n", reg_val);
+
+		regmap_read(dev->map, DW_IC_CLR_TX_ABRT, &reg_val);
+	}
 }
 
 /* return true : xfer timeout, false: xfer completed */
@@ -729,8 +743,8 @@ static bool i2c_dw_wait_for_xfer_completion(struct dw_i2c_dev *dev, bool busy_wa
 
 static void irq_state_show(struct dw_i2c_dev *dev)
 {
-	struct irq_desc *desc = container_of(&dev->dev->kobj, struct irq_desc, kobj);
-	ssize_t ret_masked, ret_active, ret_pending;
+	struct irq_desc *desc = irq_to_desc(dev->irq);
+	int ret_masked, ret_active, ret_pending;
 	bool masked, active, pending;
 
 	ret_pending = irq_get_irqchip_state(dev->irq, IRQCHIP_STATE_PENDING, &pending);
@@ -742,7 +756,30 @@ static void irq_state_show(struct dw_i2c_dev *dev)
 		ret_masked ? "NA" : (masked ? "MASKED" : "UNMASKED"),
 		ret_active ? "NA" : (active ? "ACTIVE" : "INACTIVE"),
 		ret_pending ? "NA" : (pending ? "PENDING" : "CLEARED"),
-		desc->depth);
+		(desc ? desc->depth : -1));
+}
+
+static void i2c_dw_dump_irq_events(struct dw_i2c_dev *dev)
+{
+	u32 events_idx = READ_ONCE(dev->irq_events_idx);
+	u32 count = min_t(u32, events_idx, DW_I2C_IRQ_EVENTS_BUF_SIZE);
+	u32 start = (events_idx >= DW_I2C_IRQ_EVENTS_BUF_SIZE) ?
+		    (events_idx % DW_I2C_IRQ_EVENTS_BUF_SIZE) : 0;
+
+	if (!count)
+		return;
+
+	dev_err(dev->dev, "IRQ events log (collected %u events, showing last %u):\n",
+		events_idx, count);
+
+	for (u32 i = 0; i < count; i++) {
+		u32 idx = (start + i) % DW_I2C_IRQ_EVENTS_BUF_SIZE;
+		u32 event_num = events_idx - count + i;
+
+		dev_err(dev->dev, "event[%u]: INTR_STAT=0x%08x TX_ABRT_SOURCE=0x%08x\n",
+			event_num, dev->irq_events[idx].stat,
+			dev->irq_events[idx].abort_source);
+	}
 }
 
 /*
@@ -817,6 +854,7 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 			"controller timed out, msg_num %d, w_idx %d, r_idx %d, irq_count %d\n",
 			dev->msgs_num, dev->msg_write_idx, dev->msg_read_idx, dev->irq_counter);
 		irq_state_show(dev);
+		i2c_dw_dump_irq_events(dev);
 		dump_regs(dev);
 		dump_stack();
 
@@ -898,9 +936,18 @@ static const struct i2c_adapter_quirks i2c_dw_quirks = {
 	.flags = I2C_AQ_NO_ZERO_LEN,
 };
 
+static void i2c_dw_log_irq_event(struct dw_i2c_dev *dev, u32 stat, u32 abort_source)
+{
+	u32 idx = dev->irq_events_idx % DW_I2C_IRQ_EVENTS_BUF_SIZE;
+
+	dev->irq_events[idx].stat = stat;
+	dev->irq_events[idx].abort_source = abort_source;
+	WRITE_ONCE(dev->irq_events_idx, dev->irq_events_idx + 1);
+}
+
 static u32 i2c_dw_read_clear_intrbits(struct dw_i2c_dev *dev)
 {
-	unsigned int stat, dummy;
+	unsigned int stat, dummy, abort_source = 0;
 
 	/*
 	 * The IC_INTR_STAT register just indicates "enabled" interrupts.
@@ -938,6 +985,7 @@ static u32 i2c_dw_read_clear_intrbits(struct dw_i2c_dev *dev)
 		 */
 		regmap_read(dev->map, DW_IC_TX_ABRT_SOURCE, &dev->abort_source);
 		regmap_read(dev->map, DW_IC_CLR_TX_ABRT, &dummy);
+		abort_source = dev->abort_source;
 	}
 	if (stat & DW_IC_INTR_RX_DONE)
 		regmap_read(dev->map, DW_IC_CLR_RX_DONE, &dummy);
@@ -949,6 +997,8 @@ static u32 i2c_dw_read_clear_intrbits(struct dw_i2c_dev *dev)
 		regmap_read(dev->map, DW_IC_CLR_START_DET, &dummy);
 	if (stat & DW_IC_INTR_GEN_CALL)
 		regmap_read(dev->map, DW_IC_CLR_GEN_CALL, &dummy);
+
+	i2c_dw_log_irq_event(dev, stat, abort_source);
 
 	return stat;
 }
@@ -1202,7 +1252,7 @@ int i2c_dw_probe_master(struct dw_i2c_dev *dev)
 
 	if (dev->flags & ACCESS_NO_IRQ_SUSPEND) {
 		irq_flags = IRQF_NO_SUSPEND;
-	} else if (MODEL(dev->flags) != MODEL_GOOGLE) {
+	} else if (!IS_GOOGLE_SOC(dev->flags)) {
 		irq_flags = IRQF_SHARED | IRQF_COND_SUSPEND;
 	}
 

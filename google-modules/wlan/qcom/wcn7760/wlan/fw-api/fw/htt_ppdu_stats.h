@@ -2173,18 +2173,20 @@ typedef struct {
     };
 
     /* Note: resp_rate_info is only valid for if resp_type is UL
-     * BIT [ 1 :   0 ]   :- ltf_size
-     * BIT [ 2 :   2 ]   :- stbc
-     * BIT [ 3 :   3 ]   :- he_re (range extension)
-     * BIT [ 7 :   4 ]   :- reserved3
-     * BIT [ 11:   8 ]   :- bw
-     * BIT [ 15:   12]   :- nss  NSS 1,2, ...8
-     * BIT [ 19:   16]   :- mcs
-     * BIT [ 23:   20]   :- preamble
-     * BIT [ 27:   24]   :- gi
-     * BIT [ 28:   28]   :- dcm
-     * BIT [ 29:   29]   :- ldpc
-     * BIT [ 31:   30]   :- resp_ppdu_type - HTT_PPDU_STATS_RESP_PPDU_TYPE
+     * BIT [ 1 :0 ] :- ltf_size
+     * BIT [ 2 :2 ] :- stbc
+     * BIT [ 3 :3 ] :- he_re (range extension)
+     * BIT [ 4 :4 ] :- resp_2xldpc
+     *                 (UL TB PPDU used 2xLDPC, valid for 11BN/UHR only)
+     * BIT [ 7 :5 ] :- reserved3
+     * BIT [ 11:8 ] :- bw
+     * BIT [ 15:12] :- nss  NSS 1,2, ...8
+     * BIT [ 19:16] :- mcs
+     * BIT [ 23:20] :- preamble
+     * BIT [ 27:24] :- gi
+     * BIT [ 28:28] :- dcm
+     * BIT [ 29:29] :- ldpc
+     * BIT [ 31:30] :- resp_ppdu_type - HTT_PPDU_STATS_RESP_PPDU_TYPE
      */
     union {
         A_UINT32 resp_rate_info;
@@ -2192,7 +2194,8 @@ typedef struct {
             A_UINT32 resp_ltf_size:           2,
                      resp_stbc:               1,
                      resp_he_re:              1,
-                     reserved3:               4,
+                     resp_2xldpc:             1,
+                     reserved3:               3,
                      resp_bw:                 4,
                      resp_nss:                4,
                      resp_mcs:                4,
@@ -2681,7 +2684,9 @@ typedef struct {
              sw_rts_success:    1,
              sw_rts_failure:    1,
              cts_rcvd_diff_bw:  1,
-             reserved2:        28;
+             urrn_warning_type: 1,
+             mpdu_underrun_cnt: 16,
+             reserved2:        11;
 
     /*
      * Max rates configured per BW:
@@ -2693,6 +2698,10 @@ typedef struct {
      * hw protection frame's FES duration in micro seconds.
      */
     A_UINT32 hw_prot_dur_us;
+
+    A_UINT32 num_eof_delim;
+
+    A_UINT32 num_null_delim;
 } htt_ppdu_stats_user_cmpltn_common_tlv;
 
 #define HTT_PPDU_STATS_USER_CMPLTN_BA_BITMAP_TLV_TID_NUM_M     0x000000ff

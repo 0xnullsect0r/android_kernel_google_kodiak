@@ -60,6 +60,9 @@
 #include "wlan_twt_ucfg_ext_cfg.h"
 #include "wlan_twt_ucfg_ext_api.h"
 #include "wlan_twt_ucfg_api.h"
+#include "wlan_p2p_api.h"
+#include "wlan_hdd_main.h"
+#include "wlan_hdd_wifi_pos_pasn.h"
 
 /* Ms to Time Unit Micro Sec */
 #define MS_TO_TU_MUS(x)   ((x) * 1024)
@@ -173,11 +176,12 @@ wlan_hdd_get_sta_vdev_for_p2p_dev(struct wlan_objmgr_psoc *psoc,
 	return vdev;
 }
 
+#define MAX_REMAIN_ON_CHANNEL_DURATION (2000)
 static int __wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 						 struct wireless_dev *wdev,
 						 struct ieee80211_channel *chan,
 						 unsigned int duration,
-						 u64 *cookie)
+						 u64 *cookie, const u8 *rx_addr)
 {
 	struct net_device *dev = wdev->netdev;
 	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
@@ -241,6 +245,12 @@ static int __wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 	if (!ucfg_nan_is_sta_p2p_ndp_supported(hdd_ctx->psoc))
 		ucfg_nan_disable_concurrency(hdd_ctx->psoc);
 
+	if (rx_addr)
+		wlan_p2p_request_random_mac(psoc, wlan_vdev_get_id(vdev),
+					    (uint8_t *)rx_addr,
+					    chan->center_freq, *cookie,
+					    duration);
+
 	hdd_debug("ROC req: vdev %d adapter device mode %d vdev device mode %d opmode %d",
 		  wlan_vdev_get_id(vdev), adapter->device_mode,
 		  wlan_vdev_mlme_get_opmode(vdev), opmode);
@@ -252,6 +262,29 @@ static int __wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 	return qdf_status_to_os_return(status);
 }
 
+#ifdef CFG80211_REMAIN_ON_CHANNEL_WITH_SRC_MAC
+int wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct ieee80211_channel *chan,
+					unsigned int duration, u64 *cookie,
+					const u8 *rx_addr)
+{
+	int errno;
+	struct osif_vdev_sync *vdev_sync;
+
+	errno = osif_vdev_sync_op_start(wdev->netdev, &vdev_sync);
+	if (errno)
+		return errno;
+
+	errno = __wlan_hdd_cfg80211_remain_on_channel(wiphy, wdev, chan,
+						      duration, cookie,
+						      rx_addr);
+
+	osif_vdev_sync_op_stop(vdev_sync);
+
+	return errno;
+}
+#else
 int wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 					struct wireless_dev *wdev,
 					struct ieee80211_channel *chan,
@@ -265,12 +298,13 @@ int wlan_hdd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		return errno;
 
 	errno = __wlan_hdd_cfg80211_remain_on_channel(wiphy, wdev, chan,
-						      duration, cookie);
+						      duration, cookie, NULL);
 
 	osif_vdev_sync_op_stop(vdev_sync);
 
 	return errno;
 }
+#endif
 
 static int
 __wlan_hdd_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
@@ -313,6 +347,9 @@ __wlan_hdd_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
 	hdd_debug("Cancel RoC req: vdev:%d adapter_device_mode:%d vdev_device_mode:%d",
 		  wlan_vdev_get_id(vdev), adapter->device_mode,
 		  wlan_vdev_mlme_get_opmode(vdev));
+	wlan_p2p_random_mac_handle_tx_done(adapter->hdd_ctx->psoc,
+					   wlan_vdev_get_id(vdev), cookie, 0);
+
 	status = wlan_cfg80211_cancel_roc(vdev, cookie, adapter->device_mode);
 	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_P2P_ID);
 
@@ -348,21 +385,29 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 			      bool dont_wait_for_ack, u64 *cookie, int link_id)
 {
 	QDF_STATUS status;
-	struct net_device *dev = wdev->netdev;
-	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
-	struct hdd_context *hdd_ctx = WLAN_HDD_GET_CTX(adapter);
+	struct net_device *dev;
+	struct hdd_adapter *adapter;
+	struct hdd_context *hdd_ctx;
 	struct wlan_objmgr_vdev *vdev;
 	uint8_t type, sub_type;
 	uint16_t auth_algo;
 	QDF_STATUS qdf_status;
 	int ret;
 	uint32_t assoc_resp_len, ft_info_len = 0;
-	const uint8_t  *assoc_resp;
+	const uint8_t *assoc_resp;
 	void *ft_info;
 	struct hdd_ap_ctx *ap_ctx;
 	struct wlan_hdd_link_info *link_info;
 	uint8_t vdev_id;
 	enum QDF_OPMODE opmode = QDF_STA_MODE;
+
+	dev = hdd_wdev_get_netdev(wdev);
+	if (!dev) {
+		hdd_err("Failed to get netdev from wdev");
+		return -EINVAL;
+	}
+	adapter = WLAN_HDD_GET_PRIV_PTR(dev);
+	hdd_ctx = WLAN_HDD_GET_CTX(adapter);
 
 	if (QDF_GLOBAL_FTM_MODE == hdd_get_conparam()) {
 		hdd_err("Command not allowed in FTM mode");
@@ -509,7 +554,17 @@ int wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	int errno;
 	struct osif_vdev_sync *vdev_sync;
 	int link_id = -1;
-	errno = osif_vdev_sync_op_start(wdev->netdev, &vdev_sync);
+
+	if (wlan_hdd_is_pd_iface(wdev)) {
+		struct hdd_context *hdd_ctx = wiphy_priv(wiphy);
+		struct hdd_adapter *sta_adapter;
+
+		sta_adapter = hdd_get_adapter(hdd_ctx, QDF_STA_MODE);
+		if (sta_adapter && sta_adapter->wdev.netdev)
+			wdev = &sta_adapter->wdev;
+	}
+
+	errno = osif_vdev_sync_wdev_op_start(wdev, &vdev_sync);
 	if (errno)
 		return errno;
 
@@ -922,6 +977,16 @@ struct wireless_dev *__wlan_hdd_add_virtual_intf(struct wiphy *wiphy,
 	case QDF_STA_MODE:
 	case QDF_MONITOR_MODE:
 		break;
+	case QDF_PD_MODE:
+		if (policy_mgr_get_connection_count_with_mlo(hdd_ctx->psoc) > 1) {
+			hdd_err("PMSR not allowed when concurrency exists");
+			return ERR_PTR(-EAGAIN);
+		}
+
+		if (hdd_is_roaming_in_progress(hdd_ctx))
+			return ERR_PTR(-EAGAIN);
+
+		break;
 	default:
 		mode = QDF_STA_MODE;
 		break;
@@ -1003,9 +1068,15 @@ struct wireless_dev *__wlan_hdd_add_virtual_intf(struct wiphy *wiphy,
 			mode = QDF_P2P_DEVICE_MODE;
 		}
 
-		device_address = wlan_hdd_get_intf_addr(hdd_ctx, mode);
-		if (!device_address)
-			return ERR_PTR(-EINVAL);
+		if (mode == QDF_PD_MODE) {
+			device_address = (uint8_t *)params->macaddr;
+			hdd_debug("PD_MODE : mac_addr: " QDF_MAC_ADDR_FMT,
+				  QDF_MAC_ADDR_REF(device_address));
+		} else {
+			device_address = wlan_hdd_get_intf_addr(hdd_ctx, mode);
+			if (!device_address)
+				return ERR_PTR(-EINVAL);
+		}
 
 		if (policy_mgr_mlo_sap_concurrency_allow(hdd_ctx->psoc) &&
 		    (QDF_SAP_MODE == mode || QDF_STA_MODE == mode))
@@ -1062,6 +1133,7 @@ _wlan_hdd_add_virtual_intf(struct wiphy *wiphy,
 	struct wireless_dev *wdev;
 	struct osif_vdev_sync *vdev_sync;
 	int errno;
+	struct net_device *dev;
 
 	errno = osif_vdev_sync_create_and_trans(wiphy_dev(wiphy), &vdev_sync);
 	if (errno)
@@ -1073,7 +1145,8 @@ _wlan_hdd_add_virtual_intf(struct wiphy *wiphy,
 	if (IS_ERR_OR_NULL(wdev))
 		goto destroy_sync;
 
-	osif_vdev_sync_register(wdev->netdev, vdev_sync);
+	dev = hdd_wdev_get_netdev(wdev);
+	osif_vdev_sync_register(dev, wdev, vdev_sync);
 	osif_vdev_sync_trans_stop(vdev_sync);
 
 	return wdev;
@@ -1169,12 +1242,19 @@ void hdd_clean_up_interface(struct hdd_context *hdd_ctx,
 
 int __wlan_hdd_del_virtual_intf(struct wiphy *wiphy, struct wireless_dev *wdev)
 {
-	struct net_device *dev = wdev->netdev;
 	struct hdd_context *hdd_ctx = (struct hdd_context *) wiphy_priv(wiphy);
-	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
+	struct hdd_adapter *adapter;
+	struct net_device *dev;
 	int errno;
 
 	hdd_enter();
+
+	dev = hdd_wdev_get_netdev(wdev);
+	if (!dev) {
+		hdd_err("Failed to get netdev from wdev");
+		return -EINVAL;
+	}
+	adapter = WLAN_HDD_GET_PRIV_PTR(dev);
 
 	if (QDF_GLOBAL_FTM_MODE == hdd_get_conparam()) {
 		hdd_err("Command not allowed in FTM mode");
@@ -1230,14 +1310,24 @@ int wlan_hdd_del_virtual_intf(struct wiphy *wiphy, struct wireless_dev *wdev)
 {
 	int errno;
 	struct osif_vdev_sync *vdev_sync;
-	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(wdev->netdev);
+	struct hdd_adapter *adapter;
+	struct net_device *dev;
+
+	dev = hdd_wdev_get_netdev(wdev);
+	if (!dev) {
+		hdd_err("Failed to get netdev from wdev");
+		return -EINVAL;
+	}
+	adapter = WLAN_HDD_GET_PRIV_PTR(dev);
 
 	adapter->delete_in_progress = true;
-	errno = osif_vdev_sync_trans_start_wait(wdev->netdev, &vdev_sync);
-	if (errno)
+	errno = osif_vdev_sync_wdev_trans_start_wait(wdev, &vdev_sync);
+	if (errno) {
+		adapter->delete_in_progress = false;
 		return errno;
+	}
 
-	osif_vdev_sync_unregister(wdev->netdev);
+	osif_vdev_sync_unregister(dev);
 	osif_vdev_sync_wait_for_ops(vdev_sync);
 
 	adapter->is_virtual_iface = true;
@@ -1442,7 +1532,8 @@ hdd_find_adapter_for_nan_oui_frames(struct hdd_context *hdd_ctx,
 		return NULL;
 
 	/* check if it is P2P MC address */
-	if (!qdf_mem_cmp(dest_addr, P2P_MC_ADDR, P2P_MC_ADDR_SIZE)) {
+	if (!qdf_mem_cmp(dest_addr, P2P_MC_ADDR, P2P_MC_ADDR_SIZE) ||
+	    !qdf_mem_cmp(dest_addr, USD_ADDR, USD_ADDR_SIZE)) {
 		adapter = hdd_get_usd_adapter(hdd_ctx);
 		if (!adapter)
 			return NULL;
@@ -1525,19 +1616,34 @@ __hdd_indicate_mgmt_frame_to_user(struct wlan_hdd_link_info *link_info,
 	/* Get adapter from Destination mac address of the frame */
 	dest_addr = &pb_frames[WLAN_HDD_80211_FRM_DA_OFFSET];
 	if (type == WLAN_FC0_TYPE_MGMT &&
-	    sub_type != SIR_MAC_MGMT_PROBE_REQ && !is_pasn_auth_frame &&
+	    sub_type != SIR_MAC_MGMT_PROBE_REQ &&
 	    !qdf_is_macaddr_broadcast((struct qdf_mac_addr *)dest_addr)) {
 		adapter = hdd_get_adapter_by_macaddr(hdd_ctx, dest_addr);
 		if (adapter)
 			goto check_adapter;
+
 		adapter = hdd_get_adapter_by_rand_macaddr(hdd_ctx, dest_addr);
 		if (adapter)
 			goto check_adapter;
+
 		adapter = hdd_find_adapter_for_nan_oui_frames(hdd_ctx, frm_len,
 							      pb_frames,
 							      sub_type);
 		if (adapter)
 			goto check_adapter;
+
+		/*
+		 * Forward the PASN authentication frame on available adapter
+		 * when macaddress based adapter lookup fails
+		 */
+		if (is_pasn_auth_frame) {
+			adapter = link_info->adapter;
+			if (!adapter) {
+				hdd_err("adapter is NULL for PASN frame");
+				return;
+			}
+			goto check_adapter;
+		}
 
 		/*
 		 * Under assumption that we don't receive any action

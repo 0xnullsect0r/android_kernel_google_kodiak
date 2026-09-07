@@ -151,6 +151,7 @@ struct perf_domain {
 	 * i.e. minimum usable frequency in kernel point of view
 	 */
 	union mbfs_client_handle max_opp_handle;
+	union mbfs_client_handle cur_opp_handle;
 
 	struct list_head list;
 };
@@ -201,14 +202,17 @@ static int gmc_memss_map_show(struct seq_file *m, void *v)
 }
 DEFINE_SHOW_ATTRIBUTE(gmc_memss_map);
 
-static inline unsigned long google_cpufreq_find_freq(struct cpufreq_cpu_data *cpufreq_cpu_data,
-						     unsigned int pf_state)
+static inline int google_cpufreq_find_freq(struct cpufreq_cpu_data *cpufreq_cpu_data,
+					   unsigned int pf_state, unsigned int *freq)
 {
 	struct cpufreq_frequency_table *pos;
 
-	cpufreq_for_each_entry(pos, cpufreq_cpu_data->freq_table)
-		if (pos->driver_data == pf_state)
-			return pos->frequency;
+	cpufreq_for_each_entry(pos, cpufreq_cpu_data->freq_table) {
+		if (pos->driver_data == pf_state) {
+			*freq = pos->frequency;
+			return 0;
+		}
+	}
 
 	dev_warn(cpufreq_cpu_data->cpu_dev, "No matching frequency of pf_state %u\n", pf_state);
 	return -ENOENT;
@@ -221,6 +225,8 @@ static int google_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	struct cpufreq_cpu_data *cpufreq_cpu_data;
 	unsigned int cpu_id = policy->cpu;
 	unsigned int pf_state;
+	unsigned int freq;
+	int ret;
 
 	policy->fast_switch_possible = true;
 	policy->dvfs_possible_from_any_cpu = true;
@@ -231,7 +237,11 @@ static int google_cpufreq_cpu_init(struct cpufreq_policy *policy)
 
 	domain = cpufreq_cpu_data->domain_data;
 	pf_state = dvfs_fe_get_pf_level(domain->domain_id);
-	cpufreq_cpu_data->freq = google_cpufreq_find_freq(cpufreq_cpu_data, pf_state);
+
+	ret = google_cpufreq_find_freq(cpufreq_cpu_data, pf_state, &freq);
+	if (ret)
+		return ret;
+	cpufreq_cpu_data->freq = freq;
 
 	dev_info(cpufreq_cpu_data->cpu_dev,
 		 "Init cpu (%u) freq to (%u), pf_state(%u)\n", cpu_id,
@@ -252,18 +262,23 @@ static void google_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 static unsigned int google_cpufreq_get(unsigned int cpu)
 {
 	struct gs_cpufreq_data *cpufreq_data = cpufreq_get_driver_data();
-	unsigned long freq_from_csr;
+	unsigned int freq_from_csr;
 	unsigned int pf_state;
 	struct cpufreq_cpu_data *cpufreq_cpu_data = cpufreq_data->cpu_data_arr[cpu];
 	struct perf_domain *domain = cpufreq_cpu_data->domain_data;
+	int ret;
 
 	pf_state = dvfs_fe_get_pf_level(domain->domain_id);
 
-	freq_from_csr = google_cpufreq_find_freq(cpufreq_cpu_data, pf_state);
+	ret = google_cpufreq_find_freq(cpufreq_cpu_data, pf_state, &freq_from_csr);
+	if (ret)
+		/* "Return 0 on error" is appropriate for the get func of cpufreq_driver. */
+		return 0;
+
 	/* Check if the freq in cache and freq in CSR are same. */
 	if (cpufreq_cpu_data->freq != freq_from_csr)
 		dev_warn(cpufreq_data->cpu_data_arr[cpu]->cpu_dev,
-			 "The freq of cpu (%u) in cache: %u, freq from CSR: %lu\n", cpu,
+			 "The freq of cpu (%u) in cache: %u, freq from CSR: %u\n", cpu,
 			 cpufreq_cpu_data->freq, freq_from_csr);
 
 	return freq_from_csr;
@@ -360,8 +375,33 @@ static void google_cpufreq_register_em(struct cpufreq_policy *policy)
 				    &em_cb, policy->cpus, true);
 }
 
-static struct freq_attr *google_cpufreq_attr[] = {
+static ssize_t show_fw_freq(struct cpufreq_policy *policy, char *buf)
+{
+	struct cpufreq_cpu_data *cpufreq_cpu_data = policy->driver_data;
+	struct perf_domain *domain = cpufreq_cpu_data->domain_data;
+	enum mbfs_error_code mbfs_ret;
+	union val64 content;
+	unsigned int freq_khz;
+	int ret;
+
+	if (is_mbfs_handle_invalid(domain->cur_opp_handle))
+		return -ENODEV;
+
+	mbfs_ret = mbfs_read_file(domain->cur_opp_handle, &content);
+	if (mbfs_ret)
+		return mbfs_error2linux(mbfs_ret);
+
+	ret = google_cpufreq_find_freq(cpufreq_cpu_data, content.number, &freq_khz);
+	if (ret)
+		return ret;
+
+	return sysfs_emit(buf, "%u\n", freq_khz);
+}
+cpufreq_freq_attr_ro(fw_freq);
+
+static struct freq_attr *google_cpufreq_attrs[] = {
 	&cpufreq_freq_attr_scaling_available_freqs,
+	&fw_freq,
 	NULL,
 };
 
@@ -376,7 +416,7 @@ static struct cpufreq_driver google_cpufreq_driver = {
 	.verify = cpufreq_generic_frequency_table_verify,
 	.init = google_cpufreq_cpu_init,
 	.exit = google_cpufreq_cpu_exit,
-	.attr = google_cpufreq_attr,
+	.attr = google_cpufreq_attrs,
 };
 
 /* TODO (b/229330089) support different type of core (Large/Mid/Small) */
@@ -1244,6 +1284,14 @@ static struct perf_domain *init_perf_domain(union mbfs_client_handle perf_domain
 		return MBFS_ERR_TO_ERR_PTR(mbfs_ret);
 	}
 
+	mbfs_ret =
+		mbfs_get_child_by_name(perf_domain_h, "CurOpp", &domain->cur_opp_handle);
+	if (mbfs_ret) {
+		dev_warn(dev, "Failed to get handle for CurOpp for perf domain %s\n",
+			domain->domain_folder_name);
+		domain->cur_opp_handle = MBFS_INVALID_HANDLE;
+	}
+
 	return domain;
 }
 
@@ -1264,6 +1312,39 @@ static int init_fast_devfreq_vote_data(struct fast_devfreq_vote_data *fvote_data
 
 	return 0;
 }
+
+static ssize_t fw_freq_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct devfreq *df = container_of(dev, struct devfreq, dev);
+	struct gs_devfreq_data *df_data = (struct gs_devfreq_data *)df->data;
+	struct perf_domain *domain = df_data->domain_data;
+	enum mbfs_error_code mbfs_ret;
+	union val64 content;
+	s64 freq;
+
+	if (is_mbfs_handle_invalid(domain->cur_opp_handle))
+		return -ENODEV;
+
+	mbfs_ret = mbfs_read_file(domain->cur_opp_handle, &content);
+	if (mbfs_ret)
+		return mbfs_error2linux(mbfs_ret);
+
+	freq = gs_devfreq_get_freq_from_level(df_data, content.number);
+	if (freq < 0)
+		return -EINVAL;
+
+	return sysfs_emit(buf, "%lld\n", freq);
+}
+static DEVICE_ATTR_RO(fw_freq);
+
+static struct attribute *perf_domain_dev_attrs[] = {
+	&dev_attr_fw_freq.attr,
+	NULL,
+};
+
+static const struct attribute_group perf_domain_dev_attr_group = {
+	.attrs = perf_domain_dev_attrs,
+};
 
 static int init_devfreq_data(struct device *parent,
 		struct perf_domain *domain, enum gs_devfreq_type type)
@@ -1377,6 +1458,10 @@ static int init_devfreq_data(struct device *parent,
 	err = google_register_devfreq(df->devfreq);
 	if (err)
 		goto remove_max_nb;
+
+	err = devm_device_add_group(&df->devfreq->dev, &perf_domain_dev_attr_group);
+	if (err)
+		goto unregister_devfreq;
 
 	err = vote_manager_init_devfreq_with_mbfs(df->devfreq, domain->perf_domain_handle);
 	if (err)

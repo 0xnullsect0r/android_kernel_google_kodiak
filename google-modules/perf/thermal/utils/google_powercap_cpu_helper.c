@@ -17,6 +17,10 @@
 #include "google_powercap_stats.h"
 #include "perf/core/google_pm_qos.h"
 
+#define GPC_CSV_LEAF_CPU_FMT \
+	"GPC_CSV_LEAF_CPU:%d,id=%llu,limit=%llu,userspace_lim=%llu," \
+	"parent_lim=%llu,freq=%lu,opp=%d\n"
+
 int gpc_freq_qos_update_request(struct freq_qos_request *req, s32 new_value)
 {
 	KUNIT_STATIC_STUB_REDIRECT(gpc_freq_qos_update_request, req, new_value);
@@ -96,7 +100,12 @@ static void __gpc_cpu_apply_limit(struct gpowercap_cpu *gpowercap_cpu)
 		gpc_stats_update(&gpowercap_cpu->gpowercap, GPC_STAT_QOS, target_freq);
 		gpc_stats_update(&gpowercap_cpu->gpowercap, GPC_STAT_POWER_LIMIT,
 				 gpowercap_cpu->power_limit);
-		pr_debug("CPU:%d Mitigation is removed.\n", gpowercap_cpu->cpu);
+		pr_debug(GPC_CSV_LEAF_CPU_FMT,
+			 gpowercap_cpu->cpu, gpowercap_cpu->gpowercap.decision_id,
+			 gpowercap_cpu->gpowercap.power_limit,
+			 gpowercap_cpu->gpowercap.userspace_power_limit,
+			 gpowercap_cpu->gpowercap.parent_power_limit,
+			 target_freq, gpowercap_cpu->target_opp_idx);
 		return;
 	}
 
@@ -111,13 +120,14 @@ static void __gpc_cpu_apply_limit(struct gpowercap_cpu *gpowercap_cpu)
 	gpowercap_cpu->target_opp_idx = i - 1;
 	target_freq = gpowercap_cpu->opp_table[gpowercap_cpu->target_opp_idx].freq;
 
+	pr_debug(GPC_CSV_LEAF_CPU_FMT,
+		 gpowercap_cpu->cpu, gpowercap_cpu->gpowercap.decision_id,
+		 gpowercap_cpu->gpowercap.power_limit,
+		 gpowercap_cpu->gpowercap.userspace_power_limit,
+		 gpowercap_cpu->gpowercap.parent_power_limit,
+		 target_freq, gpowercap_cpu->target_opp_idx);
+
 	if (last_opp_idx != gpowercap_cpu->target_opp_idx) {
-		pr_debug("CPU:%d PL:%llu util:%llu opp:%d => %d freq:%u => %lu\n",
-			gpowercap_cpu->cpu, gpowercap_cpu->power_limit,
-			gpowercap_cpu->util_percentage,
-			last_opp_idx, gpowercap_cpu->target_opp_idx,
-			gpowercap_cpu->opp_table[last_opp_idx].freq,
-			target_freq);
 		gpc_freq_qos_update_request(&gpowercap_cpu->qos_req, target_freq);
 		gpc_stats_update(&gpowercap_cpu->gpowercap, GPC_STAT_QOS, target_freq);
 		gpc_stats_update(&gpowercap_cpu->gpowercap, GPC_STAT_POWER_LIMIT,
@@ -254,6 +264,7 @@ VISIBLE_IF_KUNIT int __gpc_cpu_set_time_window_us(struct gpowercap *gpowercap, u
 		__gpc_cpu_apply_limit(gpowercap_cpu);
 	}
 	gpowercap->time_window_us = time_window_us;
+	gpowercap_propagate_time_window(gpowercap);
 
 set_time_window_exit:
 	mutex_unlock(&gpowercap->lock);
@@ -294,7 +305,7 @@ static int __gpc_cpu_odpm_notifier_call(struct notifier_block *nb, unsigned long
 	u64 power_uw = (uintptr_t)data;
 
 	gpowercap_cpu->last_power_uw = power_uw;
-	mod_delayed_work(system_highpri_wq, &gpowercap_cpu->odpm_work, 0);
+	mod_delayed_work(gpowercap_wq ? : system_unbound_wq, &gpowercap_cpu->odpm_work, 0);
 
 	return NOTIFY_OK;
 }

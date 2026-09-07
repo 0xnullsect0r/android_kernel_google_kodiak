@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017-2019, 2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -27,6 +27,8 @@
 #include <qdf_types.h>
 #include <qdf_mc_timer.h>
 #include <qdf_list.h>
+#include "wlan_p2p_roc.h"
+#include "wlan_p2p_main.h"
 
 #define P2P_EID_VENDOR                          0xdd
 #define P2P_ACTION_VENDOR_SPECIFIC_CATEGORY     0x7F
@@ -381,6 +383,26 @@ struct tx_action_context *p2p_find_tx_ctx_by_nbuf(
 	struct p2p_soc_priv_obj *p2p_soc_obj, void *nbuf);
 
 #define P2P_80211_FRM_SA_OFFSET 10
+
+/**
+ * p2p_add_random_mac() - add or append random mac to given vdev rand mac list
+ * @soc: soc object
+ * @vdev_id: vdev id
+ * @mac: mac addr to be added or append
+ * @freq: frequency
+ * @rnd_cookie: random mac mgmt tx cookie
+ *
+ * This function will add or append the mac addr entry to vdev random mac list.
+ * Once the mac addr filter is not needed, it can be removed by
+ * p2p_del_random_mac.
+ *
+ * Return: QDF_STATUS_E_EXISTS - append to existing list
+ *             QDF_STATUS_SUCCESS - add a new entry.
+ *             other : failed to add the mac address entry.
+ */
+QDF_STATUS
+p2p_add_random_mac(struct wlan_objmgr_psoc *soc, uint32_t vdev_id,
+		   uint8_t *mac, uint32_t freq, uint64_t rnd_cookie);
 
 /**
  * p2p_del_random_mac() - del mac filter from given vdev rand mac list

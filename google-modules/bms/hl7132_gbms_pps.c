@@ -16,6 +16,8 @@
 #include <linux/of_device.h>
 #include <linux/regmap.h>
 
+#include <misc/logbuffer.h>
+
 #include "hl7132_regs.h"
 #include "hl7132_charger.h"
 

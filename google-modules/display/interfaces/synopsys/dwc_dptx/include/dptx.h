@@ -7,7 +7,7 @@
 
 #ifndef __DPTX_DRIVER_H__
 #define __DPTX_DRIVER_H__
-
+#include <linux/notifier.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/completion.h>
@@ -57,7 +57,16 @@
 struct dptx;
 
 /* Number of Clocks */
-#define DPTX_NUM_PIXEL_CLKS 7
+enum {
+	GPCM_PLLDP = 0,
+	HSION_PIX0,
+	DPU_PIX0,
+	HSION_PIX1,
+	DPU_PIX1,
+	HSION_AUD0,
+	HSION_AUD1,
+	DPTX_NUM_PIXEL_CLKS
+};
 
 /* The max rate and lanes supported by the core */
 #define DPTX_MAX_LINK_RATE DPTX_PHYIF_CTRL_RATE_HBR3
@@ -422,6 +431,8 @@ struct dptx {
 	 * No DP video, DP audio, or HDCP is enabled in this mode.
 	 */
 	bool link_test_mode;
+	bool link_test_force_cr;
+	bool link_test_force_cheq;
 
 	/* AUX debug */
 	bool aux_debug_en;
@@ -435,6 +446,12 @@ struct dptx {
 	/* DP struct for managing the maximum res */
 	struct dptx_max_res dptx_max_res_store;
 
+	/* AOSS SSR Notifier */
+	struct notifier_block aoss_ssr_nb;
+	bool ssr_in_progress;
+	bool deferred_plug;
+	bool deferred_irq;
+	enum hotplug_state ssr_saved_hpd;
 };
 
 /*

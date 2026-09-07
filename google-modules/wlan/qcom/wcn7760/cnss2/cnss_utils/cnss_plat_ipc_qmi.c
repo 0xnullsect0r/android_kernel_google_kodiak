@@ -31,9 +31,25 @@
 #include "cnss_plat_ipc_service_v01.h"
 #include <linux/version.h>
 
+#ifdef CONFIG_CNSS2_DEBUG
+#define CNSS_ASSERT(_condition) do {					\
+		if (!(_condition)) {					\
+			pr_err("ASSERT at line %d\n", __LINE__);	\
+			BUG();						\
+		}							\
+	} while (0)
+#else
+#define CNSS_ASSERT(_condition) do {					\
+		if (!(_condition)) {					\
+			pr_err("ASSERT at line %d\n", __LINE__);	\
+			WARN_ON(1);					\
+		}							\
+	} while (0)
+#endif
+
 #define CNSS_MAX_FILE_SIZE (32 * 1024 * 1024)
 #define CNSS_PLAT_IPC_MAX_USER 1
-#define CNSS_PLAT_IPC_QMI_FILE_TXN_TIMEOUT 10000
+#define CNSS_PLAT_IPC_QMI_FILE_TXN_TIMEOUT 20000
 #define QMI_INIT_RETRY_MAX_TIMES 240
 #define QMI_INIT_RETRY_DELAY_MS 250
 #define NUM_LOG_PAGES			10
@@ -51,6 +67,7 @@
  * @seg_len: Total number of segments
  * @end: End of transaction
  * @complete: Completion variable for file transfer
+ * @timeout: Set when upload wait times out; req_handler owns deinit
  * @rddm_seg: rddm segment array pointers
  * @rddm_entries: num of entries in rddm_seg
  * @rddm_seg_len: length of each rddm segment buffer pointed by rddm_seg
@@ -65,6 +82,7 @@ struct cnss_plat_ipc_file_data {
 	u32 seg_len;
 	u32 end;
 	struct completion complete;
+	atomic_t timeout;
 	u8 **rddm_seg;
 	u32 rddm_entries;
 	u32 rddm_seg_len;
@@ -231,6 +249,7 @@ struct cnss_plat_ipc_file_data *cnss_plat_ipc_init_file_data(char *name,
 	else
 		fd->seg_len = 0;
 	init_completion(&fd->complete);
+	atomic_set(&fd->timeout, 0);
 	mutex_lock(&svc->file_idr_lock);
 	fd->id = idr_alloc_cyclic(&svc->file_idr, fd, 0, U32_MAX, GFP_KERNEL);
 	if (fd->id < 0) {
@@ -354,8 +373,15 @@ int cnss_plat_ipc_qmi_file_upload(enum cnss_plat_ipc_qmi_client_id_v01
 	ret = wait_for_completion_timeout(&fd->complete,
 					  msecs_to_jiffies
 					  (CNSS_PLAT_IPC_QMI_FILE_TXN_TIMEOUT));
-	if (!ret)
+	if (!ret) {
 		cnss_plat_ipc_err("Timeout Uploading file: %s\n", fd->name);
+		CNSS_ASSERT(0);
+		/* Mark timeout so req_handler performs deinit when it
+		 * detects the flag on the next (or in-flight) request.
+		 */
+		atomic_set(&fd->timeout, 1);
+		return -ETIMEDOUT;
+	}
 
 end:
 	ret = cnss_plat_ipc_deinit_file_data(fd);
@@ -519,6 +545,14 @@ cnss_plat_ipc_qmi_file_upload_req_handler(struct qmi_handle *handle,
 		return;
 	}
 
+	/* Upload side timed out and transferred deinit ownership here. */
+	if (atomic_read(&fd->timeout)) {
+		cnss_plat_ipc_err("File ID %d upload timed out, aborting\n",
+				  req_msg->file_id);
+		cnss_plat_ipc_deinit_file_data(fd);
+		return;
+	}
+
 	if (req_msg->seg_index != fd->seg_index) {
 		cnss_plat_ipc_err("File %s transfer segment failure\n", fd->name);
 		complete(&fd->complete);
@@ -565,7 +599,10 @@ cnss_plat_ipc_qmi_file_upload_req_handler(struct qmi_handle *handle,
 
 	if (resp->end) {
 		fd->end = true;
-		complete(&fd->complete);
+		if (atomic_read(&fd->timeout))
+			cnss_plat_ipc_deinit_file_data(fd);
+		else
+			complete(&fd->complete);
 	}
 end:
 	vfree(resp);
@@ -625,8 +662,12 @@ int cnss_plat_ipc_qmi_file_download(enum cnss_plat_ipc_qmi_client_id_v01
 	ret = wait_for_completion_timeout(&fd->complete,
 					  msecs_to_jiffies
 					  (CNSS_PLAT_IPC_QMI_FILE_TXN_TIMEOUT));
-	if (!ret)
-		cnss_plat_ipc_err("Timeout downloading file:%s\n", fd->name);
+	if (!ret) {
+		cnss_plat_ipc_err("Timeout downloading file: %s\n", fd->name);
+		CNSS_ASSERT(0);
+		atomic_set(&fd->timeout, 1);
+		return -ETIMEDOUT;
+	}
 
 end:
 	*size = fd->file_size;
@@ -679,6 +720,14 @@ cnss_plat_ipc_qmi_file_download_req_handler(struct qmi_handle *handle,
 		return;
 	}
 
+	/* Download side timed out and transferred deinit ownership here. */
+	if (atomic_read(&fd->timeout)) {
+		cnss_plat_ipc_err("File ID %d download timed out, aborting\n",
+				  req_msg->file_id);
+		cnss_plat_ipc_deinit_file_data(fd);
+		return;
+	}
+
 	if (req_msg->file_size > fd->buf_size) {
 		cnss_plat_ipc_err("File %s size %d larger than buffer size %d\n",
 				  fd->name, req_msg->file_size, fd->buf_size);
@@ -724,7 +773,10 @@ cnss_plat_ipc_qmi_file_download_req_handler(struct qmi_handle *handle,
 
 	if (req_msg->end) {
 		fd->end = true;
-		complete(&fd->complete);
+		if (atomic_read(&fd->timeout))
+			cnss_plat_ipc_deinit_file_data(fd);
+		else
+			complete(&fd->complete);
 	}
 
 	return;

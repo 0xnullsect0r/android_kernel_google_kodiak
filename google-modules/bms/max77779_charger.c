@@ -30,6 +30,8 @@
 #include <linux/spmi.h>
 #include <linux/thermal.h>
 
+#include <misc/gvotable.h>
+
 #include "google_bms.h"
 #include "google_bms_usecase.h"
 #include "google_psy.h"

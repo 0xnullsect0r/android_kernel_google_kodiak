@@ -17,7 +17,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/vmalloc.h>
 #include <linux/miscdevice.h>
-#include "logbuffer.h"
+#include <misc/logbuffer.h>
 
 #include <uapi/linux/time.h>
 

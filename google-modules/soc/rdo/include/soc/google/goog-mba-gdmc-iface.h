@@ -3,6 +3,7 @@
 #ifndef _GOOG_MBA_GDMC_IFACE_H_
 #define _GOOG_MBA_GDMC_IFACE_H_
 
+struct device;
 struct gdmc_iface;
 
 /*

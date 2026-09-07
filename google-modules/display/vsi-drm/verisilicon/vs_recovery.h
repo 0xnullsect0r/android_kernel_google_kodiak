@@ -6,6 +6,7 @@
 #include <linux/workqueue.h>
 
 struct vs_crtc;
+struct vs_crtc_state;
 
 /**
  * struct vs_recovery - Information relating to ESD recovery
@@ -33,5 +34,19 @@ void vs_recovery_register(struct vs_crtc *vs_crtc);
  * @srcs: bitmap of trigger sources causing this recovery
  */
 void vs_crtc_trigger_recovery(struct vs_crtc *vs_crtc, u32 srcs);
+
+/**
+ * vs_execute_recovery_or_coredump_if_needed() - Evaluate errors and trigger recovery/coredump
+ * @vs_crtc_state: current crtc state
+ * @panel_errors: u64 representation of panel error bitmap
+ * @dsi_errors: u64 representation of DSI error bitmap
+ * @pmic_errors: u64 representation of PMIC error bitmap
+ * @srcs: bitmask of all sources triggering the potential coredump/recovery
+ */
+void vs_execute_recovery_or_coredump_if_needed(struct vs_crtc_state *vs_crtc_state,
+					       u64 panel_errors,
+					       u64 dsi_errors,
+					       u64 pmic_errors,
+					       u32 srcs);
 
 #endif // _VS_RECOVERY_H_

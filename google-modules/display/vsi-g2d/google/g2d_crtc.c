@@ -200,7 +200,7 @@ int g2d_crtc_init(struct g2d_device *g2d_device)
 
 		g2d_crtc->commit_worker = kthread_create_worker(0, "g2d_kthread%d", i);
 		if (IS_ERR(g2d_crtc->commit_worker))
-			dev_err(g2d_crtc->dev, "failed to create g2d_kthread%d (%pe)\n", i,
+			pr_err("failed to create g2d_kthread%d (%pe)\n", i,
 				g2d_crtc->commit_worker);
 
 		if (ret) {

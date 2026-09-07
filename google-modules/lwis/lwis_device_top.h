@@ -58,6 +58,7 @@ struct lwis_top_device {
 	struct task_struct *subscribe_worker_thread;
 
 	bool transaction_worker_active;
+	bool subscription_active;
 	struct lwis_event_subscribe_operations subscribe_ops;
 
 	/* Point to lwis_platform_top_device */

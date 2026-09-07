@@ -22,7 +22,9 @@
 #include <gcip/gcip-fence-array.h>
 #include <iif/iif-fence.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-ikv-additional-info.h"
+#include "edgetpu-ikv.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-mailbox.h"
 #include "edgetpu-mapping.h"
@@ -124,11 +126,8 @@ struct edgetpu_device_group {
 	/* The DMA fence manager for this group. */
 	struct gcip_dma_fence_manager *gfence_mgr;
 
-	/*
-	 * Used to synchronize any mapping operations for this device group.
-	 * @lock must be held for reading or writing whenever @mapping_lock is held.
-	 */
-	struct mutex mapping_lock;
+	/* Used to serialize pin_user_pages. */
+	struct mutex pin_user_pages_lock;
 
 	/*
 	 * Used to synchronize any VII command sending or response fetching for this device group.
@@ -136,14 +135,8 @@ struct edgetpu_device_group {
 	 */
 	struct mutex vii_lock;
 
-	/* Lists of `struct edgetpu_ikv_response`s for consuming/cleanup respectively */
-	struct list_head ready_ikv_resps;
-	struct list_head pending_ikv_resps;
-	/*
-	 * Protects access to @ready_ikv_resps, @pending_ikv_resps, and the "processed" field of any
-	 * responses currently enqueued in @pending_ikv_resps.
-	 */
-	spinlock_t ikv_resp_lock;
+	/* The IKV response manager for this device group. */
+	struct edgetpu_ikv_rsp_mgr *rsp_mgr;
 
 	/* TPU IOVA mapped to host DRAM space */
 	struct edgetpu_mapping_root host_mappings;
@@ -258,31 +251,50 @@ edgetpu_device_group_get(struct edgetpu_device_group *group)
  */
 void edgetpu_device_group_put(struct edgetpu_device_group *group);
 
-/*
- * Creates a device group for @client.
+/**
+ * edgetpu_device_group_create() - Creates a device group.
+ * @client: Client for which the group is created.
+ * @attr: Mailbox attributes.
  *
- * @client must not already have created a group.
- * @client->group will be set as the returned group with status EDGETPU_DEVICE_GROUP_READY on
- * success. If creation fails at edgetpu_device_group_finish_setup(), @client->group will be set as
- * the returned group with status EDGETPU_DEVICE_GROUP_DISBANDED and will be properly cleaned up
- * when the client is removed.
- *
- * Call edgetpu_device_group_put() when the returned group is not needed.
- *
- * Returns a pointer to the new group, or a negative errno on error.
- * Returns -EINVAL if the client already created a group.
+ * Return: The pointer to the device group object, or the pointer to a negative errno otherwise.
  */
-struct edgetpu_device_group *
-edgetpu_device_group_create(struct edgetpu_client *client, const struct edgetpu_mailbox_attr *attr);
+struct edgetpu_device_group *edgetpu_device_group_create(struct edgetpu_client *client,
+							 const struct edgetpu_mailbox_attr *attr);
+
+/**
+ * edgetpu_dev_register_group() - Registers a group to the device's group list.
+ * @etdev: The EdgeTPU device.
+ * @group: The device group to register.
+ *
+ * Return: 0 on success, or a negative errno otherwise.
+ */
+int edgetpu_dev_register_group(struct edgetpu_dev *etdev, struct edgetpu_device_group *group);
+
+/**
+ * edgetpu_dev_unregister_group() - Unregisters a group from the device's group list.
+ * @etdev: The EdgeTPU device.
+ * @group: The device group to unregister.
+ */
+void edgetpu_dev_unregister_group(struct edgetpu_dev *etdev, struct edgetpu_device_group *group);
+
+/**
+ * edgetpu_device_group_finish_setup() - Finishes the setup of a device group.
+ * @group: The target device group.
+ *
+ * Attaches the IOMMU domain, maps mailboxes, and activates the group via KCI.
+ *
+ * Return: 0 on success, or a negative errno otherwise.
+ */
+int edgetpu_device_group_finish_setup(struct edgetpu_device_group *group);
 
 /*
- * Disband the device group @client created.
- * The group will be marked as "disbanded". The client will hold a reference to the disbanded group
- * until the client is removed.
+ * Disband device group @group.
+ * The group will be marked as "disbanded". The client will still hold a reference to the disbanded
+ * group until the client is removed.
  *
- * @client->group will be removed from @client->etdev->groups.
+ * @>group will be removed from @group->etdev->groups.
  */
-void edgetpu_device_group_disband(struct edgetpu_client *client);
+void edgetpu_device_group_disband(struct edgetpu_device_group *group);
 
 /*
  * Maps buffer to a device group.

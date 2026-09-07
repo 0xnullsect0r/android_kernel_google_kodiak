@@ -710,6 +710,9 @@ QDF_STATUS ucfg_dp_psoc_close(struct wlan_objmgr_psoc *psoc)
 	qdf_dp_trace_deinit();
 	wlan_dp_load_balancer_deinit(psoc);
 	dp_bus_bandwidth_deinit(psoc);
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	dp_affn_override_deinit(psoc);
+#endif
 	qdf_wake_lock_destroy(&dp_ctx->rx_wake_lock);
 
 	return QDF_STATUS_SUCCESS;

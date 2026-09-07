@@ -2,6 +2,11 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "mtk_pcimsg_google",
     srcs = [
@@ -13,10 +18,6 @@ ddk_module(
         "wwan_defines.h",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/radio/common/radio-bridge",

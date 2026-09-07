@@ -1121,6 +1121,14 @@ DmaBufSetValue(struct dma_buf *psDmaBuf, int iValue, const char *szFunc)
 	int i;
 #endif
 
+	PVR_ASSERT(psDmaBuf != NULL);
+
+	if (!BITMASK_HAS(psDmaBuf->file->f_mode, FMODE_WRITE))
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: DmaBuf is not writable", szFunc));
+		return -EPERM;
+	}
+
 	err = dma_buf_begin_cpu_access(psDmaBuf, DMA_FROM_DEVICE);
 	if (err)
 	{
@@ -1362,7 +1370,7 @@ static PVRSRV_ERROR PMRDevPhysAddrDmaBuf(PMR_IMPL_PRIVDATA pvPriv,
 					 IMG_DEV_PHYADDR *psDevPAddr)
 {
 	PMR_DMA_BUF_DATA *psPrivData = pvPriv;
-	IMG_UINT32 ui32PageIndex;
+	IMG_DEVMEM_OFFSET_T uiPageIndex;
 	IMG_UINT32 idx;
 
 #if defined(SUPPORT_STATIC_IPA)
@@ -1381,14 +1389,14 @@ static PVRSRV_ERROR PMRDevPhysAddrDmaBuf(PMR_IMPL_PRIVDATA pvPriv,
 		{
 			IMG_UINT32 ui32InPageOffset;
 
-			ui32PageIndex = puiOffset[idx] >> PAGE_SHIFT;
-			ui32InPageOffset = puiOffset[idx] - ((IMG_DEVMEM_OFFSET_T)ui32PageIndex << PAGE_SHIFT);
+			uiPageIndex = puiOffset[idx] >> PAGE_SHIFT;
+			ui32InPageOffset = puiOffset[idx] - (uiPageIndex << PAGE_SHIFT);
 
-			PVR_LOG_RETURN_IF_FALSE(ui32PageIndex < psPrivData->ui32VirtPageCount,
+			PVR_LOG_RETURN_IF_FALSE(uiPageIndex < (IMG_DEVMEM_OFFSET_T)psPrivData->ui32VirtPageCount,
 			                        "puiOffset out of range", PVRSRV_ERROR_OUT_OF_RANGE);
 
 			PVR_ASSERT(ui32InPageOffset < PAGE_SIZE);
-			psDevPAddr[idx].uiAddr = psPrivData->pasDevPhysAddr[ui32PageIndex].uiAddr + ui32InPageOffset;
+			psDevPAddr[idx].uiAddr = psPrivData->pasDevPhysAddr[uiPageIndex].uiAddr + ui32InPageOffset;
 #if defined(SUPPORT_STATIC_IPA)
 			/* Modify the physical address with the associated IPA values */
 			psDevPAddr[idx].uiAddr &= ~ui64IPAClearMask;
@@ -2248,7 +2256,22 @@ GetAdjustedPMRAccessFlags(fmode_t uiDmaBufFileMode,
 	}
 	else
 	{
-		ui64PMRFlags &= (~ui64TempFlag);
+		PVRSRV_MEMALLOCFLAGS_T ui64PZFlags = PVRSRV_MEMALLOCFLAG_POISON_ON_ALLOC |
+		                                     PVRSRV_MEMALLOCFLAG_ZERO_ON_ALLOC;
+
+#if defined(DEBUG)
+		ui64PZFlags |= PVRSRV_MEMALLOCFLAG_POISON_ON_FREE;
+#endif
+
+		if (ui64PMRFlags & ui64PZFlags)
+		{
+			PVR_DPF((PVR_DBG_WARNING,
+			         "%s: Poison/Zero flags requested, but dma_buf is not writable!"
+			         " Flags will not be set.",
+			         __func__));
+		}
+
+		ui64PMRFlags &= (~(ui64TempFlag | ui64PZFlags));
 	}
 
 #if defined(PVR_ENABLE_DMABUF_UPSTREAM_COMPAT)

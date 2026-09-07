@@ -101,6 +101,35 @@ static void gcip_fence_array_free_async(struct kref *kref)
 	gcip_fence_array_do_free(fence_array, &gcip_fence_put_async);
 }
 
+static void gcip_fence_array_waiter_and_signaler_do_completed(
+	struct gcip_fence_array *in_fences, struct gcip_fence_array *out_fences,
+	struct gcip_fence_array *mid_in_fences, struct gcip_fence_array *mid_out_fences,
+	enum iif_ip_type ip, void (*waiter_completed_func)(struct gcip_fence *, enum iif_ip_type),
+	void (*signaler_completed_func)(struct gcip_fence *))
+{
+	int i;
+
+	for (i = 0; in_fences && i < in_fences->size; i++) {
+		if (in_fences->fences[i]->type == GCIP_INTER_IP_FENCE)
+			waiter_completed_func(in_fences->fences[i], ip);
+	}
+
+	for (i = 0; mid_in_fences && i < mid_in_fences->size; i++) {
+		if (mid_in_fences->fences[i]->type == GCIP_INTER_IP_FENCE)
+			waiter_completed_func(mid_in_fences->fences[i], ip);
+	}
+
+	for (i = 0; mid_out_fences && i < mid_out_fences->size; i++) {
+		if (mid_out_fences->fences[i]->type == GCIP_INTER_IP_FENCE)
+			signaler_completed_func(mid_out_fences->fences[i]);
+	}
+
+	for (i = 0; out_fences && i < out_fences->size; i++) {
+		if (out_fences->fences[i]->type == GCIP_INTER_IP_FENCE)
+			signaler_completed_func(out_fences->fences[i]);
+	}
+}
+
 struct gcip_fence_array *gcip_fence_array_get(struct gcip_fence_array *fence_array)
 {
 	if (!fence_array)
@@ -145,24 +174,12 @@ void gcip_fence_array_signal_async(struct gcip_fence_array *fence_array, int err
 
 void gcip_fence_array_waited(struct gcip_fence_array *fence_array, enum iif_ip_type ip)
 {
-	int i;
-
-	if (!fence_array)
-		return;
-
-	for (i = 0; i < fence_array->size; i++)
-		gcip_fence_waited(fence_array->fences[i], ip);
+	gcip_fence_array_waiter_and_signaler_completed(fence_array, NULL, NULL, NULL, ip);
 }
 
 void gcip_fence_array_waited_async(struct gcip_fence_array *fence_array, enum iif_ip_type ip)
 {
-	int i;
-
-	if (!fence_array)
-		return;
-
-	for (i = 0; i < fence_array->size; i++)
-		gcip_fence_waited_async(fence_array->fences[i], ip);
+	gcip_fence_array_waiter_and_signaler_completed_async(fence_array, NULL, NULL, NULL, ip);
 }
 
 void gcip_fence_array_submit_signaler(struct gcip_fence_array *fence_array)
@@ -252,6 +269,30 @@ int gcip_fence_array_submit_waiter_and_signaler(struct gcip_fence_array *in_fenc
 	kfree(iif_fences);
 
 	return ret;
+}
+
+void gcip_fence_array_waiter_and_signaler_completed(struct gcip_fence_array *in_fences,
+						    struct gcip_fence_array *out_fences,
+						    struct gcip_fence_array *mid_in_fences,
+						    struct gcip_fence_array *mid_out_fences,
+						    enum iif_ip_type ip)
+{
+	gcip_fence_array_waiter_and_signaler_do_completed(in_fences, out_fences, mid_in_fences,
+							  mid_out_fences, ip,
+							  &gcip_fence_waiter_completed,
+							  &gcip_fence_signaler_completed);
+}
+
+void gcip_fence_array_waiter_and_signaler_completed_async(struct gcip_fence_array *in_fences,
+							  struct gcip_fence_array *out_fences,
+							  struct gcip_fence_array *mid_in_fences,
+							  struct gcip_fence_array *mid_out_fences,
+							  enum iif_ip_type ip)
+{
+	gcip_fence_array_waiter_and_signaler_do_completed(in_fences, out_fences, mid_in_fences,
+							  mid_out_fences, ip,
+							  &gcip_fence_waiter_completed_async,
+							  &gcip_fence_signaler_completed_async);
 }
 
 uint16_t *gcip_fence_array_get_iif_id(struct gcip_fence_array *fence_array, int *num_iif,

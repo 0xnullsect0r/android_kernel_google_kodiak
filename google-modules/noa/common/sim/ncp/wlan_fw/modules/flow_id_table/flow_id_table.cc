@@ -128,14 +128,16 @@ void PrintAllValidFlowIds(FlowIdTable *tbl)
 				}
 
 				if (!header_printed) {
-					WLAN_LOG_INFO(Shell, "Interface Index: %d\n", ifindex);
+					WLAN_LOG_INFO(Shell, "Interface Index: %d, OIF: %" PRIu32 "\n",
+						      ifindex, tbl->bssidx2oif[ifindex]);
 					header_printed = true;
 				}
 
 				WLAN_LOG_INFO(Shell,
-					      "Flow ID: %u, Priority: %u,"
+					      "Flow ID: %u, Priority: %u, OIF: %" PRIu32 ","
 					      " DA: %02x:%02x:%02x:%02x:%02x:%02x\n",
 					      flow_info->flowid, flow_info->prio,
+					      tbl->bssidx2oif[ifindex],
 					      sta_flow_info->da[0], sta_flow_info->da[1],
 					      sta_flow_info->da[2], sta_flow_info->da[3],
 					      sta_flow_info->da[4], sta_flow_info->da[5]);

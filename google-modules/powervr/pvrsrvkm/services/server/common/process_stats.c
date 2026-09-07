@@ -804,15 +804,18 @@ _DestroyProcessStat(PVRSRV_PROCESS_STATS* psProcessStats)
 {
 	PVR_ASSERT(psProcessStats != NULL);
 
-#if defined(PVRSRV_ENABLE_MEMORY_STATS)
+	/* If !PVRSRV_ENABLE_MEMORY_STATS this is an empty critical section, but it is still required
+	 * to synchronize destruction against other threads which lock a PVRSRV_PROCESS_STATS, then
+	 * unlock g_psLinkedListLock, then finish using the PVRSRV_PROCESS_STATS. */
 	OSLockAcquireNested(psProcessStats->hLock, PROCESS_LOCK_SUBCLASS_CURRENT);
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	/* Free the memory statistics... */
 	HASH_Iterate(psProcessStats->psMemoryRecords, (HASH_pfnCallback)_FreeMemStatsEntry, NULL);
 	HASH_Delete(psProcessStats->psMemoryRecords);
+#endif
 
 	OSLockRelease(psProcessStats->hLock);
-#endif
 
 	/* Destroy the lock */
 	OSLockDestroyNoStats(psProcessStats->hLock);
@@ -2131,6 +2134,7 @@ PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
 		/* Add it to the live list... */
 		dllist_add_to_head(&gsLiveList, &psProcessStats->sNode);
 
+		OSLockAcquireNested(psProcessStats->hLock, PROCESS_LOCK_SUBCLASS_CURRENT);
 		OSLockRelease(g_psLinkedListLock);
 
 #else /* defined(PVRSRV_DEBUG_LINUX_MEMORY_STATS) */
@@ -2150,10 +2154,9 @@ PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
 			_MoveProcessToLiveList(psProcessStats);
 		}
 #endif
+		OSLockAcquireNested(psProcessStats->hLock, PROCESS_LOCK_SUBCLASS_CURRENT);
 		OSLockRelease(g_psLinkedListLock);
 	}
-
-	OSLockAcquireNested(psProcessStats->hLock, PROCESS_LOCK_SUBCLASS_CURRENT);
 
 #if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	{
@@ -2306,21 +2309,23 @@ PVRSRVStatsRemoveMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
 		                               psProcessStats,
 		                               psRecord->uiBytes);
 
-		OSLockRelease(psProcessStats->hLock);
-		OSLockRelease(g_psLinkedListLock);
-
 #if defined(PVRSRV_DEBUG_LINUX_MEMORY_STATS)
 		/* If all stats are now zero, remove the entry for this thread */
 		if (psProcessStats->ui32StatAllocFlags == 0)
 		{
-			OSLockAcquire(g_psLinkedListLock);
+			OSLockRelease(psProcessStats->hLock);
 			_MoveProcessToDeadList(psProcessStats);
 			OSLockRelease(g_psLinkedListLock);
 
 			/* Check if the dead list needs to be reduced */
 			_CompressMemoryUsage();
-		}
+		} else
 #endif
+		{
+			OSLockRelease(psProcessStats->hLock);
+			OSLockRelease(g_psLinkedListLock);
+		}
+
 		/*
 		 * Free the record outside the lock so we don't deadlock and so we
 		 * reduce the time the lock is held.

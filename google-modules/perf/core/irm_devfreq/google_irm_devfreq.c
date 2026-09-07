@@ -14,6 +14,7 @@
 #include <dt-bindings/lpcm/pf_state.h>
 #include <dvfs-helper/google_dvfs_helper.h>
 #include <interconnect/google_irm_api.h>
+#include <perf/core/apc_irm.h>
 #include <perf/core/google_pm_qos.h>
 #include <perf/core/google_vote_manager.h>
 #include <trace/events/power.h>
@@ -24,12 +25,10 @@
 #define IRM_FABRIC_1_BITFIELD GENMASK(11, 8)
 #define IRM_FABRIC_2_BITFIELD GENMASK(14, 12)
 #define IRM_FREQ_VOTE_VALID BIT(15)
-#define IRM_FREQ_VOTE_GMC_MEMSS(gmc_pf_level, memss_pf_level)		\
-		(FIELD_PREP(IRM_FREQ_VOTE_VALID, 1)			\
-		| FIELD_PREP(IRM_FABRIC_2_BITFIELD, 0)			\
-		| FIELD_PREP(IRM_FABRIC_1_BITFIELD, 0)			\
-		| FIELD_PREP(IRM_GMC_BITFIELD, gmc_pf_level)		\
-		| FIELD_PREP(IRM_MEMSS_BITFIELD, memss_pf_level))
+#define IRM_FREQ_VOTE_GMC_MEMSS(gmc_pf_level, memss_pf_level)                                \
+	(FIELD_PREP(IRM_FREQ_VOTE_VALID, 1) | FIELD_PREP(IRM_FABRIC_2_BITFIELD, 0) |         \
+	 FIELD_PREP(IRM_FABRIC_1_BITFIELD, 0) | FIELD_PREP(IRM_GMC_BITFIELD, gmc_pf_level) | \
+	 FIELD_PREP(IRM_MEMSS_BITFIELD, memss_pf_level))
 
 #define LOWEST_FREQ_OP_INDEX 31
 
@@ -44,27 +43,36 @@ struct irm_devfreq_data {
 	u64 cur_freq_Hz;
 	struct dvfs_domain_info *memss_domain_info;
 	struct dvfs_domain_info *gmc_domain_info;
+	struct irm_subclient_t *irm_subclient;
+	struct irm_client_t *irm_client;
 };
 
 /* vote for memss and gmc freq through CPU IRM register ltv_gmc */
-static int irm_vote_freq(struct irm_devfreq_data *data,
-				u32 gmc_pf_level, u32 memss_pf_level)
+static int irm_vote_freq(struct irm_devfreq_data *data, u32 gmc_pf_level, u32 memss_pf_level)
 {
 	u32 val = 0;
 	int ret = 0;
 
+	if (data->irm_subclient) {
+		set_irm_subclient_pf_req_gmc(data->irm_subclient, gmc_pf_level);
+		set_irm_subclient_pf_req_memss(data->irm_subclient, memss_pf_level);
+		stage_irm_subclient_vote(data->irm_subclient);
+		publish_irm_vote(data->irm_client);
+
+		return 0;
+	}
+
 	val = IRM_FREQ_VOTE_GMC_MEMSS(gmc_pf_level, memss_pf_level);
 
-	ret = irm_register_write(data->dev, data->client_idx,
-			data->min_clamp_reg_offset, val);
+	ret = irm_register_write(data->dev, data->client_idx, data->min_clamp_reg_offset, val);
 	if (ret) {
 		dev_err(data->dev, "Failed to write ltv_gmc register\n");
 		return ret;
 	}
 
 	// write DVFS_TRIG_EN = 1, trigger re-evaluate dvfs in mipm
-	ret = irm_register_write(data->dev, data->client_idx,
-					data->trigger_reg_offset, DVFS_TRIG_EN);
+	ret = irm_register_write(data->dev, data->client_idx, data->trigger_reg_offset,
+				 DVFS_TRIG_EN);
 	if (ret) {
 		dev_err(data->dev, "Failed to write trig_en register\n");
 		return ret;
@@ -72,8 +80,7 @@ static int irm_vote_freq(struct irm_devfreq_data *data,
 	return ret;
 }
 
-static int irm_devfreq_target(struct device *parent,
-				  unsigned long *target_freq, u32 flags)
+static int irm_devfreq_target(struct device *parent, unsigned long *target_freq, u32 flags)
 {
 	struct platform_device *pdev = container_of(parent, struct platform_device, dev);
 	struct irm_devfreq_data *data = platform_get_drvdata(pdev);
@@ -96,21 +103,55 @@ static int irm_devfreq_target(struct device *parent,
 		dev_err(data->dev, "Failed to vote gmc and memss freq\n");
 		goto out;
 	}
-	data->cur_freq_Hz = dvfs_helper_lvl_to_freq_exact(data->gmc_domain_info,
-			gmc_pf_level);
+	data->cur_freq_Hz = dvfs_helper_lvl_to_freq_exact(data->gmc_domain_info, gmc_pf_level);
 	*target_freq = data->cur_freq_Hz;
 
 out:
 	return ret;
 }
 
-static int irm_devfreq_get_cur_freq(struct device *parent,
-				       unsigned long *freq)
+static int irm_devfreq_get_cur_freq(struct device *parent, unsigned long *freq)
 {
 	struct platform_device *pdev = container_of(parent, struct platform_device, dev);
 	struct irm_devfreq_data *data = platform_get_drvdata(pdev);
 
 	*freq = data->cur_freq_Hz;
+
+	return 0;
+}
+
+static void devm_irm_subclient_release(struct device *dev, void *res)
+{
+	struct irm_subclient_t *subclient = res;
+
+	remove_irm_subclient(subclient);
+}
+
+static int init_apc_irm_client(struct irm_devfreq_data *data, const char *client_name)
+{
+	struct device *dev = data->dev;
+	struct irm_subclient_t *subclient;
+	struct irm_client_t *client;
+	int ret;
+
+	client = get_irm_client(client_name);
+	if (IS_ERR(client))
+		return PTR_ERR(client);
+
+	subclient = devres_alloc(devm_irm_subclient_release, sizeof(*subclient), GFP_KERNEL);
+	if (!subclient)
+		return -ENOMEM;
+
+	ret = add_irm_subclient(client, subclient, "gmc_memss_devfreq");
+	if (ret) {
+		devres_free(subclient);
+		return ret;
+	}
+
+	devres_add(dev, subclient);
+
+	data->irm_client = client;
+	data->irm_subclient = subclient;
 
 	return 0;
 }
@@ -121,6 +162,7 @@ static int parse_dtsi_info(struct irm_devfreq_data *data)
 	struct dvfs_domain_info *domain_info;
 	struct device_node *domain_node;
 	struct device *dev = data->dev;
+	const char *client_name;
 
 	domain_node = of_get_child_by_name(dev->of_node, "gmc_dvfs");
 	if (!domain_node)
@@ -146,33 +188,35 @@ static int parse_dtsi_info(struct irm_devfreq_data *data)
 
 	data->memss_domain_info = domain_info;
 
-	err = of_property_read_u32(dev->of_node, "irm-client-idx",
-				   &data->client_idx);
-	if (err) {
-		dev_err(dev, "%pOF is missing irm-client-idx property\n",
-			dev->of_node);
+	if (!of_property_read_string(dev->of_node, "google,irm-client-name", &client_name)) {
+		err = init_apc_irm_client(data, client_name);
+		if (err)
+			dev_err(dev, "failed to init apc irm client %s\n", client_name);
+
 		return err;
 	}
 
-	err = of_property_read_u32(dev->of_node, "irm-min-clamp-reg",
-				   &data->min_clamp_reg_offset);
+	err = of_property_read_u32(dev->of_node, "irm-client-idx", &data->client_idx);
 	if (err) {
-		dev_err(dev, "%pOF is missing irm-min-clamp-reg property\n",
-			dev->of_node);
+		dev_err(dev, "%pOF is missing irm-client-idx property\n", dev->of_node);
 		return err;
 	}
 
-	err = of_property_read_u32(dev->of_node, "irm-trigger-reg",
-				   &data->trigger_reg_offset);
+	err = of_property_read_u32(dev->of_node, "irm-min-clamp-reg", &data->min_clamp_reg_offset);
 	if (err) {
-		dev_err(dev, "%pOF is missing irm-trigger-reg property\n",
-			dev->of_node);
+		dev_err(dev, "%pOF is missing irm-min-clamp-reg property\n", dev->of_node);
+		return err;
+	}
+
+	err = of_property_read_u32(dev->of_node, "irm-trigger-reg", &data->trigger_reg_offset);
+	if (err) {
+		dev_err(dev, "%pOF is missing irm-trigger-reg property\n", dev->of_node);
 		return err;
 	}
 	return 0;
 }
 
-#define NUM_COLS	2
+#define NUM_COLS 2
 static int init_pf_level_map(struct irm_devfreq_data *data)
 {
 	int map_len, temp_len, nf, i, j;
@@ -202,8 +246,7 @@ static int init_pf_level_map(struct irm_devfreq_data *data)
 	nf = temp_len / NUM_COLS;
 
 	for (i = 0, j = 0; i < nf; i++, j += NUM_COLS) {
-		ret = of_property_read_u64_index(data->dev->of_node, "gmc-memss-table", j,
-				&freq);
+		ret = of_property_read_u64_index(data->dev->of_node, "gmc-memss-table", j, &freq);
 		if (ret)
 			return -EINVAL;
 
@@ -214,7 +257,7 @@ static int init_pf_level_map(struct irm_devfreq_data *data)
 		}
 
 		ret = of_property_read_u64_index(data->dev->of_node, "gmc-memss-table", j + 1,
-				&freq);
+						 &freq);
 		if (ret)
 			return -EINVAL;
 
@@ -248,8 +291,8 @@ static int init_devfreq_data(struct irm_devfreq_data *data)
 	if (ret)
 		goto out;
 
-	data->devfreq = devm_devfreq_add_device(data->dev,
-		&data->devfreq_profile, DEVFREQ_GOV_POWERSAVE, NULL);
+	data->devfreq = devm_devfreq_add_device(data->dev, &data->devfreq_profile,
+						DEVFREQ_GOV_POWERSAVE, NULL);
 
 	if (IS_ERR(data->devfreq)) {
 		dev_err(data->dev, "failed devfreq device added\n");
@@ -286,7 +329,7 @@ static int irm_devfreq_probe(struct platform_device *pdev)
 
 	ret = google_register_devfreq(data->devfreq);
 	if (ret)
-		goto err_freq_tracker;
+		goto err_devfreq;
 
 	ret = vote_manager_init_devfreq(data->devfreq);
 	if (ret)
@@ -298,8 +341,6 @@ static int irm_devfreq_probe(struct platform_device *pdev)
 
 err_vote_manager:
 	google_unregister_devfreq(data->devfreq);
-err_freq_tracker:
-	devm_devfreq_remove_device(data->dev, data->devfreq);
 err_devfreq:
 	platform_set_drvdata(pdev, NULL);
 err_data:
@@ -313,8 +354,8 @@ static void irm_devfreq_remove(struct platform_device *pdev)
 	if (!IS_ERR_OR_NULL(data->devfreq)) {
 		vote_manager_remove_devfreq(data->devfreq);
 		google_unregister_devfreq(data->devfreq);
-		devm_devfreq_remove_device(data->dev, data->devfreq);
 	}
+
 	platform_set_drvdata(pdev, NULL);
 }
 

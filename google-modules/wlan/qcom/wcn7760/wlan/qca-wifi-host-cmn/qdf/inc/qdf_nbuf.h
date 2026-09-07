@@ -3938,6 +3938,18 @@ qdf_nbuf_data_get_dhcp_subtype(uint8_t *data)
 }
 
 /**
+ * qdf_nbuf_get_dhcp_transaction_id() - get DHCP transaction ID from nbuf
+ * @buf: skb pointer
+ *
+ * Return: DHCP transaction ID
+ */
+static inline uint32_t
+qdf_nbuf_get_dhcp_transaction_id(qdf_nbuf_t buf)
+{
+	return __qdf_nbuf_get_dhcp_transaction_id(buf);
+}
+
+/**
  * qdf_nbuf_get_eapol_subtype() - get the subtype
  *            of EAPOL packet.
  * @buf: Pointer to EAPOL packet buffer
@@ -6061,6 +6073,15 @@ unsigned int qdf_nbuf_update_radiotap(struct mon_rx_status *rx_status,
  * Return: radiotap length.
  */
 uint16_t qdf_nbuf_get_radiotap_len(qdf_nbuf_t nbuf);
+
+/**
+ * qdf_nbuf_ieee80211_get_dest_mac() - get pointer to destination mac
+ *  address
+ * @nbuf: Pointer to nbuf
+ *
+ * Return: pointer to destination mac address
+ */
+uint8_t *qdf_nbuf_ieee80211_get_dest_mac(qdf_nbuf_t nbuf);
 
 /**
  * qdf_nbuf_mark_wakeup_frame() - mark wakeup frame.

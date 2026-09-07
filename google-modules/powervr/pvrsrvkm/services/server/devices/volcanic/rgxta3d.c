@@ -1325,6 +1325,8 @@ static PVRSRV_ERROR RGXCreateHWRTData_aux(CONNECTION_DATA		*psConnection,
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
+	OSLockHeldAssert(psHWRTDataCommonCookie->hLock);
+
 	/* Prepare the HW RT DataSet struct */
 	psKMHWRTDataSet = OSAllocZMem(sizeof(*psKMHWRTDataSet));
 	if (psKMHWRTDataSet == NULL)
@@ -1661,6 +1663,15 @@ PVRSRV_ERROR RGXCreateHWRTDataSet(
 		goto err_common_cookie_alloc;
 	}
 
+	eError = OSLockCreate(&psHWRTDataCommonCookie->hLock);
+	if (PVRSRV_OK != eError)
+	{
+		OSFreeMem(psHWRTDataCommonCookie);
+		psHWRTDataCommonCookie = NULL;
+		goto err_common_cookie_alloc;
+	}
+	OSLockAcquire(psHWRTDataCommonCookie->hLock);
+
 	psHWRTDataCommonCookie->psPMStateReservation = psPMStateReservation;
 	psHWRTDataCommonCookie->psPMMListsReservation = psPMMListsReservation;
 
@@ -1707,6 +1718,7 @@ PVRSRV_ERROR RGXCreateHWRTDataSet(
 		psHWRTDataCommonCookie->ui32RefCount += 1;
 	}
 
+	OSLockRelease(psHWRTDataCommonCookie->hLock);
 	return PVRSRV_OK;
 
 err_HWRTDataAlloc:
@@ -1722,6 +1734,8 @@ err_HWRTDataAlloc:
 			}
 		}
 	}
+	OSLockRelease(psHWRTDataCommonCookie->hLock);
+	OSLockDestroy(psHWRTDataCommonCookie->hLock);
 	OSFreeMem(psHWRTDataCommonCookie);
 err_common_cookie_alloc:
 err_validation_devptr:
@@ -1750,6 +1764,7 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 	}
 
 	psCommonCookie = psKMHWRTDataSet->psHWRTDataCommonCookie;
+	OSLockAcquire(psCommonCookie->hLock);
 
 	psDevNode = psKMHWRTDataSet->psDeviceNode;
 
@@ -1758,24 +1773,27 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 	                                     psKMHWRTDataSet->psHWRTDataFwMemDesc,
 										 (!bSharedFL || (psCommonCookie->ui32RefCount == 1)));
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psDevNode,
-						   eError,
-						   RGXFWRequestHWRTDataCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psDevNode, &eError))
+	{
+		OSLockRelease(psCommonCookie->hLock);
+		return eError;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestHWRTDataCleanUp(%s)",
+		         __func__, PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 	RGXDestroyHWRTData_aux(psKMHWRTDataSet);
 
 	/* We've got past potential PVRSRV_ERROR_RETRY events, so we are sure
 	   that the HWRTDATA instance will be destroyed during this call.
 	   Consequently, we decrease the ref count for HWRTDataCommonCookie.
-
-	   NOTE: This ref count does not require locks or atomics.
-	   -------------------------------------------------------
-	     HWRTDatas bound into one pair are always destroyed sequentially,
-	     within a single loop on the Client side.
-	     The Common/Cookie objects always belong to only one pair of
-	     HWRTDatas, and ref count is used to ensure that the Common/Cookie
-	     objects will be destroyed after destruction of all HWRTDatas
-	     within a single pair.
 	*/
 	psCommonCookie->ui32RefCount--;
 
@@ -1787,8 +1805,15 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 		UnrefAndReleaseCriticalBuffer(psCommonCookie->psPMStateReservation);
 		UnrefAndReleaseCriticalBuffer(psCommonCookie->psPMMListsReservation);
 
+		OSLockRelease(psCommonCookie->hLock);
+		OSLockDestroy(psCommonCookie->hLock);
 		OSFreeMem(psCommonCookie);
 	}
+	else
+	{
+		OSLockRelease(psCommonCookie->hLock);
+	}
+
 	return PVRSRV_OK;
 }
 

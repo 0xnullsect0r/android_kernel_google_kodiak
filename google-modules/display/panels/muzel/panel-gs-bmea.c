@@ -358,7 +358,7 @@ static struct drm_dsc_config pps_configs[PANEL_TYPE_MAX][NUM_SUPPORTED_RESOLUTIO
 #define BZEA_TE_USEC_VRR 377
 #define MTEA_TE_USEC_VRR 373
 
-#define BMEA_OSC_DOE_CODE 0x00010000
+#define BMEA_OSC_DOE_CODE 0x00000100
 
 #define MTEA_MIPI_DSI_FREQ_MBPS_DEFAULT 1368
 #define MTEA_MIPI_DSI_FREQ_MBPS_ALTERNATIVE 1346
@@ -2443,17 +2443,15 @@ static void mtea_update_ffc(struct gs_panel *ctx, unsigned int hs_clk_mbps)
 
 static bool bzea_is_panel_alt_osc(struct gs_panel *ctx)
 {
-	u32 id;
-
 	if (ctx->panel_rev_id.id >= PANEL_REVID_EVT1)
 		return true;
 
-	if (kstrtou32(ctx->panel_extinfo, 16, &id)) {
-		dev_err(ctx->dev, "failed to get panel extinfo\n");
+	if (ctx->panel_id == PANEL_ID_INVALID_VALUE) {
+		dev_err(ctx->dev, "failed to get panel id\n");
 		return false;
 	}
 
-	return id & BMEA_OSC_DOE_CODE;
+	return ctx->panel_id & BMEA_OSC_DOE_CODE;
 }
 
 static void bzea_update_ffc(struct gs_panel *ctx, unsigned int hs_clk_mbps)

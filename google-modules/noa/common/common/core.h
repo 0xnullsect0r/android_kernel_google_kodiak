@@ -445,6 +445,7 @@ static_assert(NOA_DESC_TYPE_MAX <= (1U << NOA_DESC_DESC_TYPE_BIT_FIELD));
 #define NOA_DESC_MODEM_LASSEN_BYTE ((sizeof(struct noa_desc) + 4U + NOA_RX_IPSEC_METADATA_BYTE))
 #define NOA_DESC_WLAN_TX_BRCM_BYTE ((sizeof(struct noa_desc) + 12U + NOA_TX_IPSEC_METADATA_BYTE))
 #define NOA_DESC_WLAN_TX_QCA_BYTE ((sizeof(struct noa_desc) + 8U))
+#define NOA_DESC_WLAN_TX_QCA_WCN_7760_BYTE ((sizeof(struct noa_desc) + 12U))
 #define NOA_DESC_WLAN_RX_BRCM_BYTE NOA_DESC_WLAN_TX_BRCM_BYTE
 #define NOA_DESC_WLAN_RX_BYTE (NOA_DESC_BASIC_BYTE + 4U)
 #define NOA_DESC_NETENG_PKT_FLOW_BYTE ((sizeof(struct noa_desc) + sizeof(struct network_ext_txd)))

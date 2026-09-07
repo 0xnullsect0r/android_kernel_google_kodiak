@@ -958,6 +958,8 @@ typedef struct
 #if defined(SUPPORT_OPEN_SOURCE_DRIVER_FIRMWARE)
 	IMG_UINT32                     ui32Padding12;
 #endif
+	/* Hash of workload characteristics */
+	IMG_UINT64 RGXFW_ALIGN         ui64WorkloadID;
 	/* Deadline for the workload (in usecs) */
 	IMG_UINT64 RGXFW_ALIGN         ui64Deadline;
 } RGXFWIF_WORKEST_KICK_DATA;

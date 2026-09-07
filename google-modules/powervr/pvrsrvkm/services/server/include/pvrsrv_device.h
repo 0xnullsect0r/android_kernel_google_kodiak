@@ -95,6 +95,10 @@ typedef enum _PVRSRV_DEVICE_SNOOP_MODE_
 #if defined(SUPPORT_SOC_TIMER)
 typedef IMG_UINT64
 (*PFN_SYS_DEV_SOC_TIMER_READ)(IMG_HANDLE hSysData);
+
+typedef IMG_UINT64
+(*PFN_SYS_DEV_SOC_TIMER_TO_MONOTONIC_NS64)(IMG_HANDLE hSysData,
+					IMG_UINT64 ui64SoCTime);
 #endif
 
 typedef enum _PVRSRV_DEVICE_FABRIC_TYPE_
@@ -428,6 +432,12 @@ struct _PVRSRV_DEVICE_CONFIG_
 #if defined(SUPPORT_SOC_TIMER)
 	/*! Callback to read SoC timer register value (mandatory). */
 	PFN_SYS_DEV_SOC_TIMER_READ	pfnSoCTimerRead;
+
+	/*!
+	 *! Callback to convert SoC timer ticks into a value equivalent to
+	 *! OSClockMonotonicns64() (optional).
+	 */
+	PFN_SYS_DEV_SOC_TIMER_TO_MONOTONIC_NS64 pfnSoCTimerToMonotonicNS64;
 #endif
 
 

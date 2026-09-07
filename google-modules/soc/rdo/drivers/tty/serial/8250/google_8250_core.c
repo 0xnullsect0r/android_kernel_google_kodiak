@@ -110,9 +110,33 @@ static irqreturn_t serial8250_interrupt(int irq, void *dev_id)
  * line being stuck active, and, since ISA irqs are edge triggered,
  * no more IRQs will be seen.
  */
+static bool port_in_irq_chain(const struct irq_info *i, const struct uart_8250_port *up)
+{
+	struct list_head *l;
+
+	if (!i->head)
+		return false;
+
+	l = i->head;
+	do {
+		struct uart_8250_port *pos = list_entry(l, struct uart_8250_port, list);
+		if (pos == up)
+			return true;
+		l = l->next;
+	} while (l != i->head);
+
+	return false;
+}
+
 static void serial_do_unlink(struct irq_info *i, struct uart_8250_port *up)
 {
 	spin_lock_irq(&i->lock);
+
+	if (!port_in_irq_chain(i, up)) {
+		spin_unlock_irq(&i->lock);
+		dev_warn(up->port.dev, "port %s not in irq chain for unlink\n", up->port.name);
+		return;
+	}
 
 	if (!list_empty(i->head)) {
 		if (i->head == &up->list)
@@ -154,11 +178,16 @@ static int serial_link_irq_chain(struct uart_8250_port *up)
 		i->irq = up->port.irq;
 		hlist_add_head(&i->node, h);
 	}
-	mutex_unlock(&hash_mutex);
 
 	spin_lock_irq(&i->lock);
 
 	if (i->head) {
+		if (port_in_irq_chain(i, up)) {
+			spin_unlock_irq(&i->lock);
+			dev_warn(up->port.dev, "port %s already in irq chain\n", up->port.name);
+			mutex_unlock(&hash_mutex);
+			return 0;
+		}
 		list_add(&up->list, i->head);
 		spin_unlock_irq(&i->lock);
 
@@ -173,6 +202,7 @@ static int serial_link_irq_chain(struct uart_8250_port *up)
 			serial_do_unlink(i, up);
 	}
 
+	mutex_unlock(&hash_mutex);
 	return ret;
 }
 
@@ -180,6 +210,7 @@ static void serial_unlink_irq_chain(struct uart_8250_port *up)
 {
 	struct irq_info *i;
 	struct hlist_head *h;
+	bool in_chain, is_empty = false;
 
 	mutex_lock(&hash_mutex);
 
@@ -189,10 +220,35 @@ static void serial_unlink_irq_chain(struct uart_8250_port *up)
 		if (i->irq == up->port.irq)
 			break;
 
-	BUG_ON(i == NULL);
-	BUG_ON(i->head == NULL);
+	if (i == NULL) {
+		/* Already fully unlinked */
+		mutex_unlock(&hash_mutex);
+		return;
+	}
 
-	if (list_empty(i->head))
+	/*
+	 * Need to check if port is actually here to avoid the following situation:
+	 * - two ports A and B are added to the same IRQ chain
+	 * - port B has been removed
+	 * - if unlink is called again for port B (double-unlink):
+	 *   - we iterate through the IRQ hash and find the hash node for the IRQ used by A
+	 *   - since A is the only remaining element, list_empty() would return true
+	 *   - free_irq() would be incorrectly called for A's active IRQ
+	 * By explicitly checking if the port is in the chain, we prevent this.
+	 */
+	spin_lock_irq(&i->lock);
+	in_chain = port_in_irq_chain(i, up);
+	if (in_chain)
+		is_empty = list_empty(i->head);
+	spin_unlock_irq(&i->lock);
+
+	if (!in_chain) {
+		dev_warn(up->port.dev, "port %s not in irq chain for unlink\n", up->port.name);
+		mutex_unlock(&hash_mutex);
+		return;
+	}
+
+	if (is_empty)
 		free_irq(up->port.irq, i);
 
 	serial_do_unlink(i, up);

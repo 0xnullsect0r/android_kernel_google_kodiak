@@ -285,9 +285,11 @@
  * 3.155 Add rxmon hdrlen specs in rx_ring_selection_cfg_t.
  * 3.156 Add qdata_consent_pkt flag in rx_peer_metadata_v1a and v2.
  * 3.157 Add TCL_METADATA_V3 defs.
+ * 3.158 Add more fields in htt_tx_monitor_cfg_t.
+ * 3.159 Add enable_sa_search and enable_da_search flags in htt_ast_info_t.
  */
 #define HTT_CURRENT_VERSION_MAJOR 3
-#define HTT_CURRENT_VERSION_MINOR 157
+#define HTT_CURRENT_VERSION_MINOR 159
 
 #define HTT_NUM_TX_FRAG_DESC  1024
 
@@ -936,6 +938,14 @@ typedef enum {
     HTT_STATS_TXQ_COMBINED_SEQ_STATE_TAG            = 257, /* htt_stats_txq_combined_seq_state_tlv */
     HTT_STATS_CTL_TAG                               = 258, /* htt_stats_ctl_tlv */
     HTT_STATS_ENHANCED_CTL_TAG                      = 259, /* htt_stats_enhanced_ctl_tlv */
+    HTT_STATS_NPCA_TAG                              = 260, /* htt_stats_npca_tlv */
+    HTT_STATS_SCHED_TXQ_TX_MODE_SIMPLIFIED_TAG      = 261, /* htt_stats_sched_txq_tx_mode_simplified_tlv */
+    HTT_STATS_SCHED_TXQ_TX_MODE_WINNER_TAG          = 262, /* htt_stats_sched_txq_tx_mode_winner_tlv */
+    HTT_STATS_DFS_RADAR_HISTORY_TAG                 = 263, /* htt_stats_dfs_radar_history_tlv */
+    HTT_STATS_DFS_INI_TAG                           = 264, /* htt_stats_dfs_ini_tlv */
+    HTT_STATS_DFS_IPC_RING_TAG                      = 265, /* htt_stats_dfs_ipc_ring_tlv */
+    HTT_STATS_PHY_DPD_DEBUG_CHAIN_V1_TAG            = 266, /* htt_stats_phy_dpd_debug_chain_v1_tlv */
+    HTT_STATS_PHY_TPC_DEBUG_CHAIN_V1_TAG            = 267, /* htt_stats_phy_tpc_debug_chain_v1_tlv */
 
     HTT_STATS_MAX_TAG,
 } htt_stats_tlv_tag_t;
@@ -6234,7 +6244,11 @@ enum htt_srng_ring_id {
  *                    newer packet_type_enable_data_flags_* are valid or not
  *                    If not set, will use pkt_type_enable_flags for both status
  *                    and full pkt buffer configuration.
- *          b'30:31 - rsvd1:  reserved for future use
+ *          b'30    - is_monitor_mode: specify whether monitor mode is enabled.
+ *                    Helpful to configure monitor-mode related filters.
+ *                    These filters cause throughput dip if enabled in
+ *                    non-monitor mode.
+ *          b'31    - rsvd1:  reserved for future use
  * dword1 - b'0:15  - ring_buffer_size: size of bufferes referenced by rx ring,
  *                    in byte units.
  *                    Valid only for HW_TO_SW_RING and SW_TO_HW_RING
@@ -6451,7 +6465,8 @@ PREPACK struct htt_rx_ring_selection_cfg_t {
              drop_thresh_valid: 1,
              rx_mon_global_en:  1,
              packet_type_enable_data: 1,
-             rsvd1:             2;
+             is_monitor_mode:   1,
+             rsvd1:             1;
     A_UINT32 ring_buffer_size: 16,
              config_length_mgmt:3,
              config_length_ctrl:3,
@@ -6653,6 +6668,18 @@ enum htt_reg_write_selection {
                 HTT_CHECK_SET_VAL(HTT_RX_RING_SELECTION_CFG_PACKET_TYPE_ENABLE_DATA, _val); \
                 ((_var) |= ((_val) << HTT_RX_RING_SELECTION_CFG_PACKET_TYPE_ENABLE_DATA_S)); \
             } while (0)
+
+#define HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_M    0x40000000
+#define HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_S           30
+#define HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_GET(_var) \
+            (((_var) & HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_M) >> \
+                    HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_S)
+#define HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE, _val); \
+                ((_var) |= ((_val) << HTT_RX_RING_SELECTION_CFG_IS_MONITOR_MODE_S)); \
+            } while (0)
+
 
 #define HTT_RX_RING_SELECTION_CFG_RING_BUFFER_SIZE_M           0x0000ffff
 #define HTT_RX_RING_SELECTION_CFG_RING_BUFFER_SIZE_S           0
@@ -8090,7 +8117,10 @@ PREPACK struct htt_tx_monitor_cfg_t {
              pkt_swap:                               1,
              tx_mon_global_en:                       1,
              mac_addr_filter_en:                     1,
-             rsvd1:                                  4;
+             addr_filter_peer_bitmap_ppdu_drop:      1,
+             type_based_mpdu_stat_filter_en:         1,
+             special_pkt_filtering_en:               1,
+             pkt_buf_cnt_en:                         1;
     A_UINT32 ring_buffer_size:                      16,
              config_length_mgmt:                     3,
              config_length_ctrl:                     3,
@@ -8134,6 +8164,23 @@ PREPACK struct htt_tx_monitor_cfg_t {
              response_end_status_word_mask:         16;
     A_UINT32 fes_status_prot_word_mask:             11,
              rsvd6:                                 21;
+    A_UINT32 phy_tx_pkt_end:                         8,
+             mac_tx_user_desc_common:                8,
+             mac_tx_mu_uplink_user_setup:            8,
+             pdg_response:                           8;
+    A_UINT32 received_response_info:                 8,
+             rx_response_required_info:              8,
+             ranging_user_details:                   8,
+             mactx_pre_phy_desc:                     8;
+    A_UINT32 ofdma_trigger_details:                  16,
+             tqm_update_tx_mpdu_count_status:        16;
+    A_UINT32 phytx_location:                         16,
+             rsvd7:                                  16;
+    A_UINT32 received_response_info_part2;
+    A_UINT32 type_en_mgmt;
+    A_UINT32 type_en_ctrl;
+    A_UINT32 type_en_data;
+    A_UINT32 tlv_filter_mask_in4;
 } POSTPACK;
 
 #define HTT_TX_MONITOR_CFG_SZ    (sizeof(struct htt_tx_monitor_cfg_t))
@@ -8203,6 +8250,51 @@ PREPACK struct htt_tx_monitor_cfg_t {
                 HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_MAC_ADDR_FILTER_EN, _val); \
                 ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_MAC_ADDR_FILTER_EN_S)); \
             } while (0)
+
+#define HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_M 0x10000000
+#define HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_S 28
+#define HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_GET(_var) \
+    (((_var) & HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_M) >> \
+        HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_S)
+#define HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_SET(_var, _val) \
+    do { \
+        HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP, _val); \
+        ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_ADDR_FILTER_PEER_BITMAP_PPDU_DROP_S)); \
+    } while (0)
+
+#define HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_M 0x20000000
+#define HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_S 29
+#define HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_GET(_var) \
+    (((_var) & HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_M) >> \
+        HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_S)
+#define HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_SET(_var, _val) \
+    do { \
+        HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN, _val); \
+        ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_TYPE_BASED_MPDU_STAT_FILTER_EN_S)); \
+    } while (0)
+
+#define HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_M 0x40000000
+#define HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_S 30
+#define HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_GET(_var) \
+    (((_var) & HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_M) >> \
+        HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_S)
+#define HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_SET(_var, _val) \
+    do { \
+        HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN, _val); \
+        ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_SPECIAL_PKT_FILTERING_EN_S)); \
+    } while (0)
+
+#define HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_M 0x80000000
+#define HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_S 31
+#define HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_GET(_var) \
+    (((_var) & HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_M) >> \
+        HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_S)
+#define HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_SET(_var, _val) \
+    do { \
+        HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN, _val); \
+        ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_PKT_BUF_CNT_EN_S)); \
+    } while (0)
+
 
 #define HTT_TX_MONITOR_CFG_RING_BUFFER_SIZE_M           0x0000ffff
 #define HTT_TX_MONITOR_CFG_RING_BUFFER_SIZE_S           0
@@ -8589,6 +8681,132 @@ PREPACK struct htt_tx_monitor_cfg_t {
                 HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_FES_STATUS_PROT_WORD_MASK, _val); \
                 ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_FES_STATUS_PROT_WORD_MASK_S)); \
             } while (0)
+
+
+#define HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_M 0x000000ff
+#define HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_S 0
+#define HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_M) >> \
+                    HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_S)
+#define HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_PHY_TX_PKT_END, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_PHY_TX_PKT_END_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_M 0x0000ff00
+#define HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_S 8
+#define HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_M) >> \
+                    HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_S)
+#define HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_MAC_TX_USER_DESC_COMMON_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_M 0x00ff0000
+#define HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_S 16
+#define HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_M) >> \
+                    HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_S)
+#define HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_MAC_TX_MU_UPLINK_USER_SETUP_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_PDG_RESPONSE_M 0xff000000
+#define HTT_TX_MONITOR_CFG_PDG_RESPONSE_S 24
+#define HTT_TX_MONITOR_CFG_PDG_RESPONSE_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_PDG_RESPONSE_M) >> \
+                    HTT_TX_MONITOR_CFG_PDG_RESPONSE_S)
+#define HTT_TX_MONITOR_CFG_PDG_RESPONSE_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_PDG_RESPONSE, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_PDG_RESPONSE_S)); \
+            } while (0)
+
+
+#define HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_M 0x000000ff
+#define HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_S 0
+#define HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_M) >> \
+                    HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_S)
+#define HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_RECEIVED_RESPONSE_INFO_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_M 0x0000ff00
+#define HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_S 8
+#define HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_M) >> \
+                    HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_S)
+#define HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_RX_RESPONSE_REQUIRED_INFO_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_M 0x00ff0000
+#define HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_S 16
+#define HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_M) >> \
+                    HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_S)
+#define HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_RANGING_USER_DETAILS_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_M 0xff000000
+#define HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_S 24
+#define HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_M) >> \
+                    HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_S)
+#define HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_MACTX_PRE_PHY_DESC_S)); \
+            } while (0)
+
+
+#define HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_M 0x0000ffff
+#define HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_S 0
+#define HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_M) >> \
+                    HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_S)
+#define HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_OFDMA_TRIGGER_DETAILS_S)); \
+            } while (0)
+
+#define HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_M 0xffff0000
+#define HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_S 16
+#define HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_M) >> \
+                    HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_S)
+#define HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_TQM_UPDATE_TX_MPDU_COUNT_STATUS_S)); \
+            } while (0)
+
+
+#define HTT_TX_MONITOR_CFG_PHYTX_LOCATION_M 0x0000ffff
+#define HTT_TX_MONITOR_CFG_PHYTX_LOCATION_S 0
+#define HTT_TX_MONITOR_CFG_PHYTX_LOCATION_GET(_var) \
+            (((_var) & HTT_TX_MONITOR_CFG_PHYTX_LOCATION_M) >> \
+                    HTT_TX_MONITOR_CFG_PHYTX_LOCATION_S)
+#define HTT_TX_MONITOR_CFG_PHYTX_LOCATION_SET(_var, _val) \
+            do { \
+                HTT_CHECK_SET_VAL(HTT_TX_MONITOR_CFG_PHYTX_LOCATION, _val); \
+                ((_var) |= ((_val) << HTT_TX_MONITOR_CFG_PHYTX_LOCATION_S)); \
+            } while (0)
+
 
 /*
  * pkt_type_enable_flags
@@ -12680,9 +12898,9 @@ PREPACK struct htt_h2t_mpduq_or_msduq_info {
  *    |                           ase_hash_key2                                |
  *    |------------------------------------------------------------------------|
  *    |                           ase_hash_key3                                |
- *    |--------------------+--+--+--+--+--+----------------+-------------------|
- *    |    reserved        |L |K |J |I |H |     tmo        |ast_base_addr_39_32|
- *    |--------------------+--+--+--+--+--+----------------+-------------------|
+ *    |--------------+--+--+--+--+--+--+--+----------------+-------------------|
+ *    |    reserved  |N |M |L |K |J |I |H |     tmo        |ast_base_addr_39_32|
+ *    |--------------+--+--+--+--+--+--+--+----------------+-------------------|
  *
  * The message is interpreted as follows:
  * dword0    b'7:0   - msg_type
@@ -12708,6 +12926,8 @@ PREPACK struct htt_h2t_mpduq_or_msduq_info {
  *                     If enabled, a new cache entry will always be created
  *                     for requests for which matching data was found
  *                     neither in cache nor in memory.
+ *           b'21    - M - enable_sa_search
+ *           b'22    - N - enable_da_search
  */
 PREPACK struct htt_ast_info_t {
         A_UINT32 msg_type:        8,
@@ -12724,7 +12944,9 @@ PREPACK struct htt_ast_info_t {
                  ast_cache_cmd_read_bypass_dis:     1, /* 18 */
                  ast_cache_write_back_fix_dis:      1, /* 19 */
                  ast_cache_only_entry_cmd_fix_dis:  1, /* 20 */
-                 reserved:                         11;
+                 enable_sa_search:                  1, /* 21 */
+                 enable_da_search:                  1, /* 22 */
+                 reserved:                          9;
 } POSTPACK;
 
 
@@ -12831,6 +13053,28 @@ PREPACK struct htt_ast_info_t {
         do { \
             HTT_CHECK_SET_VAL(HTT_AST_INFO_AST_CACHE_ONLY_ENTRY_CMD_FIX_DIS, _val); \
             ((_var) |= ((_val) << HTT_AST_INFO_AST_CACHE_ONLY_ENTRY_CMD_FIX_DIS_S)); \
+        } while (0)
+
+#define HTT_AST_INFO_ENABLE_SA_SEARCH_M                         0x00200000
+#define HTT_AST_INFO_ENABLE_SA_SEARCH_S                         21
+#define HTT_AST_INFO_ENABLE_SA_SEARCH_GET(_var) \
+        (((_var) & HTT_AST_INFO_ENABLE_SA_SEARCH_M) >> \
+            HTT_AST_INFO_ENABLE_SA_SEARCH_S)
+#define HTT_AST_INFO_ENABLE_SA_SEARCH_SET(_var, _val) \
+        do { \
+            HTT_CHECK_SET_VAL(HTT_AST_INFO_ENABLE_SA_SEARCH, _val); \
+            ((_var) |= ((_val) << HTT_AST_INFO_ENABLE_SA_SEARCH_S)); \
+        } while (0)
+
+#define HTT_AST_INFO_ENABLE_DA_SEARCH_M                         0x00400000
+#define HTT_AST_INFO_ENABLE_DA_SEARCH_S                         22
+#define HTT_AST_INFO_ENABLE_DA_SEARCH_GET(_var) \
+        (((_var) & HTT_AST_INFO_ENABLE_DA_SEARCH_M) >> \
+            HTT_AST_INFO_ENABLE_DA_SEARCH_S)
+#define HTT_AST_INFO_ENABLE_DA_SEARCH_SET(_var, _val) \
+        do { \
+            HTT_CHECK_SET_VAL(HTT_AST_INFO_ENABLE_DA_SEARCH, _val); \
+            ((_var) |= ((_val) << HTT_AST_INFO_ENABLE_DA_SEARCH_S)); \
         } while (0)
 
 

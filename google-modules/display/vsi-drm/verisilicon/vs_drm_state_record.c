@@ -71,6 +71,17 @@ void vs_drm_destroy_state_history_record(struct drm_device *drm_dev)
 	struct drm_state_history_record *sh_record = get_drm_dev_sh_record(drm_dev);
 
 	if (sh_record) {
+		int i;
+
+		mutex_lock(&sh_record->state_ringbuf_mutex);
+		for (i = 0; i < VS_RECORD_STATE_MAX; i++) {
+			if (sh_record->state_ringbuf[i]) {
+				drm_atomic_state_put(sh_record->state_ringbuf[i]);
+				sh_record->state_ringbuf[i] = NULL;
+			}
+		}
+		mutex_unlock(&sh_record->state_ringbuf_mutex);
+
 		mutex_destroy(&sh_record->state_ringbuf_mutex);
 
 		vfree(sh_record);

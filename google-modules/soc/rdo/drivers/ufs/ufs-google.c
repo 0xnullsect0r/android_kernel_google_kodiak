@@ -706,6 +706,9 @@ static void ufs_google_init_caps(struct ufs_hba *hba)
 		{ "google,enable-refclk-acg", GCAP_REF_CLK_ACG },
 		{ "google,skip-cport-setup", GCAP_SKIP_CPORT_SETUP },
 		{ "google,mphy-pmc-war", GCAP_MPHY_PMC_WAR },
+		{ "google,rext-internal", GCAP_REXT_INTERNAL },
+		{ "google,limit-reset-to-eh", GCAP_LIMIT_RESET_TO_EH },
+		{ "google,enable-mcq-cleanup-war", GCAP_MCQ_CLEANUP_WAR },
 	};
 
 	for (i = 0; i < ARRAY_SIZE(dts_caps); i++) {
@@ -744,12 +747,35 @@ static void ufs_google_vh_ufs_eh_timed_out_handler(void *data,
 			       scmd->cmnd[0]);
 }
 
+static void ufs_google_vh_ufs_mcq_cleanup_handler(void *data, struct ufs_hba *hba, int task_tag,
+						  bool start)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+
+	if (start) {
+		if (host->mcq_cleanup_count++ == 0) {
+			host->mcq_cleanup_ah8_was_enabled =
+				ufshcd_is_auto_hibern8_supported(hba) &&
+				(ufshcd_readl(hba, REG_AUTO_HIBERNATE_IDLE_TIMER) != 0);
+			if (host->mcq_cleanup_ah8_was_enabled)
+				ufs_auto_hibern8_update(hba, false);
+		}
+	} else {
+		if (--host->mcq_cleanup_count == 0) {
+			if (host->mcq_cleanup_ah8_was_enabled)
+				ufs_auto_hibern8_update(hba, true);
+		}
+	}
+}
+
 static int ufs_google_register_vh_handlers(struct ufs_google_host *host)
 {
 	int ret = 0;
 
 	UFS_GOOG_REGISTER_VH_HANDLER(ufs_check_int_errors);
 	UFS_GOOG_REGISTER_VH_HANDLER(ufs_eh_timed_out);
+	if (host->caps & GCAP_MCQ_CLEANUP_WAR)
+		UFS_GOOG_REGISTER_VH_HANDLER(ufs_mcq_cleanup);
 
 	return ret;
 }
@@ -838,6 +864,17 @@ static int ufs_google_set_device_off(struct ufs_google_host *host)
 
 	host->device_on = false;
 	return 0;
+}
+
+static void ufs_google_init_rext(struct ufs_google_host *host)
+{
+	struct ufs_hba *hba = host->hba;
+
+	if (!(host->caps & GCAP_REXT_INTERNAL))
+		return;
+
+	of_property_read_u32(hba->dev->of_node, "google,rext-val", &host->rext_val);
+	dev_info(hba->dev, "UFS REXT Internal mode active. Trim: %d\n", host->rext_val);
 }
 
 static int ufs_google_init(struct ufs_hba *hba)
@@ -1101,6 +1138,8 @@ static int ufs_google_init(struct ufs_hba *hba)
 	ufs_google_init_caps(hba);
 	dev_info(hba->dev, "google caps=%64pbl", &host->caps);
 
+	ufs_google_init_rext(host);
+
 	if (host->caps & GCAP_REF_CLK_ACG &&
 	    (!host->mphy_refclk || !host->gpio_refclk)) {
 		err = -EINVAL;
@@ -1277,7 +1316,7 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 {
 	struct ufs_google_host *host = container_of(nb, struct ufs_google_host,
 						    top_nb);
-	u32 data, external_mode, rext;
+	u32 data;
 	struct ufs_hba *hba = host->hba;
 	u32 intr_status;
 	int err = 0;
@@ -1309,15 +1348,20 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 		data |= CFG_CLK_SEL_MASK & CFG_CLK_SEL;
 		ufs_top_csr_writel(host, data, REG_HSIOS_UFS_CFG_CLKSEL);
 
-		/* ufs_setup_rext */
-		/* TODO(b/313024923): read external_mode, rext from OTP */
-		external_mode = !host->gops->rext_internal;
-		rext = 0;
+		/*
+		 * Configure the UFS Reference Resistor (REXT) analog matching.
+		 * If the GCAP_REXT_INTERNAL capability is declared by the
+		 * Device Tree, program the persistent dynamic trim setting
+		 * (host->rext_val) stashed stably during the driver probe
+		 * initialization phase and enable internal matching mode.
+		 * If the capability is absent, explicitly disable the
+		 * internal matching arrays.
+		 */
 		data = ufs_top_csr_readl(host, REG_HSIOS_UFS_REXT_CTRL);
-		if (external_mode) {
-			data &= ~UFS_REXT_EN_MASK;
-		} else {
-			data |= FIELD_PREP(UFS_REXT_CONTROL_MASK, rext);
+		data &= ~UFS_REXT_EN_MASK;
+		if (host->caps & GCAP_REXT_INTERNAL) {
+			data &= ~UFS_REXT_CONTROL_MASK;
+			data |= FIELD_PREP(UFS_REXT_CONTROL_MASK, host->rext_val);
 			data |= UFS_REXT_EN_MASK;
 		}
 		ufs_top_csr_writel(host, data, REG_HSIOS_UFS_REXT_CTRL);
@@ -2855,9 +2899,29 @@ static int ufs_google_device_reset(struct ufs_hba *hba)
 	 * Hence, returning zero makes ufshcd_set_ufs_dev_active()
 	 * which avoids link_startup_again = true in ufshcd_link_startup.
 	 */
-	gpiod_set_value(host->resetb, 0);
-	usleep_range(RESETB_DELAY_MIN_US, RESETB_DELAY_MAX_US);
-	gpiod_set_value(host->resetb, 1);
+	/*
+	 * Limit physical reset to error handling and Micron devices if
+	 * GCAP_LIMIT_RESET_TO_EH is set (e.g. LGA).
+	 *
+	 * Background:
+	 * Originally, the physical reset was executed unconditionally. However,
+	 * resetting during normal suspend/resume or initialization caused stability
+	 * issues on other vendor devices (Samsung/Kioxia) and Micron devices.
+	 *
+	 * To prevent these issues, on platforms with GCAP_LIMIT_RESET_TO_EH, we
+	 * restrict the physical reset to Micron UFS devices during active error
+	 * recovery (under ufshcd_eh_in_progress).
+	 *
+	 * If GCAP_LIMIT_RESET_TO_EH is not set (e.g. MBU), it defaults to the
+	 * legacy behaviour of always resetting unconditionally.
+	 */
+	if (!(host->caps & GCAP_LIMIT_RESET_TO_EH) ||
+	    (hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON &&
+	     ufshcd_eh_in_progress(hba))) {
+		gpiod_set_value(host->resetb, 0);
+		usleep_range(RESETB_DELAY_MIN_US, RESETB_DELAY_MAX_US);
+		gpiod_set_value(host->resetb, 1);
+	}
 
 	return 0;
 }

@@ -167,6 +167,11 @@ struct vs_crtc_state {
 	 */
 	u32 swapped_plane_mask;
 
+	/**
+	 * @secure_plane_mask: A bitmask of planes using a secure buffer
+	 */
+	u32 secure_plane_mask;
+
 	bool recovery_disabled;
 	/** @recovery_info: information about any request for recovery trigger */
 	struct vs_recovery_request_data recovery_info;
@@ -360,6 +365,15 @@ void vs_crtc_trigger_panel_dsi_coredump(struct vs_crtc *vs_crtc,
 					u64 dsi_errors, enum coredump_source source);
 bool vs_crtc_state_is_recovery_source_enabled(const struct vs_crtc_state *vs_crtc_state,
 					      enum coredump_source source);
+bool vs_crtc_state_has_secure(const struct drm_crtc_state *crtc_state);
+u32 vs_crtc_state_active_planes_enabling_secure_mask(const struct drm_crtc_state *old_crtc_state,
+						     const struct drm_crtc_state *new_crtc_state);
+bool vs_crtc_state_is_active_and_wb(const struct drm_crtc_state *crtc_state,
+				    const struct drm_device *drm_dev);
+bool vs_crtc_commit_enables_secure_or_wb(const struct drm_crtc_state *crtc_state,
+					 const struct drm_crtc_state *old_state,
+					 const struct drm_device *dev);
+bool vs_crtc_secure_hardware_active(const struct drm_device *dev);
 
 #define to_vs_crtc(crtc) container_of(crtc, struct vs_crtc, base)
 

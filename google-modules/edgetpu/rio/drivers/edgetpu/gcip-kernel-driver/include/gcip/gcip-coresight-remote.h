@@ -33,15 +33,14 @@
  * that notifies the firmware's coresight remote layer that commands are embedded directly within
  * the @gcip_kci_dma_descriptor structure itself. While @gcip_coresight_bulk_cmds establishes the
  * standard KCI payload for coresight commands, IP drivers may utilize an optional optimization to
- * transmit a limited number of commands by repurposing the descriptor's memory.
- * Since a single coresight command is 4 bytes, this optimization allows for a maximum of three
- * commands—utilizing the combined space of sizeof(gcip_kci_dma_descriptor.address) and
- * sizeof(gcip_kci_dma_descriptor.size)—to be propagated without requiring a separate standard
- * payload.
+ * transmit a limited number of commands by repurposing the descriptor's memory (specifically the
+ * address and size fields before flags). The maximum number of commands that can be embedded is
+ * determined by the KCI descriptor layout (offsetof(struct gcip_kci_dma_descriptor, flags) /
+ * sizeof(u32)).
  */
 #define GCIP_CORESIGHT_REMOTE_COMMANDS_IN_KCI_DMA_DESCRIPTOR 0xDECD
 #define GCIP_CORESIGHT_REMOTE_COMMANDS_IN_KCI_DMA_DESCRIPTOR_SHIFT 16
-#define GCIP_CORESIGHT_REMOTE_MAX_COMMANDS_IN_KCI_DMA_DESCRIPTOR 3
+
 /**
  * LSB 16 bits of @gcip_kci_dma_descriptor.flags to encode the number of commands stored at
  * @gcip_kci_dma_descriptor memory.

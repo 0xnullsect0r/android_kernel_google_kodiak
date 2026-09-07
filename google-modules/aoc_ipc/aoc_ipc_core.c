@@ -37,18 +37,21 @@
 #include <linux/compiler.h>
 
 static struct aoc_prvdata *aoc_prvdata_g;
-static DEFINE_MUTEX(aoc_prvdata_mutex);
+static DEFINE_SPINLOCK(aoc_prvdata_lock);
 
 static bool check_address_kernel(const void *address, long len)
 {
-	mutex_lock(&aoc_prvdata_mutex);
-	struct aoc_prvdata *aoc_prvdata = aoc_prvdata_g;
+	struct aoc_prvdata *aoc_prvdata;
 	void *aoc_dram_base;
 	int aoc_dram_size;
 	unsigned long result;
 	struct device *dev;
 	bool ret = false;
+	unsigned long flags;
 
+	spin_lock_irqsave(&aoc_prvdata_lock, flags);
+
+	aoc_prvdata = aoc_prvdata_g;
 	if (!aoc_prvdata) {
 		pr_err("AoC prvdata not set");
 		goto out_unlock;
@@ -72,7 +75,7 @@ static bool check_address_kernel(const void *address, long len)
 	if (!ret)
 		dev_err(dev, "Out of bound memory access");
 out_unlock:
-	mutex_unlock(&aoc_prvdata_mutex);
+	spin_unlock_irqrestore(&aoc_prvdata_lock, flags);
 	return ret;
 }
 
@@ -282,9 +285,9 @@ static u32 _aoc_ring_write_buffer(u8 *ring,
 #if __KERNEL__
 void aoc_service_set_aoc_prvdata(void *prvdata)
 {
-	mutex_lock(&aoc_prvdata_mutex);
+	spin_lock(&aoc_prvdata_lock);
 	aoc_prvdata_g = prvdata;
-	mutex_unlock(&aoc_prvdata_mutex);
+	spin_unlock(&aoc_prvdata_lock);
 }
 EXPORT_SYMBOL_GPL(aoc_service_set_aoc_prvdata);
 #endif

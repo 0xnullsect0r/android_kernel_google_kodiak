@@ -74,6 +74,9 @@ static void wondertap_dump_init_params(struct wondertap_init_params *params)
 	wonder_info("    MAC: %02x:XX:XX:XX:XX:%02x\n", params->mac_addr[0],
 		params->mac_addr[5]);
 	wonder_info("    BSSID: %02x:XX:XX:XX:XX:%02x\n", params->bssid[0], params->bssid[5]);
+	wonder_info("    Features: AMSDU %d, AMPDU %d, RA %d, CH %d\n", params->amsdu_enable,
+		params->ampdu_enable, params->rate_adaptation_enable,
+		params->channel_hopping_enable);
 	wonder_info("===============================================\n");
 }
 
@@ -110,16 +113,17 @@ int wondertap_init(struct wondertap_data *wondertap, const struct wondertap_init
 	memcpy(params.country_code, wondertap->cached_country_code,
 	       sizeof(wondertap->cached_country_code));
 
+	params.rate_adaptation_enable = _params->rate_adaptation_enable;
 	if (_params->rate_adaptation_enable) {
-		params.rate_adaptation_enable = _params->rate_adaptation_enable;
 		params.tx_rate_mask.max_preamble = wondertap->cached_tx_rate.preamble;
 		params.tx_rate_mask.max_bw = WONDERTAP_RA_MAX_BW;
 		params.tx_rate_mask.max_nss = WONDERTAP_RA_MAX_NSS;
 		params.tx_rate_mask.max_mcs = WONDERTAP_RA_MAX_MCS;
 	}
 
-	if (_params->channel_hopping_enable)
-		params.channel_hopping_enable = _params->channel_hopping_enable;
+	params.channel_hopping_enable = _params->channel_hopping_enable;
+	params.ampdu_enable = _params->ampdu_enable;
+	params.amsdu_enable = _params->amsdu_enable;
 
 	wondertap_dump_init_params(&params);
 	for (retry = 0; retry <= WONDER_INIT_RETRY_CNT; retry++) {

@@ -63,7 +63,7 @@ static int panel_gs_simple_read_serial(struct gs_panel *ctx)
  */
 static int panel_gs_simple_read_extinfo(struct gs_panel *ctx)
 {
-	strscpy(ctx->panel_extinfo, "ffffffff", PANEL_EXTINFO_MAX);
+	ctx->panel_id = PANEL_ID_INVALID_VALUE;
 
 	return 0;
 }

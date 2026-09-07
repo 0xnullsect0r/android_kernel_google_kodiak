@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -99,10 +104,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/touch/common:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/aoc_ipc",
@@ -110,6 +111,7 @@ ddk_module(
         "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:headers",
         "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:samsung_dma_heap",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
+        "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
     ] + select({
         "//private/devices/google/common:soc_is_zumapro_or_before": [
@@ -123,14 +125,12 @@ ddk_module(
         "//conditions:default": [],
     }) + select({
         "//private/devices/google/common:soc_is_malibu": [
-            "//private/google-modules/soc/rdo:rdo_soc_headers",
             "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
             "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
             "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-gdmc-iface",
             "//private/google-modules/soc/rdo/drivers/soc/google:google_gtc",
         ],
         "//private/devices/google/common:soc_is_laguna": [
-            "//private/google-modules/soc/rdo:rdo_soc_headers",
             "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
             "//private/google-modules/soc/rdo/drivers/pinctrl/google:pinctrl",
             "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
@@ -245,9 +245,6 @@ ddk_module(
     ],
     out = "aoc_tbn_service_dev.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/touch/common:__subpackages__",
-    ],
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
@@ -267,9 +264,6 @@ ddk_module(
     ],
     out = "aoc_mbox_full_service_dev.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/touch/common:__subpackages__",
-    ],
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
@@ -294,24 +288,5 @@ ddk_module(
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "aoc",
-    srcs = [
-        ":aoc_channel_dev",
-        ":aoc_char_dev",
-        ":aoc_control_dev",
-        ":aoc_core",
-        ":aoc_mbox_full_sdev",
-        ":aoc_tbn_service_dev",
-        ":aoc_unit_test_dev",
-        ":aoc_uwb_platform_drv",
-        ":aoc_uwb_service_dev",
-        ":mailbox-wc",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

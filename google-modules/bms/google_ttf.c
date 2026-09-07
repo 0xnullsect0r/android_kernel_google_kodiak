@@ -18,6 +18,7 @@
 #include <linux/printk.h>
 #include <linux/of.h>
 #include <linux/slab.h>
+#include <misc/logbuffer.h>
 #include "google_bms.h"
 #include "google_psy.h"
 #include "qmath.h"
@@ -150,7 +151,7 @@ static int ttf_pwr_health_pause(const struct gbms_charging_event *ce_data, int s
  * tiers for bad cables, ibatt is affected by temperature tier and sysload.
  */
 static int ttf_pwr_equiv_icl(const struct gbms_charging_event *ce_data,
-			     int vbatt_idx, int soc, int fcc_now)
+			     int vbatt_idx, int soc, int fcc_now, int mdis_pwr_uw)
 {
 	const struct gbms_chg_profile *profile = ce_data->chg_profile;
 	const int volt_limit = profile->volt_limits[vbatt_idx] == 0 ?
@@ -161,6 +162,11 @@ static int ttf_pwr_equiv_icl(const struct gbms_charging_event *ce_data,
 	const u32 capacity_ma = profile->capacity_ma;
 	const int rest_rate = ce_data->ce_health.rest_rate;
 	int equiv_icl, act_icl, act_ibatt, health_ibatt = -1;
+	/* power limit assumed max battery voltage */
+	const int vbatt_max_ma = profile->volt_limits[profile->volt_nb_limits - 1] / 1000;
+	const int mdis_fcc = mdis_pwr_uw == CSI_POWER_UNKNOWN ?
+			     -1 :
+			     mdis_pwr_uw / vbatt_max_ma;
 
 	/* Health collects in ce_data->health_stats vtier */
 	if (ttf_pwr_health(ce_data, soc)) {
@@ -192,18 +198,24 @@ static int ttf_pwr_equiv_icl(const struct gbms_charging_event *ce_data,
 
 	/* actual ibatt in this tier: act_ibatt==0 when too early to tell */
 	act_ibatt = ttf_pwr_ibatt(tier_stats);
-	if (act_ibatt == 0 && health_ibatt > 0)
-		act_ibatt = health_ibatt;
-	else if (fcc_now > 0 && (act_ibatt == 0 || fcc_now < act_ibatt))
-		act_ibatt = fcc_now;
-
 	if (act_ibatt < 0) {
 		pr_debug("%s: discharging ibatt=%d\n", __func__, act_ibatt);
 		return -EINVAL;
+	} else if (act_ibatt == 0) {
+		/* Set -1 when ttf_pwr_ibatt is not ready, as 0 could be valid mdis_fcc limit */
+		act_ibatt = -1;
 	}
 
-	/* assume that can deliver equiv_icl when act_ibatt == 0 */
-	if (act_ibatt > 0 && act_ibatt < equiv_icl) {
+	/* act_ibatt = min(act_ibatt, health_ibatt, fcc_now, mdis_fcc) */
+	if (act_ibatt == -1 && health_ibatt > 0)
+		act_ibatt = health_ibatt;
+	if (fcc_now > 0 && (act_ibatt == -1 || fcc_now < act_ibatt))
+		act_ibatt = fcc_now;
+	if (mdis_fcc >= 0 && (act_ibatt == -1 || mdis_fcc < act_ibatt))
+		act_ibatt = mdis_fcc;
+
+	/* assume that can deliver equiv_icl when act_ibatt == -1 */
+	if (act_ibatt >= 0 && act_ibatt < equiv_icl) {
 		pr_debug("%s: sysload ibatt=%d, reduce icl %d->%d\n",
 			 __func__, act_ibatt, equiv_icl, act_ibatt);
 		equiv_icl = act_ibatt;
@@ -298,7 +310,8 @@ static int ttf_pwr_ratio(const struct batt_ttf_stats *stats,
 		 avg_cc, cc_max);
 
 	/* equivalent input current for adapter at vtier */
-	equiv_icl = ttf_pwr_equiv_icl(ce_data, vbatt_idx, soc, stats->fcc_now / 1000);
+	equiv_icl = ttf_pwr_equiv_icl(ce_data, vbatt_idx, soc, stats->fcc_now / 1000,
+				      READ_ONCE(stats->mdis_pwr_uw));
 	if (equiv_icl <= 0) {
 		pr_debug("%s %d: negative, null act_icl=%d\n",
 			 __func__, soc, equiv_icl);
@@ -600,6 +613,21 @@ int ttf_soc_estimate(ktime_t *res, struct batt_ttf_stats *stats,
 		*res = 0;
 		mutex_unlock(&stats->ttf_lock);
 		return 0;
+	}
+
+	if (qnum_toint(soc) == qnum_toint(last)) {
+		frac = (int)qnum_nfracdgt(last, 2) - (int)qnum_nfracdgt(soc, 2);
+		ratio = ttf_elap(&elap, stats, ce_data, qnum_toint(soc), tier_idx,
+				 USE_INSTANTANEOUS_PWR);
+		if (ratio < 0) {
+			mutex_unlock(&stats->ttf_lock);
+			return ratio;
+		}
+
+		estimate = ktime_divns((elap * frac), 100);
+		*res = ktime_divns(estimate, 100);
+		mutex_unlock(&stats->ttf_lock);
+		return ratio;
 	}
 
 	/* FIRST: 100 - first 2 digits of the fractional part of soc if any */
@@ -1271,6 +1299,7 @@ int ttf_stats_init(struct batt_ttf_stats *stats, struct device_node *node, int c
 
 	memset(stats, 0, sizeof(*stats));
 	stats->ttf_fake = -1;
+	stats->mdis_pwr_uw = -1;
 	mutex_init(&stats->ttf_lock);
 
 	/* reference adapter */
@@ -1343,3 +1372,120 @@ ssize_t ttf_dump_details(char *buf, int max_size,
 
 	return len;
 }
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+#define TTF_MAX_DEBUG_INPUT_SIZE 1024
+#define TTF_TEST_STEPS_MAX 32
+
+static ssize_t debug_ttf_elap_write(struct file *filp, const char __user *user_buf,
+				    size_t count, loff_t *ppos)
+{
+	struct batt_ttf_stats *stats = filp->private_data;
+	char *buf;
+	int i, consumed, soc, step_idx = 0;
+	long long elap;
+	const char *next;
+	ssize_t ret;
+	struct ttf_test_step {
+		int soc;
+		long long elap;
+	} steps[TTF_TEST_STEPS_MAX];
+	int step_count = 0;
+	long long current_elap = 0;
+	int prev_soc = -1;
+
+	/* Limit input size to prevent excessive memory allocation */
+	if (count > TTF_MAX_DEBUG_INPUT_SIZE)
+		return -EINVAL;
+
+	buf = memdup_user_nul(user_buf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	next = buf;
+	while (step_count < ARRAY_SIZE(steps)) {
+		/* skip spaces */
+		while (*next == ' ' || *next == '\n' || *next == '\t')
+			next++;
+		if (*next == '\0')
+			break;
+
+		consumed = 0;
+		if (sscanf(next, "%d:%lld%n", &soc, &elap, &consumed) != 2 || consumed == 0) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (soc < 0 || soc > 100 || soc <= prev_soc) {
+			ret = -EINVAL;
+			goto out;
+		}
+		steps[step_count].soc = soc;
+		steps[step_count].elap = elap;
+		prev_soc = soc;
+		step_count++;
+		next += consumed;
+	}
+
+	if (step_count == 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	mutex_lock(&stats->ttf_lock);
+	for (i = 0; i < GBMS_SOC_STATS_LEN; i++) {
+		if (step_idx < step_count && i >= steps[step_idx].soc) {
+			current_elap = steps[step_idx].elap;
+			step_idx++;
+		}
+		stats->soc_stats.elap[i] = current_elap;
+	}
+	mutex_unlock(&stats->ttf_lock);
+
+	ret = count;
+out:
+	kfree(buf);
+	return ret;
+}
+BATTERY_DEBUG_ATTRIBUTE(debug_ttf_elap_fops, NULL, debug_ttf_elap_write);
+
+static ssize_t debug_ttf_capacity_write(struct file *filp, const char __user *user_buf,
+					size_t count, loff_t *ppos)
+{
+	struct batt_ttf_stats *stats = filp->private_data;
+	int capacity_ma, cc, i, ret;
+
+	/* Use helper to avoid manual copy and allocation */
+	ret = kstrtoint_from_user(user_buf, count, 10, &capacity_ma);
+	if (ret)
+		return ret;
+
+	if (capacity_ma <= 0)
+		return -EINVAL;
+
+	cc = (capacity_ma * 100) / GBMS_SOC_STATS_LEN;
+
+	mutex_lock(&stats->ttf_lock);
+	/* Matches `ttf_init_soc_parse_dt` calculation for consistency */
+	for (i = 0; i < GBMS_SOC_STATS_LEN; i++)
+		stats->soc_stats.cc[i] = (cc * i) / 100;
+	mutex_unlock(&stats->ttf_lock);
+
+	return count;
+}
+BATTERY_DEBUG_ATTRIBUTE(debug_ttf_capacity_fops, NULL, debug_ttf_capacity_write);
+
+void ttf_init_debugfs(struct dentry *parent, struct batt_ttf_stats *stats)
+{
+	struct dentry *dir;
+
+	if (IS_ERR_OR_NULL(parent) || !stats)
+		return;
+
+	dir = debugfs_create_dir("ttf", parent);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+	debugfs_create_file("capacity", 0200, dir, stats, &debug_ttf_capacity_fops);
+	debugfs_create_file("elap", 0200, dir, stats, &debug_ttf_elap_fops);
+}
+#endif

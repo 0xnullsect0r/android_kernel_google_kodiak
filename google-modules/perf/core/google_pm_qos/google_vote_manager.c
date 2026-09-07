@@ -121,6 +121,8 @@ static void add_request(struct vote_data *data, enum vote_idx idx,
 static void vote_manager_add_votes(struct vote_data *data)
 {
 	struct device_node *vote_mgr_node;
+	struct device_node *dev_node;
+	struct device *ancestor;
 	struct device *dev;
 
 	switch (data->type) {
@@ -134,8 +136,26 @@ static void vote_manager_add_votes(struct vote_data *data)
 		WARN(1, "Unknown vote type in %s\n", __func__);
 		return;
 	}
+	dev_node = of_node_get(dev_of_node(dev));
+	if (!dev_node) {
+		ancestor = dev ? dev->parent : NULL;
+		while (ancestor && !dev_of_node(ancestor))
+			ancestor = ancestor->parent;
 
-	vote_mgr_node = of_get_child_by_name(dev_of_node(dev), "vote_manager");
+		if (ancestor) {
+			dev_node = of_get_child_by_name(dev_of_node(ancestor), dev_name(dev));
+			if (!dev_node)
+				dev_node = of_node_get(dev_of_node(ancestor));
+		}
+	}
+
+	if (dev_node) {
+		vote_mgr_node = of_get_child_by_name(dev_node, "vote_manager");
+		of_node_put(dev_node);
+	} else {
+		vote_mgr_node = NULL;
+	}
+
 	if (!vote_mgr_node)
 		dev_dbg(dev, "vote_manager node not defined.\n");
 

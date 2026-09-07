@@ -75,6 +75,8 @@
 /* METADATA used for wakeup triggers, specifically for Standby modes */
 #define CDP_STANDBY_METADATA 5588
 
+#define CDP_INVALID_PEER_AST_IDX 0xFFFF
+
 /* Options for Dump Statistics */
 #define CDP_HDD_STATS               0
 #define CDP_TXRX_PATH_STATS         1
@@ -551,6 +553,8 @@ enum ol_txrx_peer_state {
  * @mld_peer: whether is mld peer
  * @txpt_classify_idx_valid: Is txpt_classify_idx valid
  * @txpt_classify_idx: peer msdu queue flow_index
+ * @is_peer_assoc_done: peer assoc state
+ * @ast_idx: peer ast index
  */
 struct cdp_peer_output_param {
 	uint8_t vdev_id;
@@ -560,6 +564,10 @@ struct cdp_peer_output_param {
 #ifdef CONFIG_BORON
 	bool txpt_classify_idx_valid;
 	uint8_t txpt_classify_idx;
+#endif
+#ifdef DRIVER_PASSTHRU_MODE
+	uint8_t is_peer_assoc_done;
+	uint16_t ast_idx;
 #endif
 };
 
@@ -1388,6 +1396,7 @@ struct cdp_soc_t {
  * @CDP_CONFIG_TX_PKT_INFO: TX packet count
  * @CDP_CONFIG_RX_PKT_INFO: RX packet count
  * @CDP_CONFIG_PEER_BW: configure peer bandwidth
+ * @CDP_CONFIG_PEER_ASSOC_STATE: set peer assoc state
  */
 enum cdp_peer_param_type {
 	CDP_CONFIG_NAWDS,
@@ -1400,6 +1409,7 @@ enum cdp_peer_param_type {
 	CDP_CONFIG_TX_PKT_INFO,
 	CDP_CONFIG_RX_PKT_INFO,
 	CDP_CONFIG_PEER_BW,
+	CDP_CONFIG_PEER_ASSOC_STATE,
 };
 
 /**
@@ -1500,6 +1510,7 @@ enum cdp_pdev_param_type {
  * @cdp_peer_param_nac: Enable nac
  * @cdp_peer_param_freq: Peer frequency
  * @cdp_peer_param_bw: peer bandwidth
+ * @cdp_peer_param_assoc_done: peer assoc param
  *
  * @cdp_vdev_param_nawds: set nawds enable/disable
  * @cdp_vdev_param_mcast_en: enable/disable multicast enhancement
@@ -1601,6 +1612,7 @@ enum cdp_pdev_param_type {
  * @cdp_tx_vdev_nss_support: Vdev Tx NSS report support
  * @pkt_info.peer_id: ID of the peer
  * @pkt_info.pkts: packet count
+ * @cdp_passthru_ampdu_support: passthru ampdu support
  */
 typedef union cdp_config_param_t {
 	/* peer params */
@@ -1611,6 +1623,7 @@ typedef union cdp_config_param_t {
 	bool cdp_peer_param_in_twt;
 	uint32_t cdp_peer_param_freq;
 	enum cdp_peer_bw cdp_peer_param_bw;
+	uint8_t cdp_peer_param_assoc_done;
 
 	/* vdev params */
 	bool cdp_vdev_param_wds;
@@ -1736,6 +1749,7 @@ typedef union cdp_config_param_t {
 		struct cdp_pkt_info pkts;
 	} pkt_info;
 	bool cdp_dyn_resource_mgr_support;
+	bool cdp_passthru_ampdu_support;
 } cdp_config_param_type;
 
 /**
@@ -1928,6 +1942,7 @@ enum cdp_vdev_param_type {
  * @CDP_SAWF_MSDUQ_RECLAIM_SUPPORT: To initiate msduq reclaim related functions
  * @CDP_VDEV_TX_NSS_SUPPORT: FW Support vdev Tx NSS command
  * @CDP_DYN_RESOURCE_MGR_SUPPORT: Dynamic RX buffer allocation support
+ * @CDP_CFG_PASSTHRU_AMPDU_SUPPORT: Passthru ampdu support
  */
 enum cdp_psoc_param_type {
 	CDP_ENABLE_RATE_STATS,
@@ -1967,6 +1982,7 @@ enum cdp_psoc_param_type {
 #endif
 	CDP_VDEV_TX_NSS_SUPPORT,
 	CDP_DYN_RESOURCE_MGR_SUPPORT,
+	CDP_CFG_PASSTHRU_AMPDU_SUPPORT,
 };
 
 #ifdef CONFIG_AP_PLATFORM

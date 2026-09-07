@@ -120,11 +120,7 @@ struct rxq {
 	u32 free_idx;
 	unsigned short rx_done_cnt;
 	void *arg;
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
-	int (*rx_done)(struct sk_buff *skb, void *priv, bool force_recv, bool force_mdee);
-#else
 	int (*rx_done)(struct sk_buff *skb, void *priv, bool force_recv);
-#endif
 	u32 nr_bds;
 	atomic_t need_exit;
 	struct wakeup_source *ws;

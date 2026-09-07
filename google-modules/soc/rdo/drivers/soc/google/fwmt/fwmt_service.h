@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only OR MIT */
 /*
- * Copyright 2024 Google LLC.
+ * Copyright 2025 Google LLC.
  *
- * Google firmware tracepoint protocol header.
+ * Google firmware metrics (FWMT) protocol header.
  *
  * This header is copied from the Pixel firmware sources to the Linux kernel
  * sources, so it's written to be compiled under both Linux and the firmware,
@@ -12,102 +12,94 @@
 #ifndef __FWMT_SERVICE_H
 #define __FWMT_SERVICE_H
 
-#ifdef __linux__
+#if defined(__linux__) && defined(__KERNEL__)
 #include <linux/types.h>
 #else
 #include <stdint.h>
 #endif
 
-/*
- * SERVICE_ID: GDMC_MBA_SERVICE_ID_FWMT
+#ifndef static_assert
+#define static_assert _Static_assert
+#endif
+
+/**
+ * struct fwmt_mba_msg - FWMT mailbox message.
  *
- * This message is used to retrieve metric info from GDMC SSWRP.
- *
- * The TYPE field in the header determines type of resource to be retrieved.
- *
- * Request:
- * AP must pass physical address and available size of the buffer where
- * requested resource should be stored.
- * NOTE: Buffer must be placed in the first gigabyte of DRAM
- * (SoC range: 0x80000000 - 0xBFFFFFFF)
- *
- * Word 0: Non-queue mode header and data
- *  bit [ 31 - 16       | 15-0   ]
- *      | common header | TYPE   |
- * Word 1: Bits 31-0 of SOC physical address of the buffer
- * Word 2: Bits 63-32 of SOC physical address of the buffer
- * Word 3: Buffer size
- *
- * Buffer size must be at least sizeof(struct gdmc_mba_fwmt_msg_request_buffer)
- * and the first 4 bytes shall contain offset of the requested data
- * in the given resource.
- * |        Buffer       |
- * | offset |    rest    |
- *
- * ====================================================
- * ===== TYPE: GDMC_MBA_FWMT_RETRIEVE_STRING ==========
- * ====================================================
- *
- * This operation is used to retrieve string table from SRAM.
- *
- * Response:
- * String table is placed in the buffer.
- *
- * Word 0: (unchanged)
- * Word 1: Number of bytes written in the buffer
- * Word 2: Total size of the string table
- * Word 3: (unchanged)
- *
- * ====================================================
- * ===== TYPE: GDMC_MBA_FWMT_RETRIEVE_METRIC ==========
- * ====================================================
- *
- * This operation is used to retrieve metric array from SRAM.
- *
- * Response:
- * Metrics are placed in the buffer.
- *
- * Word 0: (unchanged)
- * Word 1: Number of bytes written in the buffer
- * Word 2: Total size of the metric array
- * Word 3: (unchanged)
+ * @msg_phys_addr_lo: Lower 32 bits of the shared buffer physical address.
+ * @msg_phys_addr_hi: Upper 32 bits of the shared buffer physical address.
+ * @msg_buffer_size: Total allocated size of the shared memory buffer. This is
+ *                   needed to ensure the firmware does not read or write past
+ *                   the end of the allocated memory.
+ * @msg_data_size: Size of the actual message payload data currently residing in
+ *                 the buffer. This tells the firmware exactly how many bytes
+ *                 to read for the request, and allows the firmware to return
+ *                 the exact size of the response payload.
  */
-
-/* Valid values for the TYPE field. */
-enum fwmt_mba_op_type {
-	GDMC_MBA_FWMT_RETRIEVE_STRING = 0,
-	GDMC_MBA_FWMT_RETRIEVE_METRIC = 1,
-};
-
-/* MBA message structure for FWMT service */
 struct fwmt_mba_msg {
-	uint32_t header;
-	union {
-		struct {
-			uint32_t pa_low;
-			uint32_t pa_high;
-			uint32_t buffer_capacity;
-		} request;
+	uint32_t msg_phys_addr_lo;
+	uint32_t msg_phys_addr_hi;
+	uint16_t msg_buffer_size;
+	uint16_t msg_data_size;
+};
+static_assert(sizeof(struct fwmt_mba_msg) == 12, "fwmt_mba_msg size mismatch");
 
-		struct {
-			uint32_t size;
-			uint32_t total_size;
-			uint32_t rsv;
-		} response;
-	} payload;
+/**
+ * enum fwmt_msg_type - Set of FWMT message types.
+ *
+ * @kFwmtMsgTypeRetrieveString: Retrieve string table message.
+ * @kFwmtMsgTypeRetrieveMetric: Retrieve metric table message.
+ */
+enum fwmt_msg_type {
+	kFwmtMsgTypeRetrieveString = 0,
+	kFwmtMsgTypeRetrieveMetric = 1,
 };
 
-_Static_assert(sizeof(struct fwmt_mba_msg) == 4 * sizeof(uint32_t),
-	       "fwmt_mba_msg size");
-
-struct fwmt_msg_request_buffer {
-	union {
-		uint32_t resource_offset;
-		uint8_t data[];
-	};
+/**
+ * struct fwmt_msg_base - Base FWMT message.
+ *
+ * @type: Message type.
+ * @error: Message error code. A value of 0 means no error; otherwise, an error
+ *         occurred.
+ * @reserved: Reserved. Set to 0 when writing and ignore when reading.
+ *
+ * This structure defines the base FWMT message. All FWMT messages in the shared
+ * buffer start with this structure.
+ */
+struct fwmt_msg_base {
+	uint8_t type;
+	uint8_t error;
+	uint16_t reserved;
 };
+static_assert(sizeof(struct fwmt_msg_base) == 4, "fwmt_msg_base size mismatch");
 
-_Static_assert(sizeof(struct fwmt_msg_request_buffer) == sizeof(uint32_t),
-	       "fwmt_msg_request_buffer size");
+/**
+ * struct fwmt_msg_retrieve_request - FWMT retrieve resource request message.
+ *
+ * @base: Message base.
+ * @resource_offset: Offset of the requested data within the resource.
+ */
+struct fwmt_msg_retrieve_request {
+	struct fwmt_msg_base base;
+	uint32_t resource_offset;
+};
+static_assert(sizeof(struct fwmt_msg_retrieve_request) == 8,
+	      "fwmt_msg_retrieve_request size mismatch");
+
+/**
+ * struct fwmt_msg_retrieve_response - FWMT retrieve resource response message.
+ *
+ * @base: Message base.
+ * @size: Size of the resource data returned in this chunk.
+ * @total_size: Total size of the requested resource.
+ * @data: Resource chunk data.
+ */
+struct fwmt_msg_retrieve_response {
+	struct fwmt_msg_base base;
+	uint32_t size;
+	uint32_t total_size;
+	uint8_t data[];
+};
+static_assert(sizeof(struct fwmt_msg_retrieve_response) == 12,
+	      "fwmt_msg_retrieve_response size mismatch");
 
 #endif /* __FWMT_SERVICE_H */

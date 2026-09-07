@@ -13,6 +13,7 @@
 #include <drm/drm_edid.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_print.h>
 
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -27,6 +28,7 @@
 #include "vs_dc_info.h"
 #include "vs_dc.h"
 #include "vs_writeback.h"
+#include "vs_drv.h"
 #include "vs_dc_drm_property.h"
 #include "vs_trace.h"
 #include "trace/dpu_trace.h"
@@ -175,17 +177,6 @@ static void wb_connector_atomic_destroy_state(struct drm_connector *connector,
 	vs_dc_destroy_drm_properties(vs_wb_state->drm_states, &vs_wb->properties);
 
 	kfree(vs_wb_state);
-}
-
-static void wb_connector_destroy(struct drm_connector *connector)
-{
-	struct drm_writeback_connector *drm_wb = drm_connector_to_writeback(connector);
-	struct vs_writeback_connector *vs_wb = to_vs_writeback_connector(drm_wb);
-
-	/* cleanup connector variables */
-	drm_connector_cleanup(connector);
-
-	kfree(vs_wb);
 }
 
 static void wb_connector_reset(struct drm_connector *connector)
@@ -382,7 +373,6 @@ static const struct drm_connector_funcs wb_connector_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.late_register = wb_connector_late_register,
 	.detect = wb_connector_detect,
-	.destroy = wb_connector_destroy,
 	.reset = wb_connector_reset,
 	.atomic_duplicate_state = wb_connector_atomic_duplicate_state,
 	.atomic_destroy_state = wb_connector_atomic_destroy_state,
@@ -498,23 +488,29 @@ struct vs_writeback_connector *vs_writeback_create(const struct dc_hw_wb *hw_wb,
 						   unsigned int possible_crtcs)
 {
 	struct vs_writeback_connector *vs_writeback;
+	struct drm_encoder *encoder;
 	int ret;
 
 	if (!info)
 		return ERR_PTR(-EINVAL);
 
-	vs_writeback = kzalloc(sizeof(struct vs_writeback_connector), GFP_KERNEL);
+	vs_writeback = drmm_kzalloc(drm_dev, sizeof(struct vs_writeback_connector), GFP_KERNEL);
 	if (!vs_writeback)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_writeback_connector_init(drm_dev, &vs_writeback->base, &wb_connector_funcs,
-					   &wb_encoder_helper_funcs, info->formats,
-					   info->num_formats, possible_crtcs);
+	encoder = &vs_writeback->base.encoder;
 
-	if (ret) {
-		kfree(vs_writeback);
+	drm_encoder_helper_add(encoder, &wb_encoder_helper_funcs);
+	encoder->possible_crtcs = possible_crtcs;
+
+	ret = drmm_encoder_init(drm_dev, encoder, NULL, DRM_MODE_ENCODER_VIRTUAL, NULL);
+	if (ret)
 		return ERR_PTR(ret);
-	}
+
+	ret = drmm_writeback_connector_init(drm_dev, &vs_writeback->base, &wb_connector_funcs,
+					    encoder, info->formats, info->num_formats);
+	if (ret)
+		return ERR_PTR(ret);
 
 	drm_connector_helper_add(&vs_writeback->base.base, &wb_connector_helper_funcs);
 
@@ -524,7 +520,7 @@ struct vs_writeback_connector *vs_writeback_create(const struct dc_hw_wb *hw_wb,
 			drm_dev, DRM_MODE_PROP_ATOMIC, "WB_POINT", vs_wb_point_enum_list,
 			ARRAY_SIZE(vs_wb_point_enum_list));
 		if (!vs_writeback->point_prop)
-			goto err_free_wb_connector;
+			return NULL;
 
 		drm_object_attach_property(&vs_writeback->base.base.base, vs_writeback->point_prop,
 					info->init_wb_point ? info->init_wb_point : VS_WB_DISP_OUT);
@@ -532,15 +528,9 @@ struct vs_writeback_connector *vs_writeback_create(const struct dc_hw_wb *hw_wb,
 
 	if (hw_wb && vs_dc_create_drm_properties(drm_dev, &vs_writeback->base.base.base,
 						 &hw_wb->states, &vs_writeback->properties))
-		goto error_cleanup_wb_connector;
+		return NULL;
 
 	return vs_writeback;
-
-error_cleanup_wb_connector:
-	drm_connector_cleanup(&vs_writeback->base.base);
-err_free_wb_connector:
-	kfree(vs_writeback);
-	return NULL;
 }
 
 struct drm_writeback_connector *find_wb_connector(struct drm_crtc *crtc)
@@ -561,4 +551,24 @@ struct drm_writeback_connector *find_wb_connector(struct drm_crtc *crtc)
 		wb_connector = drm_connector_to_writeback(connector);
 
 	return wb_connector;
+}
+
+/**
+ * vs_writeback_is_active() - Check if writeback is active in hardware.
+ * @dev: The DRM device structure.
+ *
+ * This function scans all writeback connectors to check if any of them have
+ * frames currently in flight in the hardware.
+ *
+ * Return: true if writeback is active in hardware, false otherwise.
+ */
+bool vs_writeback_is_active(const struct drm_device *dev)
+{
+	struct vs_drm_private *priv = dev->dev_private;
+	struct vs_dc *dc = dev_get_drvdata(priv->dc_dev);
+
+	if (!dc)
+		return false;
+
+	return dc_hw_writeback_is_active(&dc->hw);
 }

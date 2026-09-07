@@ -2698,6 +2698,9 @@ static PVRSRV_ERROR RGXSetupFwSysData(PVRSRV_DEVICE_NODE       *psDeviceNode,
 		psRuntimeCfg->ui32UpThresholdInPct = 90;
 		psRuntimeCfg->ui32DownDifferentialInPct = 5;
 #endif
+#if defined(SUPPORT_PDVFS_OPS)
+		psRuntimeCfg->ui32Governor = 0;
+#endif
 
 		/* flush write buffers for psDevInfo->psRGXFWIfRuntimeCfg */
 		OSWriteMemoryBarrier(psDevInfo->psRGXFWIfRuntimeCfg);
@@ -2904,7 +2907,7 @@ static PVRSRV_ERROR RGXSetupFwOsData(PVRSRV_DEVICE_NODE       *psDeviceNode,
 
 	sFwOsInitScratch.ui32HWRDebugDumpLimit = ui32HWRDebugDumpLimit;
 
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
 	{
 		/* Set up Workload Estimation firmware CCB */
@@ -3372,7 +3375,7 @@ static void RGXFreeFwOsData(PVRSRV_RGXDEV_INFO *psDevInfo)
 	           &psDevInfo->psFirmwareCCB,
 	           &psDevInfo->psFirmwareCCBMemDesc);
 
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVINFO, psDevInfo))
 	{
 		RGXFreeCCB(psDevInfo,
@@ -3856,6 +3859,10 @@ static IMG_UINT32 RGXGetCmdMemCopySize(RGXFWIF_KCCB_CMD_TYPE eCmdType)
 		case RGXFWIF_KCCB_CMD_CANCEL_WORK:
 		{
 			return offsetof(RGXFWIF_KCCB_CMD, uCmdData) + sizeof(RGXFWIF_CANCEL_WORK_DATA);
+		}
+		case RGXFWIF_KCCB_CMD_PLATFORM_CMD:
+		{
+			return offsetof(RGXFWIF_KCCB_CMD, uCmdData) + sizeof(RGXFWIF_PLATFORM_DATA);
 		}
 		default:
 		{

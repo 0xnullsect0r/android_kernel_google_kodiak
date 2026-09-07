@@ -20,13 +20,12 @@
 #include <linux/minmax.h>
 #include <linux/types.h>
 #include <linux/usb/pd.h>
-#include <misc/gvotable.h>
-#include <misc/logbuffer.h>
 #include "gbms_power_supply.h"
 #include "qmath.h"
 #include "gbms_storage.h"
 
 struct device_node;
+struct dentry;
 
 #define DEFAULT_BATT_FAKE_CAPACITY	50
 
@@ -308,6 +307,7 @@ struct ttf_tier_stat {
 
 #define GBMS_TIER_TEMP_MIN_DEFAULT 0x7FFF
 #define GBMS_TIER_TEMP_MAX_DEFAULT -0x8000
+#define MAX_VTIER_REENTRIES 16
 
 struct gbms_ce_tier_stats {
 	int8_t		temp_idx;
@@ -334,10 +334,28 @@ struct gbms_ce_tier_stats {
 	int64_t		icl_sum;
 	int64_t		temp_sum;
 	int64_t		ibatt_sum;
+
+	int16_t		vin_min;
+	int16_t		vin_max;
+	int64_t		vin_sum;
+
+	int16_t		iin_min;
+	int16_t		iin_max;
+	int64_t		iin_sum;
+
+	int16_t		vbatt_min;
+	int16_t		vbatt_max;
+	int64_t		vbatt_sum;
+
 	uint32_t 	sample_count;
 
 	uint16_t 	msc_cnt[MSC_STATES_COUNT];
 	uint32_t 	msc_elap[MSC_STATES_COUNT];
+
+	/* Repeated entries tracking */
+	int64_t		last_update_sec;
+	int16_t		soc_in_repeated[MAX_VTIER_REENTRIES];
+	uint8_t		reentry_count;
 };
 
 #define GBMS_STATS_TIER_COUNT	3
@@ -380,6 +398,7 @@ struct batt_ttf_stats {
 
 	int report_max_ratio; /* max ratio to report ttf */
 	int fcc_now;
+	int mdis_pwr_uw;
 };
 
 /*
@@ -819,6 +838,12 @@ ssize_t ttf_dump_details(char *buf, int max_size,
 			 const struct batt_ttf_stats *ttf_stats,
 			 int last_soc);
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+void ttf_init_debugfs(struct dentry *parent, struct batt_ttf_stats *stats);
+#else
+static inline void ttf_init_debugfs(struct dentry *parent, struct batt_ttf_stats *stats) {}
+#endif
+
 int ttf_ref_cc(const struct batt_ttf_stats *stats, int soc);
 
 int ttf_pwr_ibatt(const struct gbms_ce_tier_stats *ts);
@@ -853,9 +878,10 @@ void gbms_tier_stats_init(struct gbms_ce_tier_stats *stats, int8_t idx);
 void gbms_chg_stats_tier(struct gbms_ce_tier_stats *tier,
 			 int msc_state, ktime_t elap);
 
-void gbms_stats_update_tier(int temp_idx, int ibatt_ma, int temp, ktime_t elap,
+void gbms_stats_update_tier(u32 now, int temp_idx, int ibatt_ma, int temp, ktime_t elap,
 			    int cc, union gbms_charger_state *chg_state,
 			    enum gbms_msc_states_t msc_state, int soc_in,
+			    int vin_mv, int iin_ma, int vbatt_mv,
 			    struct gbms_ce_tier_stats *tier);
 
 int gbms_tier_stats_cstr(char *buff, int size,

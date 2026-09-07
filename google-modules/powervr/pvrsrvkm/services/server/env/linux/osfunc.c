@@ -165,15 +165,20 @@ void OSSuspendTaskInterruptible(void)
 }
 
 static DLLIST_NODE gsThreadListHead;
+static POS_LOCK hThreadListLock;
 
 static void _ThreadListAddEntry(OSThreadData *psThreadListNode)
 {
+	OSLockAcquire(hThreadListLock);
 	dllist_add_to_tail(&gsThreadListHead, &(psThreadListNode->sNode));
+	OSLockRelease(hThreadListLock);
 }
 
 static void _ThreadListRemoveEntry(OSThreadData *psThreadListNode)
 {
+	OSLockAcquire(hThreadListLock);
 	dllist_remove_node(&(psThreadListNode->sNode));
+	OSLockRelease(hThreadListLock);
 }
 
 static void _ThreadSetStopped(OSThreadData *psOSThreadData)
@@ -181,9 +186,10 @@ static void _ThreadSetStopped(OSThreadData *psOSThreadData)
 	psOSThreadData->bIsThreadRunning = IMG_FALSE;
 }
 
-static void _OSInitThreadList(void)
+static PVRSRV_ERROR _OSInitThreadList(void)
 {
 	dllist_init(&gsThreadListHead);
+	return OSLockCreate(&hThreadListLock);
 }
 
 void OSThreadDumpInfo(DUMPDEBUG_PRINTF_FUNC* pfnDumpDebugPrintf,
@@ -192,6 +198,8 @@ void OSThreadDumpInfo(DUMPDEBUG_PRINTF_FUNC* pfnDumpDebugPrintf,
 	PDLLIST_NODE psNodeCurr, psNodeNext;
 	LINUX_THREAD_ACTIVITY_STATS sThreadStats;
 	PVRSRV_ERROR eError = PVRSRV_OK;
+
+	OSLockAcquire(hThreadListLock);
 
 	dllist_foreach_node(&gsThreadListHead, psNodeCurr, psNodeNext)
 	{
@@ -207,6 +215,8 @@ void OSThreadDumpInfo(DUMPDEBUG_PRINTF_FUNC* pfnDumpDebugPrintf,
 			psThreadListNode->pfnDebugDumpCB(pfnDumpDebugPrintf, pvDumpDebugFile);
 		}
 	}
+
+	OSLockRelease(hThreadListLock);
 
 	eError = LinuxGetThreadActivityStats(&sThreadStats);
 	if (eError == PVRSRV_OK)
@@ -680,7 +690,8 @@ PVRSRV_ERROR OSInitEnvData(void)
 	eError = LinuxInitPhysmem();
 	PVR_GOTO_IF_ERROR(eError, error_out);
 
-	_OSInitThreadList();
+	eError = _OSInitThreadList();
+	PVR_GOTO_IF_ERROR(eError, error_out);
 
 #if defined(SUPPORT_NATIVE_FENCE_SYNC) || defined(SUPPORT_BUFFER_SYNC)
 	eError = _NativeSyncInit();
@@ -867,6 +878,7 @@ INLINE IMG_UINT32 OSGetCurrentApplicationUID(void)
 	IMG_PID pid = OSGetCurrentProcessID();
 	struct task_struct *psTask;
 	struct pid *psPid;
+	IMG_UINT32 ui32UID;
 
 	psPid = find_get_pid((pid_t)pid);
 	if (!psPid)
@@ -877,14 +889,20 @@ INLINE IMG_UINT32 OSGetCurrentApplicationUID(void)
 	}
 
 	psTask = get_pid_task(psPid, PIDTYPE_PID);
+	put_pid(psPid);
 	if (!psTask)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to get pid task for PID %u.",
 		                        __func__, pid));
+		return 0;
 	}
-	put_pid(psPid);
 
-	return psTask ? from_kuid(&init_user_ns, psTask->cred->uid) : 0;
+	rcu_read_lock();
+	ui32UID = from_kuid(&init_user_ns, rcu_dereference(psTask->cred)->uid);
+	rcu_read_unlock();
+	put_task_struct(psTask);
+
+	return ui32UID;
 }
 
 INLINE IMG_PID OSGetCurrentVirtualProcessID(void)
@@ -3018,7 +3036,9 @@ PVRSRV_ERROR OSGetUID(IMG_PID pid, IMG_UINT32 *pui32UID)
 		return PVRSRV_ERROR_NOT_FOUND;
 	}
 
-	*pui32UID = from_kuid(&init_user_ns, psTask->cred->uid);
+	rcu_read_lock();
+	*pui32UID = from_kuid(&init_user_ns, rcu_dereference(psTask->cred)->uid);
+	rcu_read_unlock();
 	put_task_struct(psTask);
 
 	return PVRSRV_OK;

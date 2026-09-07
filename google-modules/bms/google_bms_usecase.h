@@ -13,8 +13,6 @@
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 
-#include "misc/gvotable.h"
-
 #define BMS_USECASE_MAX_ENTRIES 20
 #define BMS_USECASE_INTERMEDIATE_STR "Intermediate"
 
@@ -360,20 +358,6 @@ struct bms_usecase_notify_cbs {
 	bms_usecase_notify_cb uc_setup_cb;
 	bms_usecase_notify_cb uc_transition_cb;
 	bms_usecase_notify_cb uc_changed_cb;
-};
-
-struct bms_usecase_notify_data {
-	void *data;
-	struct bms_usecase_notify_cbs cbs;
-	char identifier[GVOTABLE_MAX_REASON_LEN];
-	struct list_head list;
-};
-
-struct bms_usecase_completion_data {
-	void *data;
-	bms_usecase_completion_cb from_uc_cb;
-	bms_usecase_completion_cb to_uc_cb;
-	struct list_head list;
 };
 
 int bms_usecase_init(struct bms_usecase_chg_data *chg_data);

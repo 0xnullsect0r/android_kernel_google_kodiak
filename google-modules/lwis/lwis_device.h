@@ -14,6 +14,7 @@
 #include <linux/hashtable.h>
 #include <linux/idr.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -105,6 +106,11 @@ struct lwis_device_subclass_operations {
 	int (*register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 	/* Called by lwis_device when device register needs to be read/written without lock */
 	int (*register_io_locked)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
+	/* Called by lwis_device when device register needs to be read/written
+	 * with specific size without lock
+	 */
+	int (*register_io_with_size_locked)(struct lwis_device *lwis_dev,
+					    struct lwis_io_entry *entry, int access_size);
 	/* Grouped transfer that process batch_size of lwis_io_entries */
 	int (*batch_register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
 				 int batch_size);
@@ -305,6 +311,7 @@ struct lwis_device {
  */
 struct lwis_client {
 	struct rcu_head rcu;
+	struct kref kref;
 	struct mutex lock;
 	struct lwis_device *lwis_dev;
 	/* Hash table of events controlled by userspace in this client */
@@ -450,6 +457,8 @@ void lwis_device_info_dump(const char *name, void (*func)(struct lwis_device *))
  * for better debugability.
  */
 void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_entry *io_entry);
+void lwis_save_register_io_info_with_size(struct lwis_device *lwis_dev,
+					  struct lwis_io_entry *io_entry, int access_size);
 
 /*
  * lwis_process_worker_queue:
@@ -476,5 +485,8 @@ void lwis_flush_device_worker(struct lwis_client *client);
  * Opens a reference to the lwis_client file* from a file descriptor.
  */
 struct file *lwis_open_lwis_client_from_fd(struct lwis_device *lwis_dev, int fd);
+
+struct lwis_client *lwis_client_get(struct lwis_client *client);
+void lwis_client_put(struct lwis_client *client);
 
 #endif /* LWIS_DEVICE_H_ */

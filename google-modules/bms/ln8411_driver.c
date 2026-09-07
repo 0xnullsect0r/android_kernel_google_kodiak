@@ -19,6 +19,9 @@
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
+
 #include "ln8411_regs.h"
 #include "ln8411_charger.h"
 

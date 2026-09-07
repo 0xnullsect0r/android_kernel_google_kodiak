@@ -22,9 +22,16 @@
 #include "mtk_except.h"
 #include "mtk_pci.h"
 #include "mtk_port.h"
+#if IS_ENABLED(CONFIG_MTK_WWAN_PWRCTL_SUPPORT)
+#include "mtk_pwrctl.h"
+#endif
 #include "mtk_trans_ctrl.h"
 #ifdef CONFIG_UT_PCIE_TRANS_CTRL
 #include "ut_trans_ctrl.h"
+#endif
+
+#if IS_ENABLED(CONFIG_ARCH_GOOGLE)
+#include "pcie/link-exception.h"
 #endif
 
 #define TAG	"PCIE_CTRL"
@@ -246,6 +253,10 @@ static void mtk_ctrl_trb_handler(struct trb_srv *srv, struct trans_list *trans_l
 					mtk_ctrl_ch_flush(skb_list);
 			}
 			break;
+		case TRB_CMD_CHECK_STA:
+			skb_unlink(skb, skb_list);
+			kick = true;
+			break;
 		case TRB_CMD_TX:
 			ret = mtk_cldma_submit_tx(trans->dev, skb);
 			if (ret) {
@@ -314,13 +325,13 @@ static int mtk_ctrl_trb_thread(void *args)
 		if (kthread_should_park())
 			kthread_parkme();
 
-		do {
+		while (!mtk_ctrl_chs_is_busy_or_empty(srv) &&
+		       !kthread_should_stop() && !kthread_should_park()) {
 			mtk_pm_runtime_get(srv->trans->mdev, MTK_USER_CTRL, true);
 			mtk_ctrl_trb_process(srv);
 			mtk_pm_runtime_put(srv->trans->mdev, MTK_USER_CTRL, true);
 			cond_resched();
-		} while (!mtk_ctrl_chs_is_busy_or_empty(srv) && !kthread_should_stop() &&
-			 !kthread_should_park());
+		}
 	}
 	mtk_ctrl_chs_flush(srv);
 	return 0;
@@ -415,6 +426,64 @@ static void mtk_ctrl_trb_srv_exit(struct mtk_ctrl_trans *trans)
 	}
 }
 
+/**
+ * mtk_trans_ctrl_prepare() - perform the additional part that
+ * system suspend exceeds RPM suspend.
+ * @mdev: pointer to mtk_md_dev
+ * @param: pointer to transaction structure
+ * @is_smart_suspend: true means is smart suspend
+ *
+ * This function called by pm when entering smart suspend. Since
+ * already in RPM suspend state, entering smart suspend only needs
+ * to perform the additional part that system suspend exceeds RPM
+ * suspend. Do not access HW register in this function because PCIe
+ * link is not ready at this time.
+ *
+ * Return:
+ * 0:	 success.
+ */
+static int mtk_trans_ctrl_prepare(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend)
+{
+	struct mtk_ctrl_trans *trans = param;
+	int i;
+
+	if (is_smart_suspend) {
+		for (i = 0; i < trans->trb_srv_num; i++)
+			kthread_park(trans->trb_srv[i]->trb_thread);
+	}
+
+	return 0;
+}
+
+/**
+ * mtk_trans_ctrl_complete() - perform the additional part that
+ * system resume exceeds RPM resume.
+ * @mdev: pointer to mtk_md_dev
+ * @param: pointer to transaction structure
+ * @is_smart_suspend: true means is smart suspend
+ *
+ * This function called by pm when exiting smart suspend. Since
+ * keeping RPM suspend is need after exiting smart suspend, only
+ * needs to perform the additional part that system resume exceeds
+ * RPM resume. Do not access HW register in this function because
+ * PCIe link is not ready at this time.
+ *
+ * Return:
+ * 0:	success.
+ */
+static int mtk_trans_ctrl_complete(struct mtk_md_dev *mdev, void *param, bool is_smart_suspend)
+{
+	struct mtk_ctrl_trans *trans = param;
+	int i;
+
+	if (is_smart_suspend) {
+		for (i = 0; i < trans->trb_srv_num; i++)
+			kthread_unpark(trans->trb_srv[i]->trb_thread);
+	}
+
+	return 0;
+}
+
 static int mtk_trans_ctrl_suspend(struct mtk_md_dev *mdev, void *param, bool is_runtime)
 {
 	struct mtk_ctrl_trans *trans = param;
@@ -474,6 +543,8 @@ static int mtk_ctrl_pm_init(struct mtk_ctrl_trans *trans)
 	INIT_LIST_HEAD(&pm_entity->entry);
 	pm_entity->user = MTK_USER_CTRL;
 	pm_entity->param = trans;
+	pm_entity->prepare = mtk_trans_ctrl_prepare;
+	pm_entity->complete = mtk_trans_ctrl_complete;
 	pm_entity->suspend = mtk_trans_ctrl_suspend;
 	pm_entity->suspend_late = mtk_trans_ctrl_suspend_late;
 	pm_entity->resume_early = mtk_trans_ctrl_resume_early;
@@ -860,6 +931,17 @@ static int mtk_pcie_hif_cmd_func(struct mtk_md_dev *mdev, int cmd, void *data)
 		return mtk_pm_runtime_get(mdev, MTK_USER_CTRL, *(bool *)data);
 	case HIF_CTRL_CMD_RPM_PUT:
 		return mtk_pm_runtime_put(mdev, MTK_USER_CTRL, *(bool *)data);
+	case HIF_CTRL_CMD_TX_ABORT:
+#ifdef CONFIG_MTK_WWAN_PWRCTL_SUPPORT
+		MTK_INFO(mdev, "CTRL hif_cmd tx_abort trigger MDEE\n");
+#if IS_ENABLED(CONFIG_ARCH_GOOGLE)
+		radio_google_cldma_error_handler(mdev->google, EXCP_REASON_CLDMA_TX_TIMEOUT);
+#endif
+		mtk_pwrctl_force_md_assert();
+#else
+		ret = -EOPNOTSUPP;
+#endif
+		break;
 	default:
 		ret = -EINVAL;
 		break;

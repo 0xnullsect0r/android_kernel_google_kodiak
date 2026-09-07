@@ -25,6 +25,12 @@
 #include "vdu_service.h"
 #include "google-vdu.h"
 
+/*
+ * The driver should hold a wakelock while a nonce is active.
+ * The timeout should be longer than the firmware timeout (60 seconds).
+ */
+#define GVDU_NONCE_TIMEOUT_MS (90 * MSEC_PER_SEC)
+
 VISIBLE_IF_KUNIT
 int64_t gvdu_handle_mailbox_error(struct device *dev, int message_res,
 				  uint32_t *header)
@@ -233,6 +239,16 @@ static ssize_t gvdu_process_directive_joint(struct device *dev)
 	return ret;
 }
 
+static void gvdu_start_nonce_timer(struct gvdu_base *base)
+{
+	pm_wakeup_ws_event(base->nonce_ws, GVDU_NONCE_TIMEOUT_MS, true);
+}
+
+static void gvdu_release_wakelock(struct gvdu_base *base)
+{
+	__pm_relax(base->nonce_ws);
+}
+
 /* Caller must free memory */
 VISIBLE_IF_KUNIT
 ssize_t gvdu_decode_base64_buffer(struct device *dev, const char *source,
@@ -374,10 +390,12 @@ static int gvdu_cdev_release(struct inode *inode, struct file *filp)
 	else
 		ret = gvdu_process_directive_separate(base->dev);
 
-	if (ret < 0)
+	if (ret < 0) {
 		dev_err(base->dev, "Failed to process directive, %zd\n", ret);
-	else
+	} else {
 		gvdu_notify_status_change(base->dev);
+		gvdu_release_wakelock(base);
+	}
 
 cleanup:
 	kfree(base->char_dev.data_buffer);
@@ -520,6 +538,7 @@ static int64_t gvdu_emit_retrieve_nonce_request(struct device *dev,
 	dma_addr_t buffer_pa;
 	struct gdmc_mba_vdu_msg_nonce_buffer *buffer =
 		dma_alloc_coherent(dev, buffer_size, &buffer_pa, GFP_KERNEL);
+	struct gvdu_base *base = dev_get_drvdata(dev);
 	ssize_t ret;
 
 	if (!buffer || !buffer_pa)
@@ -531,6 +550,8 @@ static int64_t gvdu_emit_retrieve_nonce_request(struct device *dev,
 		dev_dbg(dev, "Mailbox request failed: %zd.\n", ret);
 		goto exit;
 	}
+
+	gvdu_start_nonce_timer(base);
 
 	if (write_nonce)
 		ret = sysfs_emit(sysfs_buf, "%*phN\n", GDMC_MBA_VDU_NONCE_LEN,
@@ -721,6 +742,13 @@ static int google_vdu_probe(struct platform_device *pdev)
 		goto err_mem_alloc;
 	}
 
+	base->nonce_ws = wakeup_source_register(dev, "gvdu_nonce");
+	if (!base->nonce_ws) {
+		dev_err(dev, "Failed to register gvdu_nonce wakeup source\n");
+		ret = -ENOMEM;
+		goto err_ws;
+	}
+
 	ret = gvdu_create_chardev(dev);
 	if (ret != 0)
 		goto err_create_chardev;
@@ -728,6 +756,8 @@ static int google_vdu_probe(struct platform_device *pdev)
 	return 0;
 
 err_create_chardev:
+	wakeup_source_unregister(base->nonce_ws);
+err_ws:
 	of_reserved_mem_device_release(dev);
 err_mem_alloc:
 	gdmc_iface_put(base->gdmc_iface);
@@ -737,6 +767,9 @@ err_mem_alloc:
 static void google_vdu_remove(struct platform_device *pdev)
 {
 	struct gvdu_base *base = platform_get_drvdata(pdev);
+
+	gvdu_release_wakelock(base);
+	wakeup_source_unregister(base->nonce_ws);
 
 	gvdu_destroy_chardev(&pdev->dev);
 

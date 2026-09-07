@@ -402,6 +402,9 @@ void radio_google_cldma_error_handler(struct radio_google *goog, enum link_excep
 	case EXCP_REASON_CLDMA_ERROR:
 		atomic_or(EXCP_REASON_CLDMA_ERROR, &link_exception->reason_flags);
 		break;
+	case EXCP_REASON_CLDMA_TX_TIMEOUT:
+		atomic_or(EXCP_REASON_CLDMA_TX_TIMEOUT, &link_exception->reason_flags);
+		break;
 	case EXCP_REASON_CLDMA_RX_HWO_ERROR:
 		atomic_or(EXCP_REASON_CLDMA_RX_HWO_ERROR, &link_exception->reason_flags);
 		break;

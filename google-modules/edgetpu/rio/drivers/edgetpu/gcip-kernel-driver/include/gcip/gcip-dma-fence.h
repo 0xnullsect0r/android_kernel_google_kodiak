@@ -30,7 +30,7 @@ struct gcip_dma_fence_manager {
 	struct list_head fence_list;
 	spinlock_t fence_list_lock;
 	struct device *dev;
-	char driver_name[GCIP_DMA_FENCE_NAME_LENGTH];
+	const char *driver_name;
 	char name[GCIP_DMA_FENCE_NAME_LENGTH];
 };
 
@@ -56,10 +56,21 @@ struct gcip_dma_fence {
  * @driver_name: The driver name of this fence manager.
  * @name: The name of the fence manager.
  *
+ * The @driver_name is used by the fences managed by this manager. It must be a constant
+ * string (e.g., a string literal) that will never be freed. Otherwise, calling get_driver_name()
+ * on a fence after the string is freed may cause use-after-free (UAF) issues.
+ *
  * Return: A pointer to the fence manager on success, or the pointer to a negative errno otherwise.
  */
 struct gcip_dma_fence_manager *
 gcip_dma_fence_manager_create(struct device *dev, const char *driver_name, const char *name);
+
+/*
+ * Compilation time check trick to ensure `driver_name` is a string literal to prevent UAF (see the
+ * comment above).
+ */
+#define gcip_dma_fence_manager_create(dev, driver_name, name) \
+	gcip_dma_fence_manager_create(dev, "" driver_name "", name)
 
 /**
  * gcip_dma_fence_manager_destroy() - Destroys the fence manager.

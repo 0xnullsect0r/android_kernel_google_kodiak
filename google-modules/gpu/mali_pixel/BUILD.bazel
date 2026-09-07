@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "mali_pixel",
     srcs = glob([
@@ -36,11 +41,6 @@ ddk_module(
     defconfig = "defconfig",
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/gpu/borr_mali_kbase:__subpackages__",
-        "//private/google-modules/gpu/mali_kbase:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/gpu/common:headers",

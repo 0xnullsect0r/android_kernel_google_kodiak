@@ -4,15 +4,16 @@
 """Download prebuilts from ci.android.com."""
 
 import argparse
+import concurrent.futures
 import json
 import os
 import shutil
 import sys
+import subprocess
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-_ARTIFACT_URL_FMT = "https://ci.android.com/builds/submitted/{build_id}/{build_target}/latest/raw/{filename}"
+_ARTIFACT_URL_FMT = "https://androidbuildinternal.googleapis.com/android/internal/build/v3/builds/{build_id}/{build_target}/attempts/latest/artifacts/{filename}/url?redirect=true"
 
 
 class Downloader(object):
@@ -20,31 +21,63 @@ class Downloader(object):
         self.build_id = build_id
         self.build_target = build_target
 
+    def _download_with_fetch_artifact(self, remote_filename, local_filename):
+        fetch_artifact_paths = [
+            "/google/data/ro/projects/android/fetch_artifact",
+            "fetch_artifact",
+        ]
+        for path in fetch_artifact_paths:
+            cmd = [
+                path,
+                "--use_shared_quota",
+                "--bid",
+                self.build_id,
+                "--target",
+                self.build_target,
+                remote_filename,
+                local_filename,
+            ]
+            try:
+                # Run silently, we only care if it succeeds
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+        return False
+
     def _download_artifact(self, remote_filename, local_filename, mandatory=True):
+        local_dir = os.path.dirname(local_filename)
+        if local_dir:
+            os.makedirs(local_dir, exist_ok=True)
+        print("downloading {} ...".format(local_filename), flush=True)
+
+        if self._download_with_fetch_artifact(remote_filename, local_filename):
+            print("downloaded {}".format(local_filename))
+            return
+
         url = _ARTIFACT_URL_FMT.format(
             build_id=self.build_id,
             build_target=self.build_target,
             filename=urllib.parse.quote(remote_filename, safe=""),  # / -> %2F
         )
-        local_dir = os.path.dirname(local_filename)
-        if local_dir:
-            os.makedirs(local_dir, exist_ok=True)
-        print("downloading {} ...".format(local_filename), flush=True, end="")
         try:
             urllib.request.urlretrieve(url, local_filename)
         except urllib.error.HTTPError as e:
             if mandatory:
-                print("failed")
+                print("failed downloading {}".format(local_filename))
                 raise e
-            print("skipped, not mandatory")
+            print("skipped downloading {}, not mandatory".format(local_filename))
         else:
-            print("downloaded")
+            print("downloaded {}".format(local_filename))
 
     def _cleanup(self):
         print("cleaning up directory")
         for item in os.listdir():
-            if item.startswith(f".{self.build_id}-downloaded"):
-                continue
             if os.path.isfile(item) or os.path.islink(item):
                 os.remove(item)
             elif os.path.isdir(item):
@@ -74,12 +107,18 @@ class GkiDownloader(Downloader):
             with open("download_configs.json", "r", encoding="utf-8") as f:
                 download_configs = json.load(f)
 
-        for filename, config in download_configs.items():
+        def download_item(item):
+            filename, config = item
             self._download_artifact(
                 config["remote_filename_fmt"].format(build_number=self.build_id),
                 filename,
                 mandatory=config["mandatory"],
             )
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = executor.map(download_item, download_configs.items())
+            # Consume the iterator to ensure all downloads finish and exceptions are raised
+            list(results)
 
     def postprocess(self):
         if not os.path.exists("signed/boot-img.tar.gz"):
@@ -106,31 +145,48 @@ TARGET_DOWNLOADERS = {
     "kernel_aarch64_fips140": Fips140Downloader,
 }
 
+
+def get_workspace_dir():
+    dir = os.getcwd()
+    while os.path.dirname(dir) != dir:
+        for f in ("WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"):
+            if os.path.exists(os.path.join(dir, f)):
+                return dir
+        dir = os.path.dirname(dir)
+
+    print("Not in a bazel workspace.", file=sys.stderr)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "-d", "--directory",
+        "-d",
+        "--directory",
         type=str,
         help=(
             "the directory to download the prebuilts, existing files in the directory will be"
-            " removed before downloading; default to prebuilts/gki/BUILD_TARGET"
-        )
+            " removed before downloading; default to WORKSPACE_DIR/prebuilts/gki/BUILD_TARGET"
+        ),
     )
     parser.add_argument(
-        "-t", "--build_target",
+        "-t",
+        "--build_target",
         type=str,
         help='the build target to download, e.g. "kernel_aarch64"',
         required=True,
     )
     parser.add_argument(
-        "-b", "--build_id",
+        "-b",
+        "--build_id",
         type=str,
         help="the build id to download the build for, e.g. 12345678",
         required=True,
     )
     parser.add_argument(
-        "-f", "--force",
-        help="do not prompt when the directory exists; skip download if marker found",
+        "-f",
+        "--force",
+        help="do not prompt when the directory exists",
         action=argparse.BooleanOptionalAction,
     )
     args = parser.parse_args()
@@ -144,19 +200,15 @@ if __name__ == "__main__":
     directory = args.directory
 
     if directory is None:
-        directory = os.path.join("prebuilts/gki", args.build_target)
+        directory = os.path.join(
+            get_workspace_dir(), "prebuilts/gki", args.build_target
+        )
 
     if os.path.isfile(directory):
         print("{} is not a directory".format(directory))
         sys.exit(1)
 
-    marker_file_path = os.path.join(directory, f".{args.build_id}-downloaded")
-
     if os.path.isdir(directory):
-        if args.force and os.path.exists(marker_file_path):
-            print(f"Marker found: {marker_file_path}. Skipping download")
-            sys.exit(0)
-
         if not args.force:
             user_input = input(
                 f"The existing files in {directory} will be removed, continue? [y/N] "
@@ -172,6 +224,3 @@ if __name__ == "__main__":
     downloader.preprocess()
     downloader.download()
     downloader.postprocess()
-
-    Path(f".{args.build_id}-downloaded").touch()
-    print(f"Successfully finished. Created marker: .{args.build_id}-downloaded")

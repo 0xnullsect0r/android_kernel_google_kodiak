@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -41,24 +46,11 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/soc/google/vh/kernel:systrace",
         "//private/google-modules/touch/common:ddk_headers",
         "//private/google-modules/touch/common:goog_touch_interface",
-    ],
-)
-
-kernel_module_group(
-    name = "sec",
-    srcs = [
-        ":sec_touch",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

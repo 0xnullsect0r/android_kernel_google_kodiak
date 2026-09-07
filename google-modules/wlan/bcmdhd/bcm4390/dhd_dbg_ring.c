@@ -247,11 +247,11 @@ dhd_dbg_ring_push(dhd_dbg_ring_t *ring, dhd_dbg_ring_entry_t *hdr, void *data)
 	}
 
 #if defined(__linux__)
-	/* Prevents the case of accessing the ring buffer in the HardIRQ context.
-	 * If an interrupt arise after holding ring lock, It could try the same lock.
-	 * This is to use the ring lock as spin_lock_bh instead of spin_lock_irqsave.
+	/*
+	 * Do not lock the ring buffer if interrupts are disabled because
+	 * unlocking the debug ring lock enables interrupts.
 	 */
-	if (in_irq()) {
+	if (in_irq() || irqs_disabled()) {
 		return BCME_BUSY;
 	}
 #endif /* defined(__linux__) */

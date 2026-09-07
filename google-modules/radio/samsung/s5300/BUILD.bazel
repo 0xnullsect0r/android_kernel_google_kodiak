@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -63,7 +68,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -88,7 +92,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -113,7 +116,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -136,12 +138,8 @@ ddk_module(
         "CONFIG_OPTION_REGION=\"$(PROJECT_REGION)\"",
         "CPIF_WAKEPKT_SET_MARK=0x80000000",
     ],
-    visibility = [
-        "//private/google-modules/radio/samsung/s5300/dit:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -166,7 +164,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -191,7 +188,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -290,8 +286,7 @@ ddk_module(
     deps = [
         ":shm_ipc",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/bts",
         "//private/google-modules/soc/gs/drivers/iommu:exynos-pcie-iommu",
@@ -301,21 +296,21 @@ ddk_module(
         "//private/google-modules/soc/gs/drivers/soc/google/modemctl:google_modemctl",
     ] + select({
         "//private/devices/google/common:soc_is_zuma_or_zumapro": [
+            "//private/google-modules/soc/gs/drivers/misc/s5910",
             "//private/google-modules/soc/gs/drivers/pci/controller/dwc:pcie-exynos-gs",
         ],
         "//private/devices/google/common:soc_is_gs201": [
             "//private/google-modules/soc/gs/drivers/pci/controller/dwc-whi:pcie-exynos-gs",
         ],
         "//conditions:default": [
+            "//private/google-modules/soc/gs/drivers/misc/s5910",
         ],
     }) + select({
         ":cpif_with_dit_is_true": [
             ":boot_device_spi",
             "//private/google-modules/radio/samsung/s5300/dit:exynos_dit",
         ],
-        "//conditions:default": [
-            "//private/google-modules/soc/gs/drivers/misc/s5910",
-        ],
+        "//conditions:default": [],
     }),
 )
 
@@ -339,35 +334,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "cpif",
-    srcs = [
-        ":cp_thermal_zone",
-        ":cpif_ko",
-        ":cpif_page",
-        ":shm_ipc",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
-)
-
-kernel_module_group(
-    name = "cpif.dit",
-    srcs = [
-        ":boot_device_spi",
-        ":cp_thermal_zone",
-        ":cpif_ko",
-        ":cpif_page",
-        ":shm_ipc",
-        "//private/google-modules/radio/samsung/s5300/dit:exynos_dit",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

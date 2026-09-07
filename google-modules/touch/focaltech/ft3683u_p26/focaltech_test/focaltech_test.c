@@ -33,6 +33,7 @@
 * Included header files
 *****************************************************************************/
 #include "focaltech_test.h"
+#include <linux/irqdesc.h>
 
 /*****************************************************************************
 * Private constant and macro definitions using #define
@@ -2890,35 +2891,61 @@ static const struct file_operations proc_test_lot_code_fops = {
 
 /* INT_Pin Test */
 int int_test_has_interrupt = 0;
+static inline int get_irq_gpio_val(struct fts_ts_data *data)
+{
+	if (data && data->pdata && gpio_is_valid(data->pdata->irq_gpio))
+		return gpio_get_value(data->pdata->irq_gpio);
+	return -1;
+}
+
 static int proc_test_int_show(struct seq_file *s, void *v)
 {
     int ret = 0;
-    int i = 0;
+    unsigned long timeout;
     ktime_t start_time = ktime_get();
+    int irq_gpio_val_before = 0;
+    int irq_gpio_val_after = 0;
+    int irq_count_before = READ_ONCE(int_test_has_interrupt);
 
+    struct irq_desc *desc = fts_data ? irq_to_desc(fts_data->irq) : NULL;
+
+    FTS_INFO("INT Pin test: start waiting for completion (irq_desc->depth=%d)",
+	     desc ? (int)desc->depth : -1);
+
+    irq_gpio_val_before = get_irq_gpio_val(fts_data);
     ret = enter_factory_mode();
     if (ret < 0) {
         FTS_ERROR("enter factory mode fails");
         goto exit;
     }
 
+    reinit_completion(&fts_data->int_test_completion);
+    WRITE_ONCE(fts_data->int_test_running, true);
     fts_irq_enable();
-    int_test_has_interrupt = 0;
+
     ret = fts_write_reg(FACTORY_REG_SCAN_ADDR2, 0x01);
     if (ret < 0) {
-        FTS_ERROR("read tx fails");
-        goto exit;
+	    WRITE_ONCE(fts_data->int_test_running, false);
+	    FTS_ERROR("read tx fails");
+	    goto exit;
     }
-    sys_delay(10);
-    for (i = 0; i < 100; i++) {
-        if (int_test_has_interrupt) {
-            SEQ_PRINT_AND_LOG("INT Pin test PASS.\n");
-            goto exit;
-        } else {
-            sys_delay(10);
-        }
+
+    irq_gpio_val_after = get_irq_gpio_val(fts_data);
+    if (irq_gpio_val_before == 1 && irq_gpio_val_after == 0) {
+	    WRITE_ONCE(fts_data->int_test_running, false);
+	    FTS_INFO("INT Pin test: detected GPIO transition HI->LO directly");
+	    SEQ_PRINT_AND_LOG("INT Pin test PASS.\n");
+	    goto exit;
     }
-    SEQ_PRINT_AND_LOG("INT Pin test FAIL.\n");
+
+    timeout = wait_for_completion_timeout(&fts_data->int_test_completion, msecs_to_jiffies(1000));
+    WRITE_ONCE(fts_data->int_test_running, false);
+
+    if ((timeout > 0) || (READ_ONCE(int_test_has_interrupt) > irq_count_before)) {
+	    SEQ_PRINT_AND_LOG("INT Pin test PASS.\n");
+    } else {
+	    SEQ_PRINT_AND_LOG("INT Pin test FAIL.\n");
+    }
 
 exit:
     enter_work_mode();

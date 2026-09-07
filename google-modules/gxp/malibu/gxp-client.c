@@ -2,7 +2,7 @@
 /*
  * GXP client structure.
  *
- * Copyright (C) 2021 Google LLC
+ * Copyright (C) 2021-2026 Google LLC
  */
 
 #include <linux/dma-fence-array.h>
@@ -13,6 +13,7 @@
 #include <linux/workqueue.h>
 
 #include <gcip/gcip-dma-fence.h>
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-pm.h>
 
 #include "gxp-client.h"
@@ -24,6 +25,7 @@
 #include "gxp.h"
 
 #if GXP_HAS_MCU
+#include "gxp-mcu.h"
 #include "gxp-uci.h"
 #endif /* GXP_HAS_MCU */
 
@@ -124,6 +126,11 @@ void gxp_client_destroy(struct gxp_client *client)
 	}
 
 	lockdep_unregister_key(&client->key);
+
+#if GXP_HAS_MCU
+	if (!gxp_is_direct_mode(gxp))
+		gcip_event_mgr_unset_by_owner(gxp_mcu_of(gxp)->event_mgr, client);
+#endif
 
 	kfree(client);
 }

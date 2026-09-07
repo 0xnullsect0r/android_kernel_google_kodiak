@@ -9,8 +9,9 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <gvotable.h>
+#include <misc/gvotable.h>
 #include "bcl.h"
+
 #include "core_pmic/core_pmic_defs.h"
 #include "ifpmic/max77759/max77759_irq.h"
 #include "ifpmic/max77779/max77779_irq.h"
@@ -21,20 +22,23 @@
 #define BCL_USB_OTG "BCL_USB_OTG"
 
 enum {
-	WLC_ENABLED_TX,
-	WLC_DISABLED_TX,
-};
-
-enum {
 	USB_PLUGGED,
 	USB_UNPLUGGED,
 };
+
+static int get_batoilo_limit_mA(struct bcl_device *bcl_dev, int index, u8 level)
+{
+	if (index == 0)
+		return level * BO_STEP +
+		       bcl_dev->batt_irq_conf1.batoilo_lower_limit;
+	return level * BO_STEP + bcl_dev->batt_irq_conf2.batoilo_lower_limit;
+}
 
 static int google_bcl_wlc_votable_callback(struct gvotable_election *el,
 					   const char *reason, void *value)
 {
 	struct bcl_device *bcl_dev = gvotable_get_data(el);
-	int ret;
+	int ret = 0;
 	bool wlc_tx_enable;
 	u8 new_oilo_trig_lvls[2];
 
@@ -45,7 +49,8 @@ static int google_bcl_wlc_votable_callback(struct gvotable_election *el,
 	if (!smp_load_acquire(&bcl_dev->initialized))
 		return -EINVAL;
 
-	if (IS_ENABLED(CONFIG_GOOGLE_BCL_MAX77779)) {
+	if (IS_ENABLED(CONFIG_GOOGLE_BCL_MAX77779) &&
+	    bcl_dev->ifpmic == MAX77779) {
 		wlc_tx_enable = (long)value == WLC_ENABLED_TX;
 
 		if (wlc_tx_enable) {
@@ -60,21 +65,29 @@ static int google_bcl_wlc_votable_callback(struct gvotable_election *el,
 				bcl_dev->batt_irq_conf2.batoilo_trig_lvl;
 		}
 
-		ret = bcl_dev->ifpmic_ops->set_oilo1(bcl_dev->ifpmic_irq_dev,
-						     new_oilo_trig_lvls[0]);
-		if (ret)
+		ret = bcl_dev->ifpmic_ops->set_oilo1(
+			bcl_dev->ifpmic_irq_dev,
+			get_batoilo_limit_mA(bcl_dev, 0,
+					     new_oilo_trig_lvls[0]));
+		if (ret) {
 			dev_err(bcl_dev->device,
-				"USB: BATOILO1 cannot be adjusted\n");
+				"WLC: BATOILO1 cannot be adjusted: %d\n", ret);
+			return ret;
+		}
 
-		ret = bcl_dev->ifpmic_ops->set_oilo2(bcl_dev->ifpmic_irq_dev,
-						     new_oilo_trig_lvls[1]);
-		if (ret)
+		ret = bcl_dev->ifpmic_ops->set_oilo2(
+			bcl_dev->ifpmic_irq_dev,
+			get_batoilo_limit_mA(bcl_dev, 1,
+					     new_oilo_trig_lvls[1]));
+		if (ret) {
 			dev_err(bcl_dev->device,
-				"USB: BATOILO2 cannot be adjusted\n");
+				"WLC: BATOILO2 cannot be adjusted: %d\n", ret);
+			return ret;
+		}
 	}
 	/* b/335695535 outlines max77759 configuration */
 
-	return 0;
+	return ret;
 }
 
 static int google_bcl_usb_votable_callback(struct gvotable_election *el,
@@ -130,23 +143,31 @@ static int google_bcl_usb_votable_callback(struct gvotable_election *el,
 			bcl_dev->batt_irq_conf2.batoilo_trig_lvl;
 	}
 
-	ret = bcl_dev->ifpmic_ops->set_oilo1(bcl_dev->ifpmic_irq_dev,
-					     new_oilo_trig_lvls[0]);
+	ret = bcl_dev->ifpmic_ops->set_oilo1(
+		bcl_dev->ifpmic_irq_dev,
+		get_batoilo_limit_mA(bcl_dev, 0, new_oilo_trig_lvls[0]));
 	if (ret) {
-		dev_err(bcl_dev->device, "USB: BATOILO1 cannot be adjusted\n");
+		dev_err(bcl_dev->device, "USB: BATOILO1 cannot be adjusted: %d\n", ret);
 		return ret;
 	}
 
-	ret = bcl_dev->ifpmic_ops->set_oilo2(bcl_dev->ifpmic_irq_dev,
-					     new_oilo_trig_lvls[1]);
-	if (ret)
-		dev_err(bcl_dev->device, "USB: BATOILO2 cannot be adjusted\n");
+	if (bcl_dev->ifpmic == MAX77779) {
+		ret = bcl_dev->ifpmic_ops->set_oilo2(
+			bcl_dev->ifpmic_irq_dev,
+			get_batoilo_limit_mA(bcl_dev, 1,
+					     new_oilo_trig_lvls[1]));
+		if (ret)
+			dev_err(bcl_dev->device,
+				"USB: BATOILO2 cannot be adjusted: %d\n", ret);
+	}
 
 	return ret;
 }
 
 int google_bcl_setup_votable(struct bcl_device *bcl_dev)
 {
+	struct power_supply *wlc_psy;
+	union power_supply_propval wlc_online = {};
 	int ret;
 
 	bcl_dev->toggle_wlc = gvotable_create_bool_election(NULL, google_bcl_wlc_votable_callback,
@@ -158,6 +179,8 @@ int google_bcl_setup_votable(struct bcl_device *bcl_dev)
 	}
 	gvotable_set_vote2str(bcl_dev->toggle_wlc, gvotable_v2s_int);
 	gvotable_election_set_name(bcl_dev->toggle_wlc, BCL_WLC);
+	gvotable_set_default(bcl_dev->toggle_wlc,
+			     (void *)(long)WLC_DISABLED_TX);
 
 	bcl_dev->toggle_usb = gvotable_create_bool_election(NULL, google_bcl_usb_votable_callback,
 							    bcl_dev);
@@ -169,6 +192,22 @@ int google_bcl_setup_votable(struct bcl_device *bcl_dev)
 	}
 	gvotable_set_vote2str(bcl_dev->toggle_usb, gvotable_v2s_int);
 	gvotable_election_set_name(bcl_dev->toggle_usb, BCL_USB);
+	gvotable_set_default(bcl_dev->toggle_usb, (void *)(long)USB_UNPLUGGED);
+
+	wlc_psy = power_supply_get_by_name("wireless");
+	if (wlc_psy) {
+		memset(&wlc_online, 0, sizeof(wlc_online));
+		ret = power_supply_get_property(
+			wlc_psy, POWER_SUPPLY_PROP_ONLINE, &wlc_online);
+		if (ret == 0) {
+			gvotable_cast_vote(
+				bcl_dev->toggle_wlc, "BCL_DEV_VOTER", (void *)0,
+				(void *)(long)(wlc_online.intval ?
+						       WLC_ENABLED_TX :
+						       WLC_DISABLED_TX));
+		}
+		power_supply_put(wlc_psy);
+	}
 
 	return 0;
 }

@@ -10,8 +10,10 @@
 
 #include <linux/atomic.h>
 #include <linux/bitops.h>
+#include <linux/completion.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
+#include <linux/rwlock_types.h>
 #include <linux/workqueue.h>
 
 enum gcip_pm_flags {
@@ -21,21 +23,29 @@ enum gcip_pm_flags {
 
 struct gcip_pm {
 	struct device *dev;
-	/* Worker to handle async power down retry. */
+	/* Worker to handle power down retry. */
 	struct delayed_work power_down_work;
 
-	/* Lock to protect the members listed below. */
+	/*
+	 * Lock to be held by `gcip_pm_{get,put}()` calls that may perform actual power state
+	 * transitions. In other words, functions that only update counters will not hold this lock
+	 * (e.g., gcip_pm_get_if_powered()).
+	 */
 	struct mutex lock;
-	/* Power up counter. Protected by @lock */
+	/* Lock to be held while updating counts. */
+	rwlock_t count_lock;
+	/* Power up counter. Protected by @count_lock */
 	int count;
 	/*
 	 * Suspendable power up counter. This many power up counts allow system suspend; if equal
 	 * to @count then all power ups are suspendable and system suspend may proceed.
-	 * Protected by @lock.
+	 * Protected by @count_lock.
 	 */
 	int suspendable_count;
-	/* Flag indicating a deferred power down is pending. Protected by @lock */
+	/* Flag indicating a power down is pending. */
 	bool power_down_pending;
+	/* For waiting on pending power down to complete. */
+	struct completion pending_power_down_done;
 	/* The worker to asynchronously call gcip_pm_put(). */
 	struct work_struct put_async_work;
 	/* The number of @count to be decreased in the @put_async_work. */
@@ -47,7 +57,18 @@ struct gcip_pm {
 	void (*before_destroy)(void *data);
 	int (*power_up)(void *data);
 	int (*power_down)(void *data);
+	/*
+	 * Time to wait for pending power down before erroring out a gcip_pm_get() call.
+	 * See struct gcip_pm_args.
+	 */
+	int power_down_wait_timeout_ms;
 };
+
+/*
+ * Default time to wait for pending power down before erroring out a
+ * gcip_pm_get() call.
+ */
+#define GCIP_POWER_DOWN_WAIT_TIMEOUT_DEFAULT 8000 /* ms */
 
 struct gcip_pm_args {
 	/* Device struct for logging. */
@@ -72,6 +93,12 @@ struct gcip_pm_args {
 	int (*after_create)(void *data);
 	/* Optional. For clean-up before the interface is destroyed. */
 	void (*before_destroy)(void *data);
+
+	/*
+	 * Time to wait for pending power down before erroring out a gcip_pm_get() call. If zero,
+	 * GCIP_POWER_DOWN_WAIT_TIMEOUT_DEFAULT is used.
+	 */
+	int power_down_wait_timeout_ms;
 };
 
 /* Allocates and initializes a power management interface for the GCIP device. */
@@ -92,13 +119,17 @@ void gcip_pm_destroy(struct gcip_pm *pm);
 /*
  * Increases @pm->count if the device is already powered on.
  *
- * Caller should call gcip_pm_put() to decrease @pm->count if this function returns 0.
- * If @blocking is true, it will wait until the ongoing power state transition finishes (i.e.,
- * gcip_pm_{get,put,shutdown} called by other thread returns) and then check the power state.
- * If @blocking is false, return -EAGAIN immediately when there is a ongoing power state transition.
+ * Caller should call gcip_pm_put() or gcip_pm_put_async() to decrease @pm->count if this function
+ * returns 0.
  *
- * Returns 0 on success; otherwise -EAGAIN if the device is off or in power state transition when
- * @blocking is false.
+ * If @blocking is true, it will wait if another thread is currently updating the power count.
+ * If @blocking is false, it returns -EAGAIN immediately without blocking if another thread is
+ * updating the power count.
+ *
+ * This function can be called in an atomic context (e.g. IRQ context).
+ *
+ * Returns 0 on success; otherwise -EAGAIN if the device is off or if a power count update is
+ * in progress when @blocking is false.
  */
 int gcip_pm_get_if_powered(struct gcip_pm *pm, bool blocking);
 
@@ -137,7 +168,11 @@ void gcip_pm_put(struct gcip_pm *pm);
  */
 void gcip_pm_put_flags(struct gcip_pm *pm, enum gcip_pm_flags flags);
 
-/* Schedules an asynchronous job to execute gcip_pm_put(). */
+/*
+ * Schedules an asynchronous job to execute gcip_pm_put().
+ *
+ * This function can be called in an atomic context (e.g. IRQ context).
+ */
 void gcip_pm_put_async(struct gcip_pm *pm);
 
 /* Flushes the pending pm_put work if any. */

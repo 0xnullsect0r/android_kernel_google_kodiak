@@ -656,6 +656,20 @@ cm_roam_scan_offload_fill_lfr3_config(struct wlan_objmgr_vdev *vdev,
 	 */
 	/* RSN caps with global user MFP which can be used for cross-AKM roam */
 	rsn_caps = rso_cfg->rso_rsn_caps;
+	/*
+	 * Preserve STA self MFP capability bits (MFPC/MFPR) from the
+	 * original connection profile. These bits may be lost during roam
+	 * profile rebuild when user_mfp is not re-propagated. RSN self
+	 * capabilities are properties of the STA and must not change
+	 * across roam. Without this, firmware rejects roam candidates
+	 * from APs with MFP Required set.
+	 */
+	rsn_caps |= (rso_cfg->orig_sec_info.rsn_caps &
+		     (WLAN_CRYPTO_RSN_CAP_MFP_ENABLED |
+		      WLAN_CRYPTO_RSN_CAP_MFP_REQUIRED));
+	mlme_debug("orig_rsn_caps=0x%04x rso_rsn_caps=0x%04x final_rsn_caps=0x%04x",
+		   rso_cfg->orig_sec_info.rsn_caps,
+		   rso_cfg->rso_rsn_caps, rsn_caps);
 
 	/* Fill LFR3 specific self capabilities for roam scan mode TLV */
 	self_caps.ess = 1;
@@ -6462,6 +6476,13 @@ void cm_update_session_assoc_ie(struct wlan_objmgr_psoc *psoc,
 {
 	struct rso_config *rso_cfg;
 	struct wlan_objmgr_vdev *vdev;
+	QDF_STATUS status;
+	uint8_t *new_assoc_ie_ptr = NULL;
+
+	if (!assoc_ie || !assoc_ie->ptr || !assoc_ie->len) {
+		mlme_err("vdev:%d Invalid assoc IE (null or len 0)", vdev_id);
+		return;
+	}
 
 	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(psoc, vdev_id,
 						    WLAN_MLME_CM_ID);
@@ -6469,27 +6490,44 @@ void cm_update_session_assoc_ie(struct wlan_objmgr_psoc *psoc,
 		mlme_err("vdev object is NULL for vdev %d", vdev_id);
 		return;
 	}
+
 	rso_cfg = wlan_cm_get_rso_config(vdev);
 	if (!rso_cfg)
 		goto rel_vdev_ref;
+
+	status = cm_roam_acquire_lock(vdev);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		mlme_err("Fail to acquire cm_rso_lock vdev:%d status:%d",
+			 vdev_id, status);
+		goto rel_vdev_ref;
+	}
+
+	/*
+	 * If the memory allocation fails, the function returns with the
+	 * old association IE freed but no new one allocated, leaving
+	 * rso_cfg->assoc_ie in an inconsistent state (ptr is NULL but the
+	 * structure exists). So do the memory allocation first before
+	 * freeing up the existing old memory.
+	 */
+	new_assoc_ie_ptr = qdf_mem_malloc(assoc_ie->len);
+	if (!new_assoc_ie_ptr) {
+		cm_roam_release_lock(vdev);
+		goto rel_vdev_ref;
+	}
 
 	if (rso_cfg->assoc_ie.ptr) {
 		qdf_mem_free(rso_cfg->assoc_ie.ptr);
 		rso_cfg->assoc_ie.ptr = NULL;
 		rso_cfg->assoc_ie.len = 0;
 	}
-	if (!assoc_ie->len) {
-		sme_debug("Assoc IE len 0");
-		goto rel_vdev_ref;
-	}
-	rso_cfg->assoc_ie.ptr = qdf_mem_malloc(assoc_ie->len);
-	if (!rso_cfg->assoc_ie.ptr)
-		goto rel_vdev_ref;
 
 	cm_update_ext_cap_ie_at_source(psoc, assoc_ie);
 
+	rso_cfg->assoc_ie.ptr = new_assoc_ie_ptr;
 	rso_cfg->assoc_ie.len = assoc_ie->len;
 	qdf_mem_copy(rso_cfg->assoc_ie.ptr, assoc_ie->ptr, assoc_ie->len);
+
+	cm_roam_release_lock(vdev);
 rel_vdev_ref:
 	wlan_objmgr_vdev_release_ref(vdev, WLAN_MLME_CM_ID);
 }
@@ -6651,10 +6689,57 @@ send_evt:
 #if (defined(CONNECTIVITY_DIAG_EVENT) || \
 	defined(WLAN_FEATURE_CONNECTIVITY_LOGGING)) && \
 	defined(WLAN_FEATURE_ROAM_OFFLOAD)
-static bool wlan_is_valid_frequency(uint32_t freq, uint32_t band_capability,
-				    uint32_t band_mask)
+/**
+ * wlan_is_valid_roam_frequency() - Validate frequency for roam scan
+ * @psoc: Pointer to psoc object
+ * @vdev_id: Vdev identifier
+ * @freq: Frequency to validate (in MHz)
+ * @band_capability: Device band capability mask
+ * @band_mask: Allowed band mask for roaming
+ *
+ * This function validates if a given frequency is allowed for roam scanning
+ * based on:
+ * 1. Current regulatory domain rules
+ * 2. Device band capabilities
+ * 3. Configured roaming band restrictions
+ *
+ * Return: true if frequency is valid for roaming, false otherwise
+ */
+static bool
+wlan_is_valid_roam_frequency(struct wlan_objmgr_psoc *psoc,
+			     uint8_t vdev_id, uint32_t freq,
+			     uint32_t band_capability,
+			     uint32_t band_mask)
 {
 	bool is_2g_band, is_5g_band, is_6g_band;
+	struct wlan_objmgr_vdev *vdev;
+	struct wlan_objmgr_pdev *pdev;
+	bool freq_enabled;
+
+	/* Get vdev and pdev objects */
+	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(psoc, vdev_id,
+						    WLAN_MLME_CM_ID);
+	if (!vdev) {
+		mlme_err("vdev_id %d: Failed to get vdev object", vdev_id);
+		return false;
+	}
+
+	pdev = wlan_vdev_get_pdev(vdev);
+	wlan_objmgr_vdev_release_ref(vdev, WLAN_MLME_CM_ID);
+
+	if (!pdev) {
+		mlme_err("vdev_id %d: Failed to get pdev object", vdev_id);
+		return false;
+	}
+
+	/* Check if frequency is enabled based on country regulatory rules.
+	 * REG_CURRENT_PWR_MODE checks against the current power mode
+	 * (LPI/SP/VLP for 6GHz, standard for 2G/5G)
+	 */
+	freq_enabled = wlan_reg_is_freq_enabled(pdev, freq,
+						REG_CURRENT_PWR_MODE);
+	if (!freq_enabled)
+		return false;
 
 	if (band_capability == REG_BAND_MASK_ALL &&
 	    band_mask == REG_BAND_MASK_ALL)
@@ -6882,8 +6967,6 @@ void cm_roam_scan_info_event(struct wlan_objmgr_psoc *psoc,
 		band_mask = policy_mgr_get_connected_roaming_vdev_band_mask(
 							psoc, vdev_id);
 
-		mlme_debug("mask:%d, capability:%d, scan_type:%d, num_chan:%d",
-			   band_mask, band_capability, scan->type, num_chan);
 		if (scan->type == ROAM_STATS_SCAN_TYPE_HIGHER_BAND_6GHZ)
 			scan_band_mask = BIT(REG_BAND_6G);
 		else if (scan->type ==
@@ -6894,9 +6977,10 @@ void cm_roam_scan_info_event(struct wlan_objmgr_psoc *psoc,
 			band_mask &= scan_band_mask;
 
 		for (i = 0; i < num_chan; i++) {
-			if (!wlan_is_valid_frequency(chan_freq[i],
-						     band_capability,
-						     band_mask))
+			if (!wlan_is_valid_roam_frequency(psoc, vdev_id,
+							  chan_freq[i],
+							  band_capability,
+							  band_mask))
 				continue;
 
 			wlan_diag_event->scan_freq[count] = chan_freq[i];
@@ -6904,6 +6988,9 @@ void cm_roam_scan_info_event(struct wlan_objmgr_psoc *psoc,
 		}
 
 		wlan_diag_event->num_scanned_freq = count;
+		mlme_debug("mask:%d, capability:%d, scan_type:%d, num_chan:%d num_scanned_freq:%d",
+			   band_mask, band_capability, scan->type, num_chan,
+			   wlan_diag_event->num_scanned_freq);
 	} else {
 		if (scan->num_chan > MAX_ROAM_SCAN_CHAN)
 			scan->num_chan = MAX_ROAM_SCAN_CHAN;
@@ -7535,6 +7622,10 @@ cm_send_roam_invoke_req(struct cnx_mgr *cm_ctx, struct cm_req *req)
 	}
 
 	roam_invoke_req->vdev_id = vdev_id;
+
+	if (req->roam_req.req.source == CM_ROAMING_STA_SAP_MCC)
+		roam_invoke_req->skip_full_scan = true;
+
 	if (roam_req->req.forced_roaming) {
 		roam_invoke_req->forced_roaming = true;
 		goto send_cmd;
@@ -7693,6 +7784,7 @@ void
 cm_roam_neigh_rpt_req_event(struct wmi_neighbor_report_data *neigh_rpt,
 			    struct wlan_objmgr_vdev *vdev)
 {
+	enum wlan_diag_tx_rx_status diag_tx_rx_status;
 	WLAN_HOST_DIAG_EVENT_DEF(wlan_diag_event, struct wlan_diag_nbr_rpt);
 
 	qdf_mem_zero(&wlan_diag_event, sizeof(wlan_diag_event));
@@ -7705,10 +7797,10 @@ cm_roam_neigh_rpt_req_event(struct wmi_neighbor_report_data *neigh_rpt,
 	wlan_diag_event.token = neigh_rpt->req_token;
 	wlan_diag_event.band = neigh_rpt->band;
 	wlan_diag_event.is_tx = true;
-	wlan_diag_event.tx_fail_reason =
-	wlan_convert_host_to_diag_tx_fail_reason(neigh_rpt->tx_status);
-	wlan_diag_event.tx_status =
-		wlan_diag_get_tx_status(neigh_rpt->tx_status);
+	diag_tx_rx_status =
+		wlan_convert_host_to_diag_tx_fail_reason(neigh_rpt->tx_status);
+	wlan_diag_event.tx_fail_reason = diag_tx_rx_status;
+	wlan_diag_event.tx_status = wlan_diag_get_tx_status(diag_tx_rx_status);
 
 	wlan_vdev_mlme_get_ssid(vdev, wlan_diag_event.ssid,
 				(uint8_t *)&wlan_diag_event.ssid_len);
@@ -8066,6 +8158,7 @@ cm_roam_mgmt_frame_event(struct wlan_objmgr_vdev *vdev,
 	uint8_t i;
 	uint16_t diag_event;
 	bool is_mlo = false;
+	enum wlan_diag_tx_rx_status diag_tx_rx_status;
 
 	WLAN_HOST_DIAG_EVENT_DEF(wlan_diag_event, struct wlan_diag_packet_info);
 
@@ -8079,10 +8172,10 @@ cm_roam_mgmt_frame_event(struct wlan_objmgr_vdev *vdev,
 	wlan_diag_event.sn = frame_data->seq_num;
 	wlan_diag_event.auth_algo = frame_data->auth_algo;
 	wlan_diag_event.rssi = frame_data->rssi;
-	wlan_diag_event.tx_fail_reason =
+	diag_tx_rx_status =
 		wlan_convert_host_to_diag_tx_fail_reason(frame_data->tx_status);
-	wlan_diag_event.tx_status =
-				wlan_diag_get_tx_status(frame_data->tx_status);
+	wlan_diag_event.tx_fail_reason = diag_tx_rx_status;
+	wlan_diag_event.tx_status = wlan_diag_get_tx_status(diag_tx_rx_status);
 	wlan_diag_event.status = frame_data->status_code;
 	wlan_diag_event.assoc_id = frame_data->assoc_id;
 
@@ -8123,8 +8216,14 @@ cm_roam_mgmt_frame_event(struct wlan_objmgr_vdev *vdev,
 		 * BIT 0: 2 GHz link
 		 * BIT 1: 5 GHz link
 		 * BIT 2: 6 GHz link
+		 * Populate MLO log params only for assoc/reassoc frames,
+		 * skip for auth frames.
 		 */
-		if (frame_data->band) {
+		if (frame_data->band &&
+		    (frame_data->subtype == MGMT_SUBTYPE_ASSOC_REQ ||
+		     frame_data->subtype == MGMT_SUBTYPE_ASSOC_RESP ||
+		     frame_data->subtype == MGMT_SUBTYPE_REASSOC_REQ ||
+		     frame_data->subtype == MGMT_SUBTYPE_REASSOC_RESP)) {
 			is_mlo = true;
 			status =
 			wlan_populate_roam_mld_log_param(vdev,

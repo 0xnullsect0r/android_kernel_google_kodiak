@@ -14,6 +14,7 @@
 #include <linux/powercap.h>
 #include <linux/string.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
 
 #include "google_powercap_cpu.h"
 #include "google_powercap_devfreq.h"
@@ -63,6 +64,7 @@ struct powercap_test_data {
 	ktime_t mock_ktime;
 	bool mod_dw_called;
 	bool cancel_dw_sync_called;
+	bool cancel_dw_called;
 	struct odpm_rail_energy rail_energy[ODPM_CHANNEL_NUM];
 	bool devfreq_cancel_dw_sync_called;
 	bool odpm_unregister_called;
@@ -180,6 +182,35 @@ static int dummy_rebalance(struct gpowercap *gpc)
 	}
 	return 0;
 }
+
+static void kunit_flush_weights_work(struct gpowercap *gpc_weights)
+{
+	struct gpowercap_weights_algo *gpc_w;
+	struct gpowercap_weight_child *wc;
+
+	if (!gpc_weights || !gpc_weights->ops ||
+	    gpc_weights->ops->rebalance != __gpc_weights_algo_rebalance)
+		return;
+
+	gpc_w = to_gpowercap_weights_algo(gpc_weights);
+	list_for_each_entry(wc, &gpc_w->weighted_children, node) {
+		if (wc->gpc)
+			flush_work(&wc->work);
+	}
+}
+
+#define __gpc_weights_algo_set_power_limit(gpc, limit) ({ \
+	u64 __r = __gpc_weights_algo_set_power_limit(gpc, limit); \
+	kunit_flush_weights_work(gpc); \
+	__r; \
+})
+
+#define gpowercap_report_power_uw(gpc, power) ({ \
+	bool __r = gpowercap_report_power_uw(gpc, power); \
+	if (gpc->parent) \
+		kunit_flush_weights_work(gpc->parent); \
+	__r; \
+})
 
 static struct gpowercap_ops dummy_parent_ops = {
 	.rebalance = dummy_rebalance,
@@ -655,7 +686,7 @@ static void powercap_gpc_register_and_ops_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, virt_node->power_min, 0);
 	KUNIT_EXPECT_EQ(test, virt_node->power_max, 0);
 	__gpowercap_add_power(leaf_node);
-	KUNIT_EXPECT_EQ(test, virt_node->power_min, opp_table[0].power);
+	KUNIT_EXPECT_EQ(test, virt_node->power_min, 0);
 	KUNIT_EXPECT_EQ(test, virt_node->power_max, opp_table[GPC_TEST_OPP_CT - 1].power);
 
 	// Root already exists.
@@ -1592,10 +1623,10 @@ static int mock_godpm_blocking_notifier_call_chain(struct blocking_notifier_head
 	struct kunit *test = kunit_get_current_test();
 	struct powercap_test_data *data = test->priv;
 	struct odpm_regulator_group *reg_group;
-	struct odpm_client_sub_group *sub_group;
 	u64 power_uw = (uintptr_t)v;
 
 	list_for_each_entry(reg_group, &odpm_regulator_groups, node) {
+		struct odpm_client_sub_group *sub_group;
 		list_for_each_entry(sub_group, &reg_group->sub_groups, node) {
 			if (&sub_group->notifier_head == nh) {
 				if (!strcmp(reg_group->regulator_name, ODPM_TEST_RAIL_NAME_1)) {
@@ -1624,8 +1655,7 @@ static bool mock_godpm_schedule_delayed_work(struct delayed_work *dwork,
 	return true;
 }
 
-static bool mock_godpm_mod_delayed_work(struct workqueue_struct *wq,
-				   struct delayed_work *dwork,
+static bool mock_godpm_mod_delayed_work(struct delayed_work *dwork,
 				   unsigned long delay)
 {
 	struct kunit *test = kunit_get_current_test();
@@ -1635,12 +1665,12 @@ static bool mock_godpm_mod_delayed_work(struct workqueue_struct *wq,
 	return true;
 }
 
-static bool mock_godpm_cancel_delayed_work_sync(struct delayed_work *dwork)
+static bool mock_godpm_cancel_delayed_work(struct delayed_work *dwork)
 {
 	struct kunit *test = kunit_get_current_test();
 	struct powercap_test_data *data = test->priv;
 
-	data->cancel_dw_sync_called = true;
+	data->cancel_dw_called = true;
 	return true;
 }
 
@@ -1659,6 +1689,7 @@ static void odpm_test_init_data(struct powercap_test_data *data)
 	data->sched_dw_called = false;
 	data->mod_dw_called = false;
 	data->cancel_dw_sync_called = false;
+	data->cancel_dw_called = false;
 	data->sched_dw_delay = 0;
 	data->kzalloc_fail_on_count = 0;
 	data->kzalloc_call_count = 0;
@@ -1713,7 +1744,7 @@ static void odpm_unregister_client_test(struct kunit *test)
 							ODPM_TEST_POLLING_INTERVAL_200MS), 0);
 	KUNIT_EXPECT_TRUE(test, list_empty(&odpm_regulator_groups));
 	KUNIT_EXPECT_EQ(test, data->kfree_call_count, 3);
-	KUNIT_EXPECT_TRUE(test, data->cancel_dw_sync_called);
+	KUNIT_EXPECT_TRUE(test, data->cancel_dw_called);
 	KUNIT_EXPECT_EQ(test, min_polling_interval_ms, UINT_MAX);
 	odpm_polling_work(&odpm_global_work.work);
 	KUNIT_EXPECT_FALSE(test, data->sched_dw_called);
@@ -1758,14 +1789,14 @@ static void odpm_register_multiple_clients_same_interval_test(struct kunit *test
 			google_thermal_odpm_unregister_client(data->reg_name, &data->test_nb,
 							ODPM_TEST_POLLING_INTERVAL_200MS), 0);
 	KUNIT_EXPECT_FALSE(test, list_empty(&odpm_regulator_groups));
-	KUNIT_EXPECT_FALSE(test, data->cancel_dw_sync_called);
+	KUNIT_EXPECT_FALSE(test, data->cancel_dw_called);
 
 	/* Unregister second client, group should be removed */
 	KUNIT_EXPECT_EQ(test,
 			google_thermal_odpm_unregister_client(data->reg_name, &test_nb_2,
 							ODPM_TEST_POLLING_INTERVAL_200MS), 0);
 	KUNIT_EXPECT_TRUE(test, list_empty(&odpm_regulator_groups));
-	KUNIT_EXPECT_TRUE(test, data->cancel_dw_sync_called);
+	KUNIT_EXPECT_TRUE(test, data->cancel_dw_called);
 }
 
 static void odpm_register_multiple_clients_different_intervals_test(struct kunit *test)
@@ -1810,7 +1841,7 @@ static void odpm_register_multiple_clients_different_intervals_test(struct kunit
 			google_thermal_odpm_unregister_client(data->reg_name, &data->test_nb,
 							ODPM_TEST_POLLING_INTERVAL_200MS), 0);
 	KUNIT_EXPECT_TRUE(test, list_empty(&odpm_regulator_groups));
-	KUNIT_EXPECT_TRUE(test, data->cancel_dw_sync_called);
+	KUNIT_EXPECT_TRUE(test, data->cancel_dw_called);
 }
 
 static void odpm_polling_work_notification_test(struct kunit *test)
@@ -2137,8 +2168,8 @@ static int powercap_test_init(struct kunit *test)
 	kunit_activate_static_stub(test, godpm_schedule_delayed_work,
 				   mock_godpm_schedule_delayed_work);
 	kunit_activate_static_stub(test, godpm_mod_delayed_work, mock_godpm_mod_delayed_work);
-	kunit_activate_static_stub(test, godpm_cancel_delayed_work_sync,
-				   mock_godpm_cancel_delayed_work_sync);
+	kunit_activate_static_stub(test, godpm_cancel_delayed_work,
+				   mock_godpm_cancel_delayed_work);
 	kunit_activate_static_stub(test, godpm_ktime_get, mock_godpm_ktime_get);
 	kunit_activate_static_stub(test, gpc_stats_update, mock_gpc_stats_update);
 
@@ -2189,7 +2220,7 @@ static void powercap_test_exit(struct kunit *test)
 	kunit_deactivate_static_stub(test, godpm_blocking_notifier_call_chain);
 	kunit_deactivate_static_stub(test, godpm_schedule_delayed_work);
 	kunit_deactivate_static_stub(test, godpm_mod_delayed_work);
-	kunit_deactivate_static_stub(test, godpm_cancel_delayed_work_sync);
+	kunit_deactivate_static_stub(test, godpm_cancel_delayed_work);
 	kunit_deactivate_static_stub(test, godpm_ktime_get);
 	kunit_deactivate_static_stub(test, gpc_stats_update);
 }
@@ -2204,8 +2235,10 @@ static struct gpowercap *volt_algo_test_init(struct kunit *test)
 	gpc_volt_algo = __gpc_volt_algo_setup(&gpc_volt_algo_dn, &data->parent_gpc);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, gpc_volt_algo);
 
-	for (i = 0; i < GPC_ALGO_CHILD_CT; i++)
+	for (i = 0; i < GPC_ALGO_CHILD_CT; i++) {
 		list_add_tail(&data->children_gpc[i].siblings, &gpc_volt_algo->children);
+		data->children_gpc[i].parent = gpc_volt_algo;
+	}
 
 	return gpc_volt_algo;
 }
@@ -2214,6 +2247,8 @@ static void volt_algo_test_exit(struct gpowercap *gpc_volt_algo)
 {
 	struct powercap_algo_test_data *data = gpc_algo_test_data;
 
+	data->children_gpc[0].parent = NULL;
+	data->children_gpc[1].parent = NULL;
 	list_del(&data->children_gpc[0].siblings);
 	list_del(&data->children_gpc[1].siblings);
 	__gpc_volt_algo_release(gpc_volt_algo);
@@ -2694,6 +2729,40 @@ static void powercap_weights_algo_set_power_min_max_test(struct kunit *test)
 	__gpc_weights_algo_release(gpc_weights);
 }
 
+static void powercap_weights_algo_parallel_workqueue_test(struct kunit *test)
+{
+	struct gpowercap *gpc_weights;
+	struct gpowercap_weights_algo *gpc_weights_algo;
+	struct gpowercap_weight_child *wc;
+
+	gpc_weights_algo_test_data_init(test);
+
+	gpc_weights = __gpc_weights_algo_setup(&weights_algo_test_data->dn,
+					       &gpc_algo_test_data->parent_gpc);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, gpc_weights);
+	gpc_weights_algo = to_gpowercap_weights_algo(gpc_weights);
+
+	list_add_tail(&gpc_algo_test_data->children_gpc[0].siblings, &gpc_weights->children);
+	list_add_tail(&gpc_algo_test_data->children_gpc[1].siblings, &gpc_weights->children);
+	__gpc_weights_algo_evaluate(gpc_weights);
+
+	/* Check that work structs are initialized for children */
+	KUNIT_EXPECT_FALSE(test, list_empty(&gpc_weights_algo->weighted_children));
+	list_for_each_entry(wc, &gpc_weights_algo->weighted_children, node) {
+		KUNIT_EXPECT_FALSE(test, work_pending(&wc->work));
+	}
+
+	/* Trigger limit distribution to queue work */
+	__gpc_weights_algo_set_power_limit(gpc_weights, gpc_weights->power_max);
+
+	/* After flush inside set_power_limit, no work should be pending/running */
+	list_for_each_entry(wc, &gpc_weights_algo->weighted_children, node) {
+		KUNIT_EXPECT_FALSE(test, work_pending(&wc->work));
+	}
+
+	__gpc_weights_algo_release(gpc_weights);
+}
+
 static void powercap_weights_algo_dist_weights_sysfs_test(struct kunit *test)
 {
 	struct gpowercap *gpc_weights;
@@ -2770,6 +2839,70 @@ static void powercap_weights_algo_dist_weights_sysfs_test(struct kunit *test)
 	test_str = "child0;5,child1;8";
 	ret = power_distribution_weights_store(&gpc_weights->zone.dev, NULL, test_str,
 					       strlen(test_str));
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+
+	kunit_kfree(test, buf);
+	__gpc_weights_algo_release(gpc_weights);
+}
+
+static void powercap_weights_algo_redist_threshold_sysfs_test(struct kunit *test)
+{
+	struct gpowercap *gpc_weights;
+	char *buf;
+	ssize_t ret;
+	const char *test_str;
+	char expected_str[16];
+
+	gpc_weights_algo_test_data_init(test);
+
+	gpc_weights = __gpc_weights_algo_setup(&weights_algo_test_data->dn,
+					       &gpc_algo_test_data->parent_gpc);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, gpc_weights);
+
+	buf = kunit_kzalloc(test, PAGE_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
+
+	/* Test show functionality - initial default value */
+	ret = power_redistribution_threshold_show(&gpc_weights->zone.dev, NULL, buf);
+	KUNIT_EXPECT_GT(test, ret, 0);
+	snprintf(expected_str, sizeof(expected_str), "%d\n",
+		 GPC_WEIGHTS_ALGO_RECEIVER_THRESHOLD_PERCENT);
+	KUNIT_EXPECT_STREQ(test, buf, expected_str);
+
+	/* Test store functionality - valid case */
+	test_str = "75";
+	ret = power_redistribution_threshold_store(&gpc_weights->zone.dev, NULL, test_str,
+						   strlen(test_str));
+	KUNIT_EXPECT_EQ(test, ret, strlen(test_str));
+	KUNIT_EXPECT_EQ(test, to_gpowercap_weights_algo(gpc_weights)->redistribution_threshold, 75);
+
+	memset(buf, 0, PAGE_SIZE);
+	ret = power_redistribution_threshold_show(&gpc_weights->zone.dev, NULL, buf);
+	KUNIT_EXPECT_GT(test, ret, 0);
+	KUNIT_EXPECT_STREQ(test, buf, "75\n");
+
+	/* Test store functionality - invalid value > 100 */
+	test_str = "105";
+	ret = power_redistribution_threshold_store(&gpc_weights->zone.dev, NULL, test_str,
+						   strlen(test_str));
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+
+	/* Test store functionality - non-numerical value */
+	test_str = "abc";
+	ret = power_redistribution_threshold_store(&gpc_weights->zone.dev, NULL, test_str,
+						   strlen(test_str));
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+
+	/* Test store functionality - negative value */
+	test_str = "-10";
+	ret = power_redistribution_threshold_store(&gpc_weights->zone.dev, NULL, test_str,
+						   strlen(test_str));
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+
+	/* Test store functionality - invalid value 0 */
+	test_str = "0";
+	ret = power_redistribution_threshold_store(&gpc_weights->zone.dev, NULL, test_str,
+						   strlen(test_str));
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 
 	kunit_kfree(test, buf);
@@ -3143,6 +3276,187 @@ static void powercap_stats_no_opp_test(struct kunit *test)
 	gpc_stats_exit(gpc);
 }
 
+static void powercap_decision_id_increment_test(struct kunit *test)
+{
+	struct gpowercap *gpc_weights;
+	struct gpowercap_weights_algo *gpc_weights_algo;
+	u64 initial_id;
+
+	gpc_weights_algo_test_data_init(test);
+
+	gpc_weights = __gpc_weights_algo_setup(&weights_algo_test_data->dn,
+					       &gpc_algo_test_data->parent_gpc);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, gpc_weights);
+	gpc_weights_algo = to_gpowercap_weights_algo(gpc_weights);
+
+	list_add_tail(&gpc_algo_test_data->children_gpc[0].siblings, &gpc_weights->children);
+	list_add_tail(&gpc_algo_test_data->children_gpc[1].siblings, &gpc_weights->children);
+	gpc_algo_test_data->children_gpc[0].parent = gpc_weights;
+	gpc_algo_test_data->children_gpc[1].parent = gpc_weights;
+
+	__gpc_weights_algo_evaluate(gpc_weights);
+
+	initial_id = gpc_weights->decision_id;
+
+	/* Trigger first decision (MAX limit - early return path) */
+	__gpc_weights_algo_set_power_limit(gpc_weights, gpc_weights->power_max);
+	KUNIT_EXPECT_EQ(test, gpc_weights->decision_id, initial_id + 1);
+
+	/* Trigger second decision (MIN limit - early return path) */
+	__gpc_weights_algo_set_power_limit(gpc_weights, gpc_weights->power_min);
+	KUNIT_EXPECT_EQ(test, gpc_weights->decision_id, initial_id + 2);
+
+	/* Trigger third decision (in between limit - active distribution path) */
+	__gpc_weights_algo_set_power_limit(gpc_weights,
+			(gpc_weights->power_min + gpc_weights->power_max) / 2);
+	KUNIT_EXPECT_EQ(test, gpc_weights->decision_id, initial_id + 3);
+
+	/* Verify child nodes inherited the decision_id */
+	KUNIT_EXPECT_EQ(test, gpc_algo_test_data->children_gpc[0].decision_id,
+			gpc_weights->decision_id);
+	KUNIT_EXPECT_EQ(test, gpc_algo_test_data->children_gpc[1].decision_id,
+			gpc_weights->decision_id);
+
+	gpc_algo_test_data->children_gpc[0].parent = NULL;
+	gpc_algo_test_data->children_gpc[1].parent = NULL;
+
+	__gpc_weights_algo_release(gpc_weights);
+}
+
+static void powercap_volt_algo_decision_id_test(struct kunit *test)
+{
+	struct gpowercap *gpc_volt_algo;
+	u64 initial_id;
+
+	gpc_volt_algo = volt_algo_test_init(test);
+
+	/* Evaluate to load static table and init OPPs */
+	KUNIT_ASSERT_EQ(test, __gpc_volt_algo_evaluate(gpc_volt_algo), 0);
+
+	initial_id = gpc_volt_algo->decision_id;
+
+	/* Set power limit */
+	__gpc_volt_algo_set_power_limit(gpc_volt_algo, 5000000);
+	KUNIT_EXPECT_EQ(test, gpc_volt_algo->decision_id, initial_id + 1);
+
+	/* Verify child nodes inherited the decision_id */
+	KUNIT_EXPECT_EQ(test, gpc_algo_test_data->children_gpc[0].decision_id,
+			gpc_volt_algo->decision_id);
+	KUNIT_EXPECT_EQ(test, gpc_algo_test_data->children_gpc[1].decision_id,
+			gpc_volt_algo->decision_id);
+
+	volt_algo_test_exit(gpc_volt_algo);
+}
+
+static int test_parent_rebalance_count;
+static int mock_parent_rebalance(struct gpowercap *gpc)
+{
+	test_parent_rebalance_count++;
+	return 0;
+}
+
+static struct gpowercap_ops test_parent_ops = {
+	.set_power_uw = gpc_test_set_power_uw,
+	.get_power_uw = gpc_test_get_power_uw,
+	.update_power_uw = gpc_test_update_power_uw,
+	.release = gpc_test_release,
+	.rebalance = mock_parent_rebalance,
+};
+
+static void powercap_time_window_propagation_test(struct kunit *test)
+{
+	struct gpowercap *parent, *child1, *child2;
+
+	__gpc_init_pct_test();
+
+	parent = gpc_alloc_and_create_node("parent", NULL, NULL);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(parent));
+
+	child1 = gpc_alloc_and_create_node("child1", parent, &test_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(child1));
+	child1->time_window_us = 100000;
+	gpowercap_propagate_time_window(child1);
+	KUNIT_EXPECT_EQ(test, parent->time_window_us, 100000);
+
+	child2 = gpc_alloc_and_create_node("child2", parent, &test_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(child2));
+	child2->time_window_us = 50000;
+	gpowercap_propagate_time_window(child2);
+	KUNIT_EXPECT_EQ(test, parent->time_window_us, 100000);
+
+	child2->time_window_us = 200000;
+	gpowercap_propagate_time_window(child2);
+	KUNIT_EXPECT_EQ(test, parent->time_window_us, 200000);
+
+	child1->time_window_us = 50000;
+	gpowercap_propagate_time_window(child1);
+	KUNIT_EXPECT_EQ(test, parent->time_window_us, 200000);
+
+	child2->time_window_us = 0;
+	gpowercap_propagate_time_window(child2);
+	KUNIT_EXPECT_EQ(test, parent->time_window_us, 50000);
+
+	__gpowercap_destroy_hierarchy();
+}
+
+static void powercap_sibling_polling_aware_deferral_test(struct kunit *test)
+{
+	struct gpowercap *grandparent, *parent, *parent2, *child1, *child2;
+
+	__gpc_init_pct_test();
+
+	grandparent = gpc_alloc_and_create_node("grandparent", NULL, NULL);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(grandparent));
+
+	parent = gpc_alloc_and_create_node("parent", grandparent, &test_parent_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(parent));
+
+	parent2 = gpc_alloc_and_create_node("parent2", grandparent, &test_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(parent2));
+
+	child1 = gpc_alloc_and_create_node("child1", parent, &test_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(child1));
+
+	child2 = gpc_alloc_and_create_node("child2", parent, &test_ops);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(child2));
+
+	parent2->time_window_us = 1000000;
+	gpowercap_propagate_time_window(parent2);
+
+	test_parent_rebalance_count = 0;
+
+	/* Scenario 1: Sibling parent2 is NOT imminent */
+	child1->power_updated = false;
+	child2->power_updated = false;
+	parent2->power_updated = false;
+	parent2->last_report_jiffies = jiffies;
+	gpowercap_report_power_uw(child1, 1000);
+	gpowercap_report_power_uw(child2, 1000);
+	KUNIT_EXPECT_EQ(test, test_parent_rebalance_count, 1);
+
+	/* Scenario 2: Sibling parent2 IS imminent (within imminent window) */
+	child1->power_updated = false;
+	child2->power_updated = false;
+	parent2->power_updated = false;
+	parent2->last_report_jiffies = jiffies - msecs_to_jiffies(1000) + msecs_to_jiffies(5);
+	gpowercap_report_power_uw(child1, 1000);
+	gpowercap_report_power_uw(child2, 1000);
+	/* Rebalance count should NOT increase since it is deferred */
+	KUNIT_EXPECT_EQ(test, test_parent_rebalance_count, 1);
+
+	/* Scenario 3: Sibling parent2 is not polling (time_window_us is 0) */
+	child1->power_updated = false;
+	child2->power_updated = false;
+	parent2->power_updated = false;
+	parent2->time_window_us = 0;
+	gpowercap_report_power_uw(child1, 1000);
+	gpowercap_report_power_uw(child2, 1000);
+	/* Rebalance count should increase */
+	KUNIT_EXPECT_EQ(test, test_parent_rebalance_count, 2);
+
+	__gpowercap_destroy_hierarchy();
+}
+
 static struct kunit_case powercap_helper_test[] = {
 	KUNIT_CASE(powercap_stats_init_exit_test),
 	KUNIT_CASE(powercap_stats_virtual_nodes_test),
@@ -3176,7 +3490,9 @@ static struct kunit_case powercap_helper_test[] = {
 	KUNIT_CASE(powercap_weights_algo_evaluate_test),
 	KUNIT_CASE(powercap_weights_algo_set_get_power_test),
 	KUNIT_CASE(powercap_weights_algo_set_power_min_max_test),
+	KUNIT_CASE(powercap_weights_algo_parallel_workqueue_test),
 	KUNIT_CASE(powercap_weights_algo_dist_weights_sysfs_test),
+	KUNIT_CASE(powercap_weights_algo_redist_threshold_sysfs_test),
 	KUNIT_CASE(powercap_weights_algo_rebalance_test),
 	KUNIT_CASE(odpm_register_first_client_test),
 	KUNIT_CASE(odpm_unregister_client_test),
@@ -3186,6 +3502,10 @@ static struct kunit_case powercap_helper_test[] = {
 	KUNIT_CASE(odpm_register_invalid_interval_test),
 	KUNIT_CASE(odpm_unregister_invalid_regulator_test),
 	KUNIT_CASE(odpm_register_error_cases_test),
+	KUNIT_CASE(powercap_decision_id_increment_test),
+	KUNIT_CASE(powercap_volt_algo_decision_id_test),
+	KUNIT_CASE(powercap_time_window_propagation_test),
+	KUNIT_CASE(powercap_sibling_polling_aware_deferral_test),
 	{},
 };
 

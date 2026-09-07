@@ -32,6 +32,7 @@
 #include <sound/compress_driver.h>
 
 #include "../aoc-interface.h"
+#include "../aoc.h"
 #include "google-aoc-enum.h"
 #include "usbaudio.h"
 #include "audiometrics.h"

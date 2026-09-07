@@ -157,8 +157,8 @@
 #define SEC_TS_FW_HEADER_SIGN		0x53494654
 #define SEC_TS_FW_CHUNK_SIGN		0x53434654
 
-#undef SEC_TS_FW_UPDATE_ON_PROBE
-#define SEC_TS_FW_UPDATE_DELAY_MS_AFTER_PROBE	1000
+#define SEC_TS_FW_UPDATE_ON_PROBE
+#define SEC_TS_FW_UPDATE_DELAY_MS_AFTER_PROBE	200
 
 #define SEC_TS_SELFTEST_REPORT_SIZE	120
 #define SEC_TS_PRESSURE_MAX		0x3f
@@ -195,6 +195,7 @@
 #define SET_TS_CMD_SET_CHARGER_TYPE		0x23	// Charger type
 #define SET_TS_CMD_SET_COVER_TYPE		0x24	// Cover type
 #define SET_TS_CMD_SET_REPORT_RATE		0x25	// Report Rate
+#define SET_TS_CMD_GET_REPORT_RATE		0x27	// Get Report Rate
 
 /* 0x30 */
 #define SEC_TS_CMD_READ_WET_MODE_STATUS		0x3B
@@ -224,6 +225,7 @@
 #define SEC_TS_CMD_P2P_TEST			0x83	// P2P Test
 #define SEC_TS_CMD_SELF_TEST			0x84	// Self Test
 #define SEC_TS_CMD_PANEL_CAL			0x85	// Panel Cal
+#define SEC_TS_CMD_GAME_MODE			0x88	// Game Mode
 #define SEC_TS_CMD_SET_WET_MODE			0x8B
 
 /* 0xB0 */

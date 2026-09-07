@@ -232,6 +232,10 @@ int32_t WlanGlobalConfigRead(const MemoryMapHelper *helper, GlobalConfigField fi
 		MEMORY_MAP_HELPER_GLOBAL_CONFIG_READ(helper, fw_trap_addr, buffer_size,
 						     output_buffer);
 		break;
+	case kRxPktTlvSize:
+		MEMORY_MAP_HELPER_GLOBAL_CONFIG_READ(helper, rx_pkt_tlv_size, buffer_size,
+						     output_buffer);
+		break;
 	default:
 		return -ENODATA;
 	}

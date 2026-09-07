@@ -1,7 +1,7 @@
 /*
  * Neighbor Awareness Networking
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -5276,11 +5276,12 @@ fail:
 		if (err != BCME_OK) {
 			WL_ERR(("failed to de-initialize NAN[%d]\n", err));
 		}
+#ifdef WLTDLS
+		/* Re-enable TDLS if NAN enable fails */
+		wl_cfg80211_tdls_config(cfg, TDLS_STATE_IF_DELETE, false);
+#endif /* WLTDLS */
 	}
 done:
-	/* Enable back TDLS if connected interface is <= 1 */
-	wl_cfg80211_tdls_config(cfg, TDLS_STATE_IF_DELETE, false);
-
 	/* reset conditon variable */
 	nancfg->nan_event_recvd = false;
 
@@ -11969,8 +11970,8 @@ wl_cfgnan_notify_nan_status(struct bcm_cfg80211 *cfg,
 			bs_entry = wl_cfgnan_add_bootstrapping_entry(cfg,
 					(struct ether_addr *)cfg->nancfg->nan_nmi_mac,
 					&nan_event_data->remote_nmi, NAN_PAIRING_BS_ROLE_RESPONDER,
-					nan_event_data->requestor_id,
 					nan_event_data->local_inst_id,
+					nan_event_data->requestor_id,
 					&nan_event_data->npba_info);
 			if (bs_entry == NULL) {
 				WL_ERR(("Could not add BS cache entry for BS REQ event \n"));

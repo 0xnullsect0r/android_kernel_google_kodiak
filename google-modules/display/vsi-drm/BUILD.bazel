@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_uapi_headers", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_uapi_headers")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -56,18 +61,6 @@ ddk_uapi_headers(
     ]),
     out = "vsi-drm-uapi-headers.tar.gz",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
-)
-
-kernel_module_group(
-    name = "vsi-drm",
-    srcs = [
-        "//private/google-modules/display/vsi-drm/bridge/synopsys/dsi2host:mipi-dsi2h",
-        "//private/google-modules/display/vsi-drm/phy/synopsys:mipi-cdphy",
-        "//private/google-modules/display/vsi-drm/verisilicon:vs_drm",
-    ],
     visibility = [
         "//private/devices/google:__subpackages__",
     ],

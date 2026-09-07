@@ -2,7 +2,12 @@
 
 # for misc devices that really don't fit anywhere else.
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "headers",
@@ -39,16 +44,5 @@ ddk_module(
         ":haptics-cs40l2x",
         ":headers",
         "//common:all_headers_aarch64",
-    ],
-)
-
-kernel_module_group(
-    name = "cs40l25",
-    srcs = [
-        ":haptics-cs40l2x",
-        ":snd_soc_cs40l2x",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -127,8 +127,15 @@ void cnss_goog_pwrctrl_set_ready(bool ready)
 		return;
 	goog_pwrctrl_ready = ready;
 
-	if (ready)
+	if (ready) {
+		/*
+		 * Wait 200ms after WLAN_EN is pulled high
+		 * to prevent CPL timeout issues before deasserting PERST#.
+		 */
+		cnss_pr_info("Delay %dms after power on\n", WIFI_TURNON_DELAY);
+		msleep(WIFI_TURNON_DELAY);
 		pci_pwrctrl_device_set_ready(goog_pwrctrl);
+	}
 	else
 		pci_pwrctrl_device_unset_ready(goog_pwrctrl);
 }
@@ -164,8 +171,6 @@ int _cnss_pci_enumerate(struct cnss_plat_data *plat_priv, u32 rc_num)
 #ifdef CONFIG_GOOG_USE_PWRCTRL
 	struct pci_dev *pci_dev __free(pci_dev_put) = NULL;
 
-	cnss_pr_info("Delay %dms after power on at bootup\n", WIFI_TURNON_DELAY);
-	msleep(WIFI_TURNON_DELAY);
 	/*Set pwrctrl true before PCI enumeration*/
 	cnss_goog_pwrctrl_set_ready(true);
 	cnss_pr_info("RC enumerate pwrctrl set\n");
@@ -749,7 +754,7 @@ void crash_info_handler(u8 *info)
 	crash_info = kzalloc(string_len + 1, GFP_KERNEL);
 	if (!crash_info)
 		return;
-	strscpy(crash_info, info, string_len);
+	strscpy(crash_info, info, string_len + 1);
 	crash_info[string_len] = '\0';
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -510,7 +510,7 @@ void dp_softap_get_bss_peer_tx_flow_idx(void *soc, qdf_nbuf_t nbuf,
 					       QDF_NBUF_SRC_MAC_OFFSET);
 	cdp_peer_get_info_by_peer_addr(soc, src_mac_addr->bytes, *link_id,
 				       &peer_info);
-	dp_set_peer_txpt_idx(nbuf, &peer_info);
+	dp_set_peer_search_idx(nbuf, &peer_info);
 }
 
 #else
@@ -552,7 +552,7 @@ dp_softap_validate_peer_state(struct wlan_dp_link *dp_link,
 
 	cdp_peer_get_info_by_peer_addr(soc, mac_addr.bytes, *link_id,
 				       &peer_info);
-	dp_set_peer_txpt_idx(nbuf, &peer_info);
+	dp_set_peer_search_idx(nbuf, &peer_info);
 
 	*link_id = peer_info.vdev_id;
 	peer_state = peer_info.state;
@@ -1145,7 +1145,7 @@ QDF_STATUS dp_softap_rx_packet_cbk(void *link_ctx, qdf_nbuf_t rx_buf)
 		dp_event_eapol_log(nbuf, QDF_RX);
 		qdf_dp_trace_log_pkt(dp_link->link_id,
 				     nbuf, QDF_RX, QDF_TRACE_DEFAULT_PDEV_ID,
-				     dp_intf->device_mode);
+				     dp_intf->device_mode, 0);
 		DPTRACE(qdf_dp_trace(nbuf,
 				     QDF_DP_TRACE_RX_PACKET_PTR_RECORD,
 				     QDF_TRACE_DEFAULT_PDEV_ID,

@@ -11,6 +11,7 @@
 #include <net/genetlink.h>
 
 #include "fwtp.h"
+#include "fwtp_decode.h"
 #include "fwtp_entry.h"
 #define CREATE_TRACE_POINTS
 #include "fwtp_ftrace.h"
@@ -554,6 +555,54 @@ static int fwtp_debugfs_trace_show(struct seq_file *seq_file, void *private)
 
 DEFINE_SHOW_ATTRIBUTE(fwtp_debugfs_trace);
 
+/**
+ * fwtp_debugfs_notify_bytes_read - Handle debugfs read.
+ *
+ * @data: Pointer to FWTP device.
+ * @val: Pointer to read value.
+ *
+ * Handles a debugfs read operation to get the tracepoint notification byte
+ * count.
+ *
+ * Return: 0 on success.
+ */
+static int fwtp_debugfs_notify_bytes_read(void *data, u64 *val)
+{
+	struct fwtp_dev *fwtp_dev = data;
+
+	*val = fwtp_dev->notify_byte_count;
+
+	return 0;
+}
+
+/**
+ * fwtp_debugfs_notify_bytes_write - Handle debugfs write.
+ *
+ * @data: Pointer to FWTP device.
+ * @val: Write value.
+ *
+ * Handles a debugfs write operation to set the tracepoint notification byte
+ * count.
+ *
+ * Return: 0 on success, non-zero error code on error.
+ */
+static int fwtp_debugfs_notify_bytes_write(void *data, u64 val)
+{
+	struct fwtp_dev *fwtp_dev = data;
+
+	if (val > U32_MAX)
+		return -EINVAL;
+
+	fwtp_dev->notify_byte_count = (u32)val;
+
+	return 0;
+}
+
+/* Define the FWTP notify bytes debugfs interface. */
+DEFINE_DEBUGFS_ATTRIBUTE(fwtp_debugfs_notify_bytes_fops,
+			 fwtp_debugfs_notify_bytes_read,
+			 fwtp_debugfs_notify_bytes_write, "%llu\n");
+
 /*******************************************************************************
  * Internal FWTP kernel device services.
  ******************************************************************************/
@@ -671,11 +720,19 @@ int fwtp_dev_init(struct fwtp_dev *fwtp_dev)
 			"Failed to create add tracepoint debugfs file.\n");
 		return PTR_ERR(dentry);
 	}
-	dentry = debugfs_create_file("trace", 0440, fwtp_dev->root_debugfs,
+	dentry = debugfs_create_file("trace", 0444, fwtp_dev->root_debugfs,
 				     fwtp_dev, &fwtp_debugfs_trace_fops);
 	if (IS_ERR(dentry)) {
 		dev_err(fwtp_dev->dev,
 			"Failed to create trace debugfs file.\n");
+		return PTR_ERR(dentry);
+	}
+	dentry = debugfs_create_file("notify_bytes", 0660,
+				     fwtp_dev->root_debugfs, fwtp_dev,
+				     &fwtp_debugfs_notify_bytes_fops);
+	if (IS_ERR(dentry)) {
+		dev_err(fwtp_dev->dev,
+			"Failed to create notify_bytes debugfs file.\n");
 		return PTR_ERR(dentry);
 	}
 
@@ -794,10 +851,8 @@ EXPORT_SYMBOL_GPL(fwtp_dev_get_memio_ring);
  *
  * Return: Positive boot time on success, 0 if timestamp is from before boot.
  */
-static u64 fwtp_dev_get_boottime_timestamp(u64 timestamp, u32 timestamp_hz)
+u64 fwtp_dev_get_boottime_timestamp(u64 timestamp, u32 timestamp_hz)
 {
-	static DEFINE_MUTEX(prev_boottime_timestamp_mutex);
-	static u64 prev_boottime_timestamp;
 	u64 gtc_hz = goog_gtc_get_freq_hz();
 	u64 gtc_timestamp;
 	u64 boottime_timestamp;
@@ -819,14 +874,9 @@ static u64 fwtp_dev_get_boottime_timestamp(u64 timestamp, u32 timestamp_hz)
 	if (boottime_timestamp > S64_MAX)
 		return 0;
 
-	/* Ensure the boot time is monotonically increasing. */
-	mutex_lock(&prev_boottime_timestamp_mutex);
-	boottime_timestamp = max(boottime_timestamp, prev_boottime_timestamp);
-	prev_boottime_timestamp = boottime_timestamp;
-	mutex_unlock(&prev_boottime_timestamp_mutex);
-
 	return boottime_timestamp;
 }
+EXPORT_SYMBOL_GPL(fwtp_dev_get_boottime_timestamp);
 
 /**
  * fwtp_dev_printer_post_process - Performs post-processing on FWTP tracepoints.
@@ -852,13 +902,34 @@ void fwtp_dev_printer_post_process(struct fwtp_printer_ctx *printer_ctx,
 {
 	u64 boottime_timestamp = fwtp_dev_get_boottime_timestamp(
 		timestamp, printer_ctx->timestamp_hz);
+	struct fwtp_dev *fwtp_dev =
+		container_of(printer_ctx, struct fwtp_dev, printer_ctx);
 	const char *category = printer_ctx->name ?: "fwtp";
 	char slice_str[FWTP_PRINTER_BUFFER_SIZE];
-	u32 data;
+	u32 data = 0;
 
 	/* Drop traces from before kernel boot. */
 	if (boottime_timestamp == 0)
 		return;
+
+	/* Ensure the boot time is monotonically increasing. */
+	boottime_timestamp =
+		max(boottime_timestamp, fwtp_dev->prev_boottime_timestamp);
+	fwtp_dev->prev_boottime_timestamp = boottime_timestamp;
+
+	/* Decode tracepoint. */
+	if (fwtp_dev->decoder) {
+		uint8_t *p_starting_next_data_item =
+			data_items->p_next_data_item;
+		int data_item_size = fwtp_get_next_data_item(data_items, &data,
+							     sizeof(data));
+		if (data_item_size > 0 && data_item_size <= sizeof(data)) {
+			fwtp_decode_tracepoint(fwtp_dev, str_id, data,
+					       boottime_timestamp);
+		}
+		/* Reset data_items. */
+		data_items->p_next_data_item = p_starting_next_data_item;
+	}
 
 	/* Post-process tracepoints for Perfetto. */
 	switch (type) {

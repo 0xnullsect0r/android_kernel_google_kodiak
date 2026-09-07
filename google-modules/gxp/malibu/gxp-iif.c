@@ -2,7 +2,7 @@
 /*
  * Support for Inter-IP fences.
  *
- * Copyright (C) 2025 Google LLC
+ * Copyright (C) 2025-2026 Google LLC
  */
 
 #include <linux/list.h>
@@ -329,13 +329,10 @@ static void gxp_iif_release_rx_queue_lock(struct gcip_mailbox *mb)
 {
 	/* Not Implemented */
 }
+
 static u64 gxp_iif_get_resp_elem_seq(struct gcip_mailbox *mb, void *resp)
 {
 	return 0;
-}
-static void gxp_iif_set_resp_elem_seq(struct gcip_mailbox *mb, void *resp, u64 seq)
-{
-	/* Not Implemented */
 }
 
 const struct gcip_mailbox_ops gxp_iif_gcip_mbx_ops = {
@@ -352,7 +349,6 @@ const struct gcip_mailbox_ops gxp_iif_gcip_mbx_ops = {
 	.acquire_rx_queue_lock = gxp_iif_acquire_rx_queue_lock,
 	.release_rx_queue_lock = gxp_iif_release_rx_queue_lock,
 	.get_resp_elem_seq = gxp_iif_get_resp_elem_seq,
-	.set_resp_elem_seq = gxp_iif_set_resp_elem_seq,
 	.wait_for_tx_queue_not_full = gxp_iif_wait_for_tx_queue_not_full,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 };

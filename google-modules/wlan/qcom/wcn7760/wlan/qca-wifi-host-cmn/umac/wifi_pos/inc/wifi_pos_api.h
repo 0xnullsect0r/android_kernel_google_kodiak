@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -665,6 +665,28 @@ QDF_STATUS wifi_pos_register_osif_callbacks(struct wifi_pos_osif_ops *ops);
  * Return: struct wifi_pos_osif_ops pointer
  */
 struct wifi_pos_osif_ops *wifi_pos_get_osif_callbacks(void);
+
+/**
+ * wifi_pos_send_rtt_peer_meas_req() - wrapper for send rtt peer meas req cmd
+ * @psoc: psoc object
+ * @params: params to be sent in the cmd
+ *
+ * Return: QDF_STATUS_SUCCESS in case of success, else error codes
+ */
+QDF_STATUS
+wifi_pos_send_rtt_peer_meas_req(struct wlan_objmgr_psoc *psoc,
+				struct wmi_rtt_peer_meas_req_cmd_params *params);
+
+/**
+ * wifi_pos_send_rtt_peer_meas_cancel() - wrapper for send rtt peer meas cancel cmd
+ * @psoc: psoc object
+ * @req_id: rtt request id
+ *
+ * Return: QDF_STATUS_SUCCESS in case of success, else error codes
+ */
+QDF_STATUS wifi_pos_send_rtt_peer_meas_cancel(struct wlan_objmgr_psoc *psoc,
+					      uint32_t req_id);
+
 #endif /* WIFI_POS_CONVERGED */
 
 #if defined(WIFI_POS_CONVERGED) && defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
@@ -703,4 +725,23 @@ uint32_t wifi_pos_get_rsta_11az_ranging_cap(void)
 	return 0;
 }
 #endif
+
+#if defined(CFG80211_PD_SUPPORT) && defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+/**
+ * wifi_pos_get_pmsr_fw_caps() - Get PMSR FW capabilities
+ * @psoc: Pointer to PSOC object
+ * @fw_caps: Double pointer to hold the PMSR FW capabilities
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS wifi_pos_get_pmsr_fw_caps(struct wlan_objmgr_psoc *psoc,
+				     struct wifi_pos_pmsr_fw_caps **fw_caps);
+#else
+static inline
+QDF_STATUS wifi_pos_get_pmsr_fw_caps(struct wlan_objmgr_psoc *psoc,
+				     struct wifi_pos_pmsr_fw_caps **fw_caps)
+{
+	return QDF_STATUS_E_NOSUPPORT;
+}
+#endif /* CFG80211_PD_SUPPORT && WLAN_FEATURE_RTT_11AZ_SUPPORT */
 #endif /* _WIFI_POS_API_H_ */

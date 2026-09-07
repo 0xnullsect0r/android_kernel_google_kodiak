@@ -12,7 +12,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/stringhash.h>
-#include "gvotable.h"
+#include <misc/gvotable.h>
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 # include <linux/debugfs.h>

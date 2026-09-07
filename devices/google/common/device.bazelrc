@@ -8,8 +8,11 @@ build --flag_alias=nouse_prebuilt_kernel=no//common:kernel_package_use_prebuilt_
 build --flag_alias=use_prebuilt_fips140=//private/devices/google/common:use_prebuilt_fips140
 build --flag_alias=nouse_prebuilt_fips140=no//private/devices/google/common:use_prebuilt_fips140
 
+# Use common/gki and build from source
+# build --kernel_package=gki --nouse_prebuilt_kernel
+
 # Use prebuilt GKI
-# build --kernel_package=gki
+build --kernel_package=gki
 
 # Use prebuilt fips140.ko
 build --use_prebuilt_fips140
@@ -37,9 +40,8 @@ build:factory --config=pixel_debug_common
 build:factory --//private/devices/google/common:factory
 
 # Testing build, enable gcov
-build:testing --notrim
 build:testing --gcov
-build:testing --nouse_prebuilt_kernel
+build:testing --config=pixel_debug_common
 
 # Build 16k page size kernel
 build:16k --page_size=16k

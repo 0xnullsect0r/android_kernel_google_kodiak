@@ -136,7 +136,7 @@ static void mtk_cldma_drv_init_m9xx(struct cldma_drv_info *drv_info)
 	mtk_pci_write32(mdev, base + hw_regs->reg_cldma_ul_cfg, val);
 
 	val = mtk_pci_read32(mdev, base + hw_regs->reg_cldma_so_cfg);
-	val = (val & (~(0x7 << 10))) | ((0x4) << 10) | (1 << 2);
+	val = (val & (~(0x7 << 10))) | ((0x4) << 10);
 	mtk_pci_write32(mdev, base + hw_regs->reg_cldma_so_cfg, val);
 
 	mtk_pci_write32(mdev, base + hw_regs->reg_cldma_rx_work_to_reg_mask_set, ALLQ);
@@ -197,4 +197,5 @@ struct cldma_drv_ops cldma_drv_ops_m9xx = {
 	.cldma_get_tx_start_addr = mtk_cldma_get_tx_start_addr,
 	.cldma_get_curr_addr = mtk_cldma_get_curr_addr,
 	.cldma_get_gpd_cnt = mtk_cldma_get_gpd_cnt,
+	.cldma_check_device_rx_status = mtk_cldma_check_device_rx_status,
 };

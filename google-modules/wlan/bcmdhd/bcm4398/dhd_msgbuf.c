@@ -3,7 +3,7 @@
  * Provides type definitions and function prototypes used to link the
  * DHD OS, bus, and protocol modules.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -2466,6 +2466,7 @@ dhd_pktid_map_init(dhd_pub_t *dhd, uint32 num_items)
 
 	/* Initialize the lock that protects this structure */
 	map->pktid_lock = DHD_PKTID_LOCK_INIT(osh);
+	OSL_LOCK_CLASS_SET(map->pktid_lock);
 	if (map->pktid_lock == NULL) {
 		DHD_ERROR(("%s:%d: Lock init failed \r\n", __FUNCTION__, __LINE__));
 		goto error;
@@ -2489,6 +2490,7 @@ dhd_pktid_map_init(dhd_pub_t *dhd, uint32 num_items)
 				__FUNCTION__, __LINE__, map_items + 1));
 		}
 		map->pktid_audit_lock = DHD_PKTID_AUDIT_LOCK_INIT(osh);
+		OSL_LOCK_CLASS_SET(map->pktid_audit_lock);
 #endif /* DHD_PKTID_AUDIT_ENABLED */
 
 	for (nkey = 1; nkey <= map_items; nkey++) { /* locker #0 is reserved */
@@ -12878,6 +12880,7 @@ dhd_prot_ring_attach(dhd_pub_t *dhd, msgbuf_ring_t *ring, const char *name,
 	dhd_base_addr_htolpa(&ring->base_addr, ring->dma_buf.pa);
 
 	ring->ring_lock = osl_spin_lock_init(dhd->osh);
+	OSL_LOCK_CLASS_SET(ring->ring_lock);
 
 #ifdef TX_FLOW_RING_INDICES_TRACE
 	dhd_prot_txflowring_rw_trace_attach(dhd, ring);

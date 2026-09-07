@@ -77,7 +77,10 @@ static unsigned int runtime_idle_delay_ms = 3000;
 #else
 static unsigned short runtime_idle_delay_seconds = 20;
 #endif
+static bool smart_suspend_enabled;
+static bool must_smart_suspend;
 static bool force_skip_ds_lock;
+static bool force_skip_enter_d3l2;
 static bool d3l2_force_dsw;
 
 #ifdef CONFIG_MTK_MEMLOG_EVENT_SUPPORT
@@ -210,6 +213,25 @@ static void mtk_pm_pewake_eint_work(struct work_struct *work)
 	mtk_pm_exit_d3l2(mdev);
 }
 
+ssize_t exit_d3l2_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			size_t count)
+{
+	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	struct mtk_md_dev *mdev = pci_get_drvdata(pdev);
+
+	if (unlikely(!buf || !count))
+		return -EINVAL;
+
+	if (!strncmp(buf, "exit", strlen("exit"))) {
+		MTK_INFO(mdev, "Host CMD trigger EP exit D3L2 through sysfs!\n");
+		mtk_pm_exit_d3l2(mdev);
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR_WO(exit_d3l2);
+
 static void mtk_pm_enter_d3l2(struct mtk_md_dev *mdev)
 {
 	struct pci_dev *pdev = to_pci_dev(mdev->dev);
@@ -233,13 +255,18 @@ static void mtk_pm_enter_d3l2(struct mtk_md_dev *mdev)
 
 		INIT_WORK(&pm->pewake_work, mtk_pm_pewake_eint_work);
 		pm->force_d3l2_init = true;
+		if (device_create_file(mdev->dev, &dev_attr_exit_d3l2)) {
+			MTK_ERR(mdev, "Unable to create exit_d3l2 entry\n");
+			return;
+		}
 	}
 
 	mutex_lock(&pm->force_d3l2_mtx);
 
-	if (pm->force_d3l2_done || test_bit(PM_PREVENT_SUSPEND, &pm->state)) {
-		MTK_INFO(mdev, "Already in D3L2 or fsm not ready! force_d3l2_done=%d\n",
-			 pm->force_d3l2_done);
+	if (pm->force_d3l2_done || test_bit(PM_PREVENT_SUSPEND, &pm->state) ||
+	    force_skip_enter_d3l2) {
+		MTK_INFO(mdev, "Already in D3L2[%d] or fsm not ready or skip[%d]!\n",
+			 pm->force_d3l2_done, force_skip_enter_d3l2);
 		mutex_unlock(&pm->force_d3l2_mtx);
 		return;
 	}
@@ -248,10 +275,14 @@ static void mtk_pm_enter_d3l2(struct mtk_md_dev *mdev)
 	pm_stay_awake(mdev->dev);
 	pm_runtime_get_sync(mdev->dev);
 
+	mtk_pcimsg_send_msg_to_user(mdev, MTK_PCIMSG_H2C_EXCEPT);
+
 	if (mtk_pm_suspend_device(mdev, false)) {
 		MTK_ERR(mdev, "EP driver suspend fail!\n");
 		goto exit;
 	}
+
+	mtk_pcimsg_wait_pci_user_inactive(mdev);
 
 	if (mtk_pci_save_state_and_set_d3(mdev))
 		goto exit;
@@ -279,6 +310,7 @@ static void mtk_pm_enter_d3l2(struct mtk_md_dev *mdev)
 	return;
 
 exit:
+	mtk_pcimsg_send_msg_to_user(mdev, MTK_PCIMSG_H2C_READY);
 	pm_runtime_put(mdev->dev);
 	pm_relax(mdev->dev);
 	pm->force_d3l2_done = false;
@@ -318,6 +350,7 @@ static void mtk_pm_exit_d3l2(struct mtk_md_dev *mdev)
 	pm_runtime_put(mdev->dev);
 	pm_relax(mdev->dev);
 	pm->force_d3l2_done = false;
+	mtk_pcimsg_send_msg_to_user(mdev, MTK_PCIMSG_H2C_READY);
 	MTK_INFO(mdev, "exit force d3l2 successfully!\n");
 	mutex_unlock(&pm->force_d3l2_mtx);
 }
@@ -465,7 +498,47 @@ static ssize_t mtk_pm_force_d3l2(void *data, const char *buf, ssize_t cnt)
 	return cnt;
 }
 
-MTK_DBGFS(pm_debug, NULL, mtk_pm_debug_write);
+#if IS_ENABLED(CONFIG_DEVICE_MODULES_PCIE_MEDIATEK_GEN3) || IS_ENABLED(CONFIG_PCIE_MEDIATEK_GEN3)
+static ssize_t mtk_pm_smart_suspend_write(void *data, const char *buf, ssize_t cnt)
+{
+	struct mtk_md_dev *mdev = data;
+	struct handshake_info hs_info;
+	struct mtk_pci_pm *pm;
+
+	pm = mdev_get_pm(mdev);
+
+	if (pm->rpm_link_state != RPM_LINK_STATE_L2) {
+		MTK_WARN(mdev, "rpm_link_state is not in L2 mode, it is:%d\n", pm->rpm_link_state);
+		return cnt;
+	}
+
+	if (!strncmp(buf, "on", strlen("on"))) {
+		smart_suspend_enabled = true;
+		hs_info.feature_id = PCIE_SMART_SUSPEND;
+		hs_info.data[0] = PCIE_SMART_SUSPEND_ENABLE;
+		device_init_wakeup(mdev->dev, false);
+	} else if (!strncmp(buf, "off", strlen("off"))) {
+		smart_suspend_enabled = false;
+		hs_info.feature_id = PCIE_SMART_SUSPEND;
+		hs_info.data[0] = PCIE_SMART_SUSPEND_DISABLE;
+		device_init_wakeup(mdev->dev, true);
+	} else {
+		MTK_WARN(mdev, "Invalid smart suspend parameter: %s\n", buf);
+		return cnt;
+	}
+
+	mtk_pm_runtime_get(mdev, MTK_USER_PM, true);
+	mtk_pcie_ep_set_info(1, &hs_info);
+	MTK_INFO(mdev, "Set smart suspend to %s!\n", buf);
+	mtk_pm_runtime_put(mdev, MTK_USER_PM, false);
+
+	return cnt;
+}
+
+MTK_DBGFS(smart_suspend, NULL, mtk_pm_smart_suspend_write); /* note that */
+#endif
+
+MTK_DBGFS(pm_debug, NULL, mtk_pm_debug_write); /* note that */
 MTK_DBGFS(failure_test, NULL, mtk_pm_failure_test);
 MTK_DBGFS(force_d3l2, NULL, mtk_pm_force_d3l2);
 
@@ -482,6 +555,10 @@ static void mtk_pm_dbgfs_init(struct mtk_md_dev *mdev)
 	mtk_dbgfs_create_file(pm->dentry, &mtk_dbgfs_pm_debug, mdev);
 	mtk_dbgfs_create_file(pm->dentry, &mtk_dbgfs_failure_test, mdev);
 	mtk_dbgfs_create_file(pm->dentry, &mtk_dbgfs_force_d3l2, mdev);
+
+#if IS_ENABLED(CONFIG_DEVICE_MODULES_PCIE_MEDIATEK_GEN3) || IS_ENABLED(CONFIG_PCIE_MEDIATEK_GEN3)
+	mtk_dbgfs_create_file(pm->dentry, &mtk_dbgfs_smart_suspend, mdev);
+#endif
 }
 
 static void mtk_pm_dbgfs_exit(struct mtk_md_dev *mdev)
@@ -496,6 +573,25 @@ static void mtk_pm_write_suspend_resume_cnt(struct mtk_md_dev *mdev, u32 val, bo
 	u32 magic_cnt = is_suspend ? PCIE_SUSPEND_CNT_MAGIC : PCIE_RESUME_CNT_MAGIC;
 
 	mtk_pci_write_pm_cnt(mdev, magic_cnt | val);
+}
+
+void mtk_pm_set_smart_suspend_wake(struct mtk_md_dev *mdev, bool is_wake)
+{
+	struct mtk_pci_pm *pm = mdev_get_pm(mdev);
+
+	pm->smart_rpm_resume = is_wake;
+}
+
+bool mtk_pm_allow_smart_suspend(struct mtk_md_dev *mdev)
+{
+	struct device *dev = mdev->dev;
+
+	return smart_suspend_enabled && pm_runtime_status_suspended(dev);
+}
+
+bool mtk_pm_smart_suspend_enabled(void)
+{
+	return smart_suspend_enabled;
 }
 
 static int mtk_pm_wait_ds_lock_done(struct mtk_md_dev *mdev, u32 delay)
@@ -728,7 +824,8 @@ int mtk_pm_ds_try_lock(struct mtk_md_dev *mdev, enum mtk_user_id user)
 					       pm->cfg.ds_lock_polling_min_us);
 	}
 	spin_unlock_irqrestore(&pm->ds_spinlock, flags);
-	mtk_frc_check_and_sync(mdev);
+	if (!test_bit(PM_PREVENT_SUSPEND, &pm->state) && !test_bit(PM_IN_SUSPENDED, &pm->state))
+		mtk_frc_check_and_sync(mdev);
 
 	return ret;
 }
@@ -1060,6 +1157,39 @@ static int mtk_pm_entity_suspend_late(struct mtk_md_dev *mdev, bool is_runtime)
 	return 0;
 }
 
+static int mtk_pm_entity_prepare(struct mtk_md_dev *mdev, bool is_smart_suspend)
+{
+	struct mtk_pci_pm *pm = mdev_get_pm(mdev);
+	struct mtk_pm_entity *entity;
+	int ret;
+
+	list_for_each_entry(entity, &pm->entities, entry) {
+		if (entity->prepare) {
+			ret = entity->prepare(mdev, entity->param, is_smart_suspend);
+			if (ret) {
+				MTK_ERR(mdev, "user:%d prepare failed!\n", entity->user);
+				return ret;
+			}
+		}
+		set_bit(PM_PREPARE_DONE, &entity->flag);
+	}
+	return 0;
+}
+
+static void mtk_pm_entity_complete(struct mtk_md_dev *mdev, bool is_smart_suspend)
+{
+	struct mtk_pci_pm *pm = mdev_get_pm(mdev);
+	struct mtk_pm_entity *entity;
+
+	list_for_each_entry(entity, &pm->entities, entry) {
+		if (test_bit(PM_PREPARE_DONE, &entity->flag) && entity->complete) {
+			if (entity->complete(mdev, entity->param, is_smart_suspend))
+				MTK_ERR(mdev, "user:%d complete fail!\n", entity->user);
+		}
+		clear_bit(PM_PREPARE_DONE, &entity->flag);
+	}
+}
+
 static void mtk_pm_timeout_resume(struct mtk_md_dev *mdev, bool is_md)
 {
 	struct mtk_pci_pm *pm = mdev_get_pm(mdev);
@@ -1242,6 +1372,8 @@ static int mtk_pm_suspend_device(struct mtk_md_dev *mdev, bool is_runtime)
 		}
 	}
 
+	mtk_pci_clear_atr_doorbell(mdev);
+
 	ret = mtk_pm_entity_suspend_late(mdev, is_runtime);
 	if (ret)
 		goto err_suspend_late;
@@ -1291,6 +1423,7 @@ static int mtk_pm_do_resume_device(struct mtk_md_dev *mdev, enum mtk_sleep_entit
 	mtk_pm_try_lock_l1ss_ds(mdev, true);
 	mtk_pci_unmask_irq(mdev, pm->irq_id);
 	mtk_pci_irq_resume_action(mdev);
+	mtk_pci_dump_atr_doorbell(mdev);
 	mtk_pm_entity_resume_early(mdev, is_runtime, link_ready);
 	mtk_pm_write_suspend_resume_cnt(mdev, pm->resume_cnt, false);
 
@@ -1365,6 +1498,7 @@ static int mtk_pm_resume_device(struct mtk_md_dev *mdev, bool is_runtime, bool a
 
 	MTK_INFO(mdev, "Resume Enter: resume state = %d, is_runtime = %d, atr_init = %d\n",
 		 resume_state, is_runtime, atr_init);
+	mtk_pci_dump_atr_doorbell(mdev);
 	switch (resume_state) {
 	case PM_RESUME_STATE_INIT:
 		if (!atr_init) {
@@ -1488,6 +1622,50 @@ static void mtk_pm_resume_work(struct work_struct *work)
 	MTK_INFO(mdev, "Resume success from L3 within delayed work.\n");
 }
 
+static int mtk_pm_prepare_smart_suspend(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	bool is_smart_suspend = true;
+	struct mtk_md_dev *mdev;
+	struct mtk_pci_pm *pm;
+
+	mdev = pci_get_drvdata(pdev);
+	pm = mdev_get_pm(mdev);
+
+	if (mtk_fsm_pause(mdev)) {
+		MTK_ERR(mdev, "FSM pause failed!\n");
+		goto exit_fsm_err;
+	}
+
+	if (!pm_runtime_status_suspended(dev)) {
+		MTK_INFO(mdev, "FSM wakeup!\n");
+		goto exit_fsm_wake;
+	}
+
+	if (mtk_pm_entity_prepare(mdev, is_smart_suspend) || !pm_runtime_status_suspended(dev)) {
+		MTK_ERR(mdev, "Smart suspend_entity failed or user wakeup!\n");
+		goto exit_user_wake;
+	}
+
+	must_smart_suspend = true;
+	dev_pm_set_driver_flags(mdev->dev, 0);
+
+#if IS_ENABLED(CONFIG_ARCH_GOOGLE)
+	ap_awake_gpio_set(0);
+#endif
+
+	return 1;
+
+exit_user_wake:
+	mtk_pm_entity_complete(mdev, is_smart_suspend);
+exit_fsm_wake:
+	mtk_fsm_start(mdev);
+exit_fsm_err:
+	must_smart_suspend = false;
+
+	return -EPERM;
+}
+
 int mtk_pm_prepare(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -1497,6 +1675,10 @@ int mtk_pm_prepare(struct device *dev)
 	mdev = pci_get_drvdata(pdev);
 	pm = mdev_get_pm(mdev);
 
+	if (mtk_pm_allow_smart_suspend(mdev))
+		return mtk_pm_prepare_smart_suspend(dev);
+
+	must_smart_suspend = false;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 	dev_pm_set_driver_flags(mdev->dev, DPM_FLAG_NO_DIRECT_COMPLETE);
 #else
@@ -1511,13 +1693,40 @@ int mtk_pm_prepare(struct device *dev)
 	return 0;
 }
 
+void mtk_pm_complete(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	bool is_smart_suspend = true;
+	struct mtk_md_dev *mdev;
+	struct mtk_pci_pm *pm;
+
+	mdev = pci_get_drvdata(pdev);
+	pm = mdev_get_pm(mdev);
+
+	if (must_smart_suspend) {
+		mtk_pm_entity_complete(mdev, is_smart_suspend);
+		mtk_fsm_start(mdev);
+		must_smart_suspend = false;
+#if IS_ENABLED(CONFIG_ARCH_GOOGLE)
+		ap_awake_gpio_set(1);
+#endif
+		if (pm->smart_rpm_resume) {
+			MTK_INFO(mdev, "REROOT_INT wake up smart suspend!");
+			pm_runtime_resume(mdev->dev);
+			pm->smart_rpm_resume = false;
+		}
+	}
+}
+
 int mtk_pm_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct mtk_md_dev *mdev;
+	struct mtk_pci_pm *pm;
 	int ret;
 
 	mdev = pci_get_drvdata(pdev);
+	pm = mdev_get_pm(mdev);
 
 #if IS_ENABLED(CONFIG_GOOGLE_MD2AP_WAKEUP_MONITOR)
 	md2ap_wakemon_suspend(mdev->google);
@@ -1984,7 +2193,11 @@ int mtk_pm_init(struct mtk_md_dev *mdev)
 	set_bit(PM_PREVENT_SUSPEND, &pm->state);
 	mtk_pm_debug_init(mdev);
 	mtk_pm_dbgfs_init(mdev);
+#if IS_ENABLED(CONFIG_GOOGLE_DIRECT_COMPLETE_SUPPORT)
+	device_init_wakeup(mdev->dev, false);
+#else
 	device_init_wakeup(mdev->dev, true);
+#endif
 
 	/* register sw irq for ds lock. */
 	if (pci_hw->cfg->flag & MTK_CFG_PM_SW_IRQ) {
@@ -2106,8 +2319,10 @@ int mtk_pm_exit(struct mtk_md_dev *mdev)
 
 	cancel_delayed_work_sync(&pm->ds_unlock_work);
 	cancel_delayed_work_sync(&pm->resume_work);
-	if (pm->force_d3l2_init)
+	if (pm->force_d3l2_init) {
 		cancel_work_sync(&pm->pewake_work);
+		device_remove_file(mdev->dev, &dev_attr_exit_d3l2);
+	}
 
 	mtk_fsm_notifier_unregister(mdev, MTK_USER_PM);
 	device_init_wakeup(mdev->dev, false);
@@ -2137,3 +2352,9 @@ MODULE_PARM_DESC(runtime_idle_delay_seconds, "RPM idle delay time");
 
 module_param(force_skip_ds_lock, bool, 0644);
 MODULE_PARM_DESC(force_skip_ds_lock, "Force skip ds lock");
+
+module_param(force_skip_enter_d3l2, bool, 0644);
+MODULE_PARM_DESC(force_skip_enter_d3l2, "Force skip enter d3l2");
+
+module_param(smart_suspend_enabled, bool, 0644);
+MODULE_PARM_DESC(smart_suspend_enabled, "Enable smart suspend feature");

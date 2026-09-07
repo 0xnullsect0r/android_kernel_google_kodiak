@@ -662,6 +662,7 @@ struct hdd_peer_stats {
  * @signal: Signal strength of last received PPDU
  * @signal_avg: Average signal strength
  * @chains: valid chains bitmap
+ * @chain_signal: Per-chain signal strength of last PPDU
  * @chain_signal_avg: Per-chain signal strength average
  * @rxrate: Last unicast data frame rx rate
  * @txrate: Current unicasr tx rate
@@ -673,6 +674,8 @@ struct hdd_peer_stats {
  * @tx_failed: Number of failed transmissions (MPDUs)
  * @rx_mpdu_count: Number of MPDUs received from this station
  * @fcs_err_count: Number of MPDUs received from this station with an FCS error
+ * @rx_dropped_misc: RX packets dropped for unspecified reasons
+ * @bss_param: BSS parameters (dtim, beacon interval, flags)
  * @filled: bitflag of flags using the bits of &enum nl80211_sta_info to
  *  indicate the relevant values in this struct for them
  */
@@ -680,6 +683,7 @@ struct wlan_hdd_station_stats_info {
 	int8_t signal;
 	int8_t signal_avg;
 	uint8_t chains;
+	int8_t chain_signal[IEEE80211_MAX_CHAINS];
 	int8_t chain_signal_avg[IEEE80211_MAX_CHAINS];
 	struct rate_info txrate;
 	struct rate_info rxrate;
@@ -691,6 +695,8 @@ struct wlan_hdd_station_stats_info {
 	uint32_t tx_failed;
 	uint32_t rx_mpdu_count;
 	uint32_t fcs_err_count;
+	uint64_t rx_dropped_misc;
+	struct sta_bss_parameters bss_param;
 	uint64_t filled;
 };
 
@@ -1331,6 +1337,21 @@ enum hdd_wlm_latency_level {
 	HDD_WLM_LATENCY_LEVEL_ULTRALOW = 3,
 };
 
+/**
+ * struct hdd_pmsr_req - Internal state for an active PMSR request
+ * @cookie: cfg80211 request cookie
+ * @is_valid: Is the cached request valid
+ * @vdev_id: vdev id for the request
+ * @req_id: WMI request id (lower 32 bits of cookie)
+ * @nl_port_id: NL port id
+ */
+struct hdd_pmsr_req {
+	u64 cookie;
+	bool is_valid;
+	u8 vdev_id;
+	u32 req_id;
+	u32 nl_port_id;
+};
 
 /**
  * struct hdd_adapter - hdd vdev/net_device context
@@ -1352,6 +1373,19 @@ enum hdd_wlm_latency_level {
  *       wpa_supplicant then using CT Window value we need to Enable
  *       Opportunistic Power Save
  * @allow_power_save: STA/CLI powersave enable/disable from userspace
+ * @icmp_ito_restore_timer: Timer used to restore original power save
+ * parameters after inactivity
+ * @icmp_ito_changed: Boolean flag indicating whether the power save
+ * ITO (Inactivity Timeout) has been modified due to ICMP-triggered power save
+ * disable operation
+ * @icmp_ito_timer_initialized: Indicates whether the ICMP ITO restore timer
+ * has been initialized
+ * @icmp_ps_last_req_time_lock: Spinlock protecting access to
+ * @icmp_ps_last_req_time
+ * @icmp_ps_last_req_time: Timestamp (in ns) of the most recent ICMP request
+ * observed
+ * @icmp_ps_saved_ito: Stores the original power save inactivity timeout
+ * (ps_ito) prior to ICMP-triggered disable.
  * @mac_addr: Current MAC Address for the adapter
  * @mld_addr: MLD address for adapter
  * @event_flags: a bitmap of hdd_adapter_flags
@@ -1467,6 +1501,7 @@ enum hdd_wlm_latency_level {
  * @discon_link_info: link_info pointer on which post disconnect stats to be
  *                    fetched
  * @wfd_mode: WFD mode for P2P interface
+ * @pmsr_req: PMSR request context
  * @enable_active_apf_mode: Enable active APF mode flag
  * @dhcp_config_setsuspend: Enable when DHCP in progress and get setsuspend cmd
  */
@@ -1675,6 +1710,7 @@ struct hdd_adapter {
 #if defined(FEATURE_WLAN_SUPPORT_P2P_R2) || defined(FEATURE_WLAN_SUPPORT_PCC)
 	uint8_t wfd_mode;
 #endif
+	struct hdd_pmsr_req pmsr_req;
 	bool enable_active_apf_mode;
 	bool dhcp_config_setsuspend;
 };
@@ -2103,6 +2139,11 @@ struct hdd_tx_powerboost {
 };
 #endif
 
+#ifdef DRIVER_PASSTHRU_MODE
+#define WLAN_HDD_PASSTHRU_CHAN_HOP_CAP_BIT BIT(0)
+#define WLAN_HDD_PASSTHRU_AMPDU_RA_CAP_BIT BIT(1)
+#endif
+
 /**
  * struct hdd_context - hdd shared driver and psoc/device context
  * @psoc: object manager psoc context
@@ -2314,6 +2355,7 @@ struct hdd_tx_powerboost {
  *			userspace application close/abort
  * @usd_adapter: adapter on which USD frames to be forwarded to userspace
  * @tx_pb: Tx powerboost context
+ * @passthru_cap_bitmap: passthru capability bitmap
  */
 struct hdd_context {
 	struct wlan_objmgr_psoc *psoc;
@@ -2627,6 +2669,9 @@ struct hdd_context {
 #if defined(WLAN_SYSFS) && defined(WLAN_TAS_SYSFS)
 	bool tas_enabled;
 	bool tas_send_to_fw;
+#endif
+#ifdef DRIVER_PASSTHRU_MODE
+	uint64_t passthru_cap_bitmap;
 #endif
 };
 
@@ -3482,6 +3527,14 @@ QDF_STATUS hdd_stop_adapter(struct hdd_context *hdd_ctx,
 void hdd_set_station_ops(struct net_device *dev);
 
 /**
+ * hdd_wdev_get_netdev() - Safely obtain net_device from wireless_dev
+ * @wdev: Pointer to wireless_dev structure
+ *
+ * Return: Pointer to net_device or NULL
+ */
+struct net_device *hdd_wdev_get_netdev(struct wireless_dev *wdev);
+
+/**
  * wlan_hdd_get_intf_addr() - Get address for the interface
  * @hdd_ctx: Pointer to hdd context
  * @interface_type: type of the interface for which address is queried
@@ -4225,6 +4278,7 @@ struct hdd_adapter *hdd_get_adapter_by_iface_name(struct hdd_context *hdd_ctx,
  */
 struct hdd_adapter *hdd_get_adapter_by_ifindex(struct hdd_context *hdd_ctx,
 					       uint32_t if_index);
+
 
 enum phy_ch_width hdd_map_nl_chan_width(enum nl80211_chan_width ch_width);
 
@@ -5849,15 +5903,16 @@ hdd_link_switch_vdev_mac_addr_update(int32_t ieee_old_link_id,
 
 /**
  * hdd_roam_vdev_mac_addr_update() - API to update OSIF/HDD on VDEV
- * mac addr update due to roaming.
+ * mac addr during roaming.
  * @primary_vdev: VDEV undergoing roaming
  * @vdev_id: vdev ID for which the HDD MAC address needs to be updated
  * @old_self_mac: Current self link mac of VDEV
- * @new_self_mac: New self link mac of VDEV
+ * @new_self_mac: New self link mac of VDEV (may equal @old_self_mac)
  *
- * Check if both @old_self_mac and @new_self_mac are part of adapter
- * corresponding to @vdev_id. Then take necessary actions to support
- * MAC update and update DP to change link MAC address to new link's address.
+ * Always called for every link during roam sync, including links whose
+ * MAC address has not changed. Syncs vdev_mlme macaddr/linkaddr to the
+ * FW-assigned per-link MAC. When @old_self_mac != @new_self_mac, also
+ * updates DP with the new link MAC address.
  *
  * Return: QDF_STATUS
  */

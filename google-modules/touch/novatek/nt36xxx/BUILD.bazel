@@ -2,7 +2,12 @@
 
 # the Novatek NT36xxx touchscreen driver.
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_module(
     name = "nvt_touch",
@@ -38,15 +43,5 @@ ddk_module(
         "//private/google-modules/touch/common:ddk_headers",
         "//private/google-modules/touch/common:goog_touch_interface",
         "//private/google-modules/touch/common/usi:goog_usi_stylus",
-    ],
-)
-
-kernel_module_group(
-    name = "nt36xxx",
-    srcs = [
-        ":nvt_touch",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -35,17 +40,4 @@ ddk_module(
         ],
         "//conditions:default": [],
     }),
-)
-
-kernel_module_group(
-    name = "nfc",
-    srcs = [
-        ":st21nfc",
-        "//private/google-modules/nfc/ese:st33spi",
-        "//private/google-modules/nfc/ese:st54spi",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
 )

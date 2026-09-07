@@ -3,6 +3,11 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 load("//private/google-modules/display/vsi-drm/bridge/synopsys/dsi2host:dw-mipi-dsi2h-cflags.bzl", "DW_MIPI_DSI2H_COPTS")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "mipi-dsi2h",
     srcs = glob([
@@ -19,10 +24,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE=1",
-    ],
-    visibility = [
-        "//private/google-modules/display/vsi-drm:__pkg__",
-        "//private/google-modules/display/vsi-drm/verisilicon:__pkg__",
     ],
     deps = [
         "//common:all_headers_aarch64",

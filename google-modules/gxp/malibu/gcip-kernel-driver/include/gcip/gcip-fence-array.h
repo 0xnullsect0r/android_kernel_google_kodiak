@@ -70,6 +70,8 @@ void gcip_fence_array_signal_async(struct gcip_fence_array *fence_array, int err
  `struct gcip_fence_array` instance.
  *
  * See the `gcip_fence_waited{_async}` function for details.
+ *
+ * DEPRECATED: Use `gcip_fence_array_waiter_and_signaler_completed{_async}()` functions.
  */
 void gcip_fence_array_waited(struct gcip_fence_array *fence_array, enum iif_ip_type ip);
 void gcip_fence_array_waited_async(struct gcip_fence_array *fence_array, enum iif_ip_type ip);
@@ -100,6 +102,26 @@ int gcip_fence_array_submit_waiter_and_signaler(struct gcip_fence_array *in_fenc
 						struct gcip_fence_array *mid_in_fences,
 						struct gcip_fence_array *mid_out_fences,
 						enum iif_ip_type ip);
+
+/*
+ * Notifies in-fences and out-fences of the completion of waiting on in-fences and signaling
+ * out-fences.
+ *
+ * This function is only meaningful to the IIFs in the arrays.
+ *
+ * If the caller is going to notify fences in the un-sleepable context such as IRQ context, the
+ * async version should be used.
+ */
+void gcip_fence_array_waiter_and_signaler_completed(struct gcip_fence_array *in_fences,
+						    struct gcip_fence_array *out_fences,
+						    struct gcip_fence_array *mid_in_fences,
+						    struct gcip_fence_array *mid_out_fences,
+						    enum iif_ip_type ip);
+void gcip_fence_array_waiter_and_signaler_completed_async(struct gcip_fence_array *in_fences,
+							  struct gcip_fence_array *out_fences,
+							  struct gcip_fence_array *mid_in_fences,
+							  struct gcip_fence_array *mid_out_fences,
+							  enum iif_ip_type ip);
 
 /*
  * Allocates and returns the array of inter-IP fence IDs. The number of IIFs in @fence_array will
@@ -151,7 +173,6 @@ struct dma_fence *gcip_fence_array_merge_ikf(struct gcip_fence_array *fence_arra
  */
 void gcip_fence_array_iif_set_propagate_unblock(struct gcip_fence_array *fence_array);
 
-
 /*
  * Appends @fence to @fence_array.
  *
@@ -179,7 +200,6 @@ int gcip_fence_array_add_iif(struct gcip_fence_array *fence_array, struct iif_fe
  * directly.
  */
 int gcip_fence_array_add_ikf(struct gcip_fence_array *fence_array, struct dma_fence *ikf);
-
 
 /**
  * gcip_fence_array_bridge_to_iif() - Converts the array to a pure IIF fence array by bridging.

@@ -2,9 +2,10 @@
 /*
  * GXP MCU telemetry support
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-memory.h>
 #include <gcip/gcip-telemetry.h>
 
@@ -22,7 +23,8 @@ int gxp_mcu_telemetry_init(struct gxp_mcu *mcu)
 	if (ret)
 		return ret;
 
-	ret = gcip_telemetry_init(tel_log, GCIP_TELEMETRY_TYPE_LOG, mcu->gxp->dev);
+	ret = gcip_telemetry_init(tel_log, GCIP_TELEMETRY_TYPE_LOG, mcu->gxp->dev, mcu->event_mgr,
+				  GCIP_TELEMETRY_TYPE_LOG);
 	if (ret)
 		goto free_log_mem;
 
@@ -30,7 +32,8 @@ int gxp_mcu_telemetry_init(struct gxp_mcu *mcu)
 	if (ret)
 		goto uninit_log;
 
-	ret = gcip_telemetry_init(tel_trace, GCIP_TELEMETRY_TYPE_TRACE, mcu->gxp->dev);
+	ret = gcip_telemetry_init(tel_trace, GCIP_TELEMETRY_TYPE_TRACE, mcu->gxp->dev,
+				  mcu->event_mgr, GCIP_TELEMETRY_TYPE_TRACE);
 	if (ret)
 		goto free_trace_mem;
 

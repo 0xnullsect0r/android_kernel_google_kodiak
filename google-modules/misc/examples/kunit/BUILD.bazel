@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "kunit_example",
     srcs = [
@@ -11,7 +16,6 @@ ddk_module(
     out = "kunit_example.ko",
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//visibility:public"],
     deps = [
         "//common:all_headers_aarch64",
     ],
@@ -27,7 +31,6 @@ ddk_module(
     defconfig = "test/kunit_defconfig",
     kconfig = "test/Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//visibility:public"],
     deps = [
         ":kunit_example",
         "//common:all_headers_aarch64",

@@ -2,12 +2,10 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "soc_google.kconfig",
@@ -79,12 +77,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/dpa:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
     deps = [
         ":goog-mba-aggr",
         "//common:all_headers_aarch64",
@@ -130,14 +122,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/dpa:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
     ],
     deps = [
         ":google_gtc",
@@ -185,10 +169,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
     ],
     deps = [
         ":goog-mba-aggr",
@@ -328,13 +308,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/perf/thermal:__subpackages__",
-        "//private/google-modules/powervr:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",

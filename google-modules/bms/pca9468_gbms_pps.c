@@ -18,6 +18,8 @@
 #include <linux/of_device.h>
 #include <linux/regmap.h>
 
+#include <misc/logbuffer.h>
+
 #include "pca9468_regs.h"
 #include "pca9468_charger.h"
 

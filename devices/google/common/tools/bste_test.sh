@@ -5,6 +5,7 @@ set -e
 
 REMOTE_DIR="/data/local/tmp/bste_test_package"
 REMOTE_TAR="${REMOTE_DIR}.tar.gz"
+REMOTE_BIN="${REMOTE_DIR}/bste_test"
 
 usage() {
   cat <<EOF
@@ -29,7 +30,7 @@ Examples:
 EOF
 }
 
-has_detach_option() {
+_has_detach_option() {
   local arg
   for arg in "$@"; do
     if [[ "${arg}" == "-d" || "${arg}" == "--detach" ]]; then
@@ -39,47 +40,58 @@ has_detach_option() {
   return 1
 }
 
+_now() {
+  echo "${EPOCHREALTIME%.*}"
+}
+
+_is_device_or_recovery() {
+  local state
+  state="$(adb get-state 2>/dev/null)" || true
+  case "${state}" in
+    device|recovery)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_ensure_root() {
+  # With old adb version, adb root might timeout in recovery mode.
+  timeout 3 adb root || _is_device_or_recovery
+}
+
 auto_reattach() {
-  local remote_bin="$1"
-  local timeout="$2"
-  local start_time
-  start_time="$(date +%s)"
-  local end_time="$(( start_time + timeout ))"
+  local timeout="$1"
 
   echo ">>> Connection lost. Starting auto-reattach loop (timeout: ${timeout}s)..."
 
   while true; do
+    local start_time
+    start_time="$(_now)"
+    local end_time="$(( start_time + timeout ))"
+
     local now
-    now="$(date +%s)"
-    if (( now >= end_time )); then
-      echo "ERROR: Re-attach timed out after ${timeout} seconds." >&2
-      exit 1
-    fi
+    local remaining
+    local next_report_remaining="${timeout}"
+    until _is_device_or_recovery && _ensure_root; do
+      now="$(_now)"
+      remaining="$(( end_time - now ))"
+      if (( remaining <= 0 )); then
+        echo "ERROR: Re-attach timed out after ${timeout} seconds." >&2
+        exit 1
+      fi
 
-    local remaining="$(( end_time - now ))"
-    echo ">>> Trying to reconnect... (${remaining}s remaining)"
+      if (( remaining <= next_report_remaining )); then
+        echo ">>> Trying to reconnect... (${remaining}s remaining)"
+        next_report_remaining="$(( next_report_remaining - 10 ))"
+      fi
 
-    local wait_timeout=5
-    if (( wait_timeout > remaining )); then
-      wait_timeout="${remaining}"
-    fi
-
-    if ! timeout "${wait_timeout}" adb wait-for-device; then
-      continue
-    fi
-
-    adb root || continue
-    if ! timeout "${wait_timeout}" adb wait-for-device; then
-      continue
-    fi
-
-    # Successfully reconnected. Reset the timeout window for any future drops.
-    start_time="$(date +%s)"
-    end_time="$(( start_time + timeout ))"
+      sleep 0.5
+    done
 
     echo ">>> Device reconnected. Attaching to session..."
     set +e
-    adb shell "${remote_bin}" attach
+    adb shell "${REMOTE_BIN}" attach
     local ret=$?
     set -e
 
@@ -136,15 +148,14 @@ main() {
     exit 1
   fi
 
+  echo ">>> Acquiring device root access..."
+  _ensure_root
+
   if [[ -n "${package}" ]]; then
     if [[ ! -f "${package}" ]]; then
       echo "ERROR: Package file not found: ${package}" >&2
       exit 1
     fi
-
-    echo ">>> Acquiring device root access..."
-    adb root
-    adb wait-for-device
 
     echo ">>> Preparing remote directory: ${REMOTE_DIR}..."
     adb shell "rm -rf '${REMOTE_DIR}' '${REMOTE_TAR}' && mkdir -p '${REMOTE_DIR}'"
@@ -157,27 +168,23 @@ main() {
     adb shell sync
 
     echo ">>> Installation completed successfully!"
-    echo "----------------------------------------------------------------------"
   fi
+  echo "----------------------------------------------------------------------"
 
   local cmd="$1"
   shift
 
-  local remote_bin="${REMOTE_DIR}/bste_test"
-  adb root
-  adb wait-for-device
-
-  if [[ "${cmd}" == "run" ]] && ! has_detach_option "$@"; then
+  if [[ "${cmd}" == "run" ]] && ! _has_detach_option "$@"; then
     set +e
-    adb shell "${remote_bin}" "run" "$@"
+    adb shell "${REMOTE_BIN}" "run" "$@"
     local ret=$?
     set -e
 
     if (( ret != 0 )) && (( ret != 130 )); then
-      auto_reattach "${remote_bin}" "${timeout}"
+      auto_reattach "${timeout}"
     fi
   else
-    adb shell "${remote_bin}" "${cmd}" "$@"
+    adb shell "${REMOTE_BIN}" "${cmd}" "$@"
   fi
 }
 

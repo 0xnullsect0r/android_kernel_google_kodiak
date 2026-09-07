@@ -290,6 +290,9 @@ static void aoc_stop_work_handler(struct work_struct *work)
 		return;
 	}
 
+	if (!alsa_stream->dev)
+		goto unlock;
+
 	if (alsa_stream->running) {
 		err = aoc_audio_stop(alsa_stream);
 		if (err != 0) {
@@ -301,6 +304,7 @@ static void aoc_stop_work_handler(struct work_struct *work)
 
 	aoc_timer_stop(alsa_stream);
 	aoc_compr_prepare(alsa_stream);
+unlock:
 	mutex_unlock(&chip->audio_mutex);
 	return;
 }
@@ -407,16 +411,23 @@ static int aoc_compr_playback_open(struct snd_compr_stream *cstream)
 
 	return 0;
 out:
-	kfree(alsa_stream);
 	if (dev) {
+		aoc_cancel_service_work_sync(dev);
+		/* To avoid UAF in free_aoc_service_work if queued */
+		if (alsa_stream)
+			alsa_stream->dev = NULL;
 		free_aoc_audio_service(rtd->dai_link->name, dev);
 		free_aoc_audio_service(AOC_COMPR_OFFLOAD_EOF_SERVICE, dev_eof);
-		dev = NULL;
-		dev_eof = NULL;
 	}
 	chip->alsa_stream[idx] = NULL;
 	chip->opened &= ~(1 << idx);
 	mutex_unlock(&chip->audio_mutex);
+
+	if (alsa_stream) {
+		cancel_work_sync(&alsa_stream->free_aoc_service_work);
+		kfree(alsa_stream);
+		runtime->private_data = NULL;
+	}
 
 	pr_err("pcm open err=%d\n", err);
 	return err;
@@ -429,14 +440,22 @@ static int aoc_compr_playback_free(struct snd_compr_stream *cstream)
 	struct snd_compr_runtime *runtime = cstream->runtime;
 
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
-	struct aoc_chip *chip = alsa_stream->chip;
+	struct aoc_chip *chip;
 	int err;
 	bool mutex_locked = true;
 
 	pr_debug("dai name %s, cstream %pK\n", rtd->dai_link->name, cstream);
+
+	if (!alsa_stream)
+		return 0;
+
+	chip = alsa_stream->chip;
+
 	aoc_timer_stop_sync(alsa_stream);
+	aoc_cancel_service_work_sync(alsa_stream->dev);
 
 	cancel_work_sync(&alsa_stream->free_aoc_service_work);
+
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		pr_err("ERR: interrupted while waiting for lock\n");
 		mutex_locked = false;
@@ -633,6 +652,12 @@ int aoc_compr_get_position(struct aoc_alsa_stream *alsa_stream, uint64_t *positi
 	if (aoc_compr_offload_get_io_samples(alsa_stream, &current_sample) < 0) {
 		pr_err("%s: failed to get playback samples\n", __func__);
 		return -EINVAL;
+	}
+
+	if (current_sample < alsa_stream->compr_pcm_io_sample_base) {
+		pr_warn("%s: current_sample=%llu base=%llu\n", __func__,
+			current_sample, alsa_stream->compr_pcm_io_sample_base);
+		current_sample = alsa_stream->compr_pcm_io_sample_base;
 	}
 
 	*position = (current_sample - alsa_stream->compr_pcm_io_sample_base) *

@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "pixelmd_headers",
     hdrs = [
@@ -27,7 +32,6 @@ ddk_module(
     ],
     out = "pixelmd.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":pixelmd_headers",
         "//common:all_headers_aarch64",
@@ -41,7 +45,6 @@ ddk_module(
     ],
     out = "pixelmd_kunit_test.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":pixelmd",
         ":pixelmd_headers",

@@ -311,7 +311,7 @@ static int __init radio_bridge_init(void)
 
 	radio_bridge_kobj = kobject_create_and_add("radio_bridge", kernel_kobj);
 	if (!radio_bridge_kobj) {
-		ret = PTR_ERR(radio_bridge_kobj);
+		ret = -ENOMEM;
 		pr_err("kobject_create_and_add() failed (rc: %d)\n", ret);
 		goto exit;
 	}

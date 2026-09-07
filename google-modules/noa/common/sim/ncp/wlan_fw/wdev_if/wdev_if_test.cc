@@ -14,7 +14,7 @@ namespace
 TEST(WdevIfTest, InitWithInvalidChipId)
 {
 	WdevIf wdev_if;
-	ASSERT_EQ(WdevIfInit(&wdev_if, kWlanDeviceChipIdEnd, nullptr), -ENODEV);
+	ASSERT_EQ(WdevIfInit(&wdev_if, kWlanDeviceChipIdEnd, 0, nullptr), -ENODEV);
 	EXPECT_EQ(WdevIfGetCmplValidateDescriptorMethod(&wdev_if),
 		  kWdevCmplDescCoherenceValidationMethodNone);
 	EXPECT_EQ(WdevIfGetPostValidateDescriptorMethod(&wdev_if),

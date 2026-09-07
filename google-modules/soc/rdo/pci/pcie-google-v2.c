@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright 2024 Google LLC
+ * Copyright 2024-2026 Google LLC
  */
 
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
+#include <linux/cleanup.h>
 #include <linux/pci.h>
 #include <linux/pci-pwrctrl.h>
 #include <linux/pcie_google_if.h>
@@ -171,6 +173,50 @@ static void google_pcie_walk_bus(struct google_pcie *gpcie,
 	pci_walk_bus(gpcie->pci->pp.bridge->bus, cb, NULL);
 }
 
+/**
+ * google_pcie_hold_bus_rpm - Prevent runtime and system suspend for the bus
+ * @gpcie: PCIe controller state
+ * @ws: Wakeup source to prevent system suspend
+ * @flag: Boolean flag to track the hold state
+ *
+ * Take a runtime PM reference for all devices on the bus to prevent them from
+ * suspending during sensitive operations (like reset or recovery). Also
+ * activates the provided wakeup source to prevent the entire system from
+ * entering sleep.
+ *
+ * Callers MUST guarantee strict macro-level serialization of this function to
+ * prevent TOCTOU races with the PM core. Do not call concurrently for the same flag.
+ */
+static void google_pcie_hold_bus_rpm(struct google_pcie *gpcie, struct wakeup_source *ws,
+				     bool *flag)
+{
+	if (*flag)
+		return;
+
+	__pm_stay_awake(ws);
+	google_pcie_walk_bus(gpcie, pci_pm_runtime_get_sync);
+	google_pcie_walk_bus(gpcie, pci_pm_set_d3cold);
+	*flag = true;
+}
+
+/**
+ * google_pcie_drop_bus_rpm - Release PM and system-sleep holds for the bus
+ * @gpcie: PCIe controller state
+ * @ws: Wakeup source to release
+ * @flag: Boolean flag tracking the hold state
+ */
+static void google_pcie_drop_bus_rpm(struct google_pcie *gpcie, struct wakeup_source *ws,
+				     bool *flag)
+{
+	if (!*flag)
+		return;
+
+	*flag = false;
+	google_pcie_walk_bus(gpcie, pci_pm_set_d0);
+	google_pcie_walk_bus(gpcie, pci_pm_runtime_put);
+	__pm_relax(ws);
+}
+
 static void google_pcie_set_lp_clock_switch_mode(struct google_pcie *gpcie)
 {
 	/*
@@ -331,9 +377,6 @@ void google_pcie_hot_reset(struct google_pcie *gpcie)
 	writel(val, gpcie->sii_base + PE_GEN_CTRL_3);
 }
 
-static int google_pci_msi_set_affinity(struct irq_data *d,
-				   const struct cpumask *mask, bool force);
-
 static int google_pcie_add_bus(struct pci_bus *bus)
 {
 	struct dw_pcie *pci;
@@ -348,7 +391,6 @@ static int google_pcie_add_bus(struct pci_bus *bus)
 
 	gpcie->domain = bus->domain_nr;
 	pp = &pci->pp;
-	pp->msi_irq_chip->irq_set_affinity = google_pci_msi_set_affinity;
 
 	/*
 	 * Make google_pcie_*() APIs available to clients as soon as (but no
@@ -384,20 +426,19 @@ static u32 google_pcie_read_dbi(struct dw_pcie *pci, void __iomem *base,
 				u32 reg, size_t size)
 {
 	struct google_pcie *gpcie = dev_get_drvdata(pci->dev);
-	unsigned long flags;
-	u32 val;
 
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	if (!gpcie->powered_on) {
-		spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
-		dev_err_ratelimited(gpcie->dev,
-				    "Preventing invalid attempt to read DBI while powered down");
-		return U32_MAX;
+	scoped_guard(spinlock_irqsave, &gpcie->power_on_lock) {
+		if (gpcie->powered_on) {
+			u32 val;
+
+			dw_pcie_read(base + reg, size, &val);
+			return val;
+		}
 	}
-	dw_pcie_read(base + reg, size, &val);
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
 
-	return val;
+	dev_err_ratelimited(gpcie->dev,
+			    "Preventing invalid attempt to read DBI while powered down");
+	return U32_MAX;
 }
 
 static int google_pcie_rd_own_conf(struct pci_bus *bus, unsigned int devfn,
@@ -417,17 +458,16 @@ static void google_pcie_write_dbi(struct dw_pcie *pci, void __iomem *base,
 				  u32 reg, size_t size, u32 val)
 {
 	struct google_pcie *gpcie = dev_get_drvdata(pci->dev);
-	unsigned long flags;
 
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	if (!gpcie->powered_on) {
-		spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
-		dev_err_ratelimited(gpcie->dev,
-				    "Preventing invalid attempt to write DBI while powered down");
-		return;
+	scoped_guard(spinlock_irqsave, &gpcie->power_on_lock) {
+		if (gpcie->powered_on) {
+			dw_pcie_write(base + reg, size, val);
+			return;
+		}
 	}
-	dw_pcie_write(base + reg, size, val);
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
+
+	dev_err_ratelimited(gpcie->dev,
+			    "Preventing invalid attempt to write DBI while powered down");
 }
 
 static int google_pcie_wr_own_conf(struct pci_bus *bus, unsigned int devfn,
@@ -526,17 +566,14 @@ static u32 google_pcie_get_link_state(struct google_pcie *gpcie)
 	u32 link_dbg;
 	u32 pm_state;
 	u32 ltssm_state;
-	unsigned long flags;
 
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	if (!gpcie->powered_on) {
-		spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
-		return L2;
+	scoped_guard(spinlock_irqsave, &gpcie->power_on_lock) {
+		if (!gpcie->powered_on)
+			return L2;
+
+		pm_state = readl(gpcie->sii_base + PE_PM_STS);
+		link_dbg = readl(gpcie->sii_base + PE_LINK_DBG_2);
 	}
-
-	pm_state = readl(gpcie->sii_base + PE_PM_STS);
-	link_dbg = readl(gpcie->sii_base + PE_LINK_DBG_2);
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
 
 	ltssm_state = LTSSM_STATE(link_dbg);
 	if (ltssm_state == DW_PCIE_LTSSM_L0)
@@ -657,17 +694,14 @@ static const struct dw_pcie_host_ops google_pcie_host_ops = {
 static int google_pcie_link_up(struct dw_pcie *pci)
 {
 	struct google_pcie *gpcie = dev_get_drvdata(pci->dev);
-	unsigned long flags;
 	u32 ctl_status;
 
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	if (!gpcie->powered_on) {
-		spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
-		return 0;
-	}
+	scoped_guard(spinlock_irqsave, &gpcie->power_on_lock) {
+		if (!gpcie->powered_on)
+			return 0;
 
-	ctl_status = readl(gpcie->sii_base + PE_LINK_DBG_2);
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
+		ctl_status = readl(gpcie->sii_base + PE_LINK_DBG_2);
+	}
 
 	return (((ctl_status & LINK_UP) == LINK_UP) &&
 		((google_pcie_get_link_state(gpcie)) != L2));
@@ -973,7 +1007,7 @@ static int __google_pcie_rc_poweron(struct google_pcie *gpcie)
 
 	trace_pci_reset_complete(gpcie->dev);
 
-	gpcie->powered_on = true;
+	google_pcie_set_powered_on(gpcie, true);
 
 	ret = phy_init(gpcie->phy);
 	if (ret < 0) {
@@ -1070,12 +1104,6 @@ static int __google_pcie_rc_poweron(struct google_pcie *gpcie)
 	dev_dbg(gpcie->dev, "poweron success\n");
 	device_wakeup_enable(gpcie->dev);
 
-	if (gpcie->error_recovery_walk_rpm) {
-		gpcie->error_recovery_walk_rpm = false;
-		google_pcie_walk_bus(gpcie, pci_pm_runtime_put);
-		__pm_relax(gpcie->recovery_ws);
-	}
-
 	return 0;
 
 clkreq_idle:
@@ -1089,9 +1117,7 @@ phy_exit:
 reset:
 	gpcie->current_link_speed = 0;
 	gpcie->current_link_width = 0;
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	gpcie->powered_on = false;
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
+	google_pcie_set_powered_on(gpcie, false);
 	writel(0, gpcie->top_base + PCIEX_PERST_REG);
 
 	return ret;
@@ -1118,17 +1144,17 @@ static int __google_pcie_rc_poweroff(struct google_pcie *gpcie)
 	gpcie->current_link_speed = 0;
 	gpcie->current_link_width = 0;
 	google_pcie_init_fsm_tracker(gpcie);
-	if (!gpcie->in_link_down && !gpcie->in_cpl_timeout) {
+	if (!google_pcie_in_recovery(gpcie)) {
 		google_pcie_send_pme_turn_off(gpcie);
 		google_pcie_wait_for_state(gpcie, L2);
 		/* Give EP some time to wind down after sending L23READY */
 		usleep_range(1000, 1200);
 		dev_info(gpcie->dev, "Link down\n");
-	} else if (gpcie->in_cpl_timeout) {
-		gpcie->in_cpl_timeout = false;
+	} else if (test_and_clear_bit(GPCIE_IN_CPL_TIMEOUT,
+				      &gpcie->recovery_flags)) {
 		google_pcie_check_pending_txns(gpcie);
 	}
-	gpcie->in_link_down = false;
+	clear_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags);
 
 	google_pcie_assert_perst_n(gpcie, true);
 	/*
@@ -1148,9 +1174,7 @@ static int __google_pcie_rc_poweroff(struct google_pcie *gpcie)
 	 * Thereby, pcie registers are not accessible.
 	 * Therefore, mark pcie power off unconditionally.
 	 */
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	gpcie->powered_on = false;
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
+	google_pcie_set_powered_on(gpcie, false);
 
 	dev_dbg(gpcie->dev, "asserting perst reset\n");
 	writel(0, gpcie->top_base + PCIEX_PERST_REG);
@@ -1210,6 +1234,8 @@ static int google_pcie_reset_root_port(struct pci_host_bridge *bridge,
  */
 static int google_pcie_perst_assert(struct google_pcie *gpcie, bool assert)
 {
+	struct pci_bus *bus = gpcie->pci->pp.bridge->bus;
+	struct pci_dev *pci_dev;
 	int ret = 0;
 
 	ret = pm_runtime_resume_and_get(gpcie->dev);
@@ -1223,21 +1249,19 @@ static int google_pcie_perst_assert(struct google_pcie *gpcie, bool assert)
 
 	if (assert) {
 		/*
-		 * pci_pm_runtime_get_sync/pci_pm_runtime_put:
-		 * We don't want the child devices to runtime-suspend during
-		 * a power-off/power-on sequence
+		 * Prevent runtime-suspend and system-suspend of the bus and its
+		 * children during a power-off/power-on sequence.
 		 *
-		 * __pm_stay_awake/__relax:
-		 * We don't want system-suspend during
-		 * a power-off/power-on sequence
+		 * Note: This executes safely outside of link_lock because we rely
+		 * on the pwrctrl framework to serialize these operations.
 		 */
-		if (!gpcie->perst_walk_rpm) {
-			__pm_stay_awake(gpcie->perst_ws);
-			google_pcie_walk_bus(gpcie, pci_pm_runtime_get_sync);
-			google_pcie_walk_bus(gpcie, pci_pm_set_d3cold);
-			gpcie->perst_walk_rpm = true;
-		}
+		google_pcie_hold_bus_rpm(gpcie, gpcie->perst_ws, &gpcie->perst_walk_rpm);
+
 		scoped_guard(mutex, &gpcie->link_lock) {
+			if (!google_pcie_in_recovery(gpcie)) {
+				for_each_pci_bridge(pci_dev, bus)
+					pci_save_state(pci_dev);
+			}
 
 			ret = __google_pcie_rc_poweroff(gpcie);
 			if (ret)
@@ -1248,7 +1272,6 @@ static int google_pcie_perst_assert(struct google_pcie *gpcie, bool assert)
 		}
 	} else {
 		scoped_guard(mutex, &gpcie->link_lock) {
-
 			/* pwrctrl deasserts PERST when power is ready. */
 			gpcie->power_ready = true;
 
@@ -1256,12 +1279,24 @@ static int google_pcie_perst_assert(struct google_pcie *gpcie, bool assert)
 			if (ret)
 				dev_err(gpcie->dev, "Failed to power on: %d\n", ret);
 		}
-		if (gpcie->perst_walk_rpm) {
-			gpcie->perst_walk_rpm = false;
-			google_pcie_walk_bus(gpcie, pci_pm_set_d0);
-			google_pcie_walk_bus(gpcie, pci_pm_runtime_put);
-			__pm_relax(gpcie->perst_ws);
+
+		if (!ret) {
+			for_each_pci_bridge(pci_dev, bus) {
+				/* restore state saved when powering off */
+				pci_restore_state(pci_dev);
+				/*
+				 * save a good copy of pci state for recovery
+				 * The perst path is called when powering on,
+				 * we keep the good copy here.
+				 */
+				pci_save_state(pci_dev);
+			}
+			scoped_guard(mutex, &gpcie->rpm_walk_lock)
+				google_pcie_drop_bus_rpm(gpcie, gpcie->recovery_ws,
+							 &gpcie->error_recovery_walk_rpm);
 		}
+
+		google_pcie_drop_bus_rpm(gpcie, gpcie->perst_ws, &gpcie->perst_walk_rpm);
 	}
 
 	pm_runtime_put(gpcie->dev);
@@ -1668,6 +1703,8 @@ EXPORT_SYMBOL_GPL(google_pcie_dump_debug);
 static void google_pcie_do_recovery(struct google_pcie *gpcie,
 				    enum google_pcie_callback_type cb_type)
 {
+	struct pci_bus *bus = gpcie->pci->pp.bridge->bus;
+	struct pci_dev *pci_dev;
 	google_pcie_create_devcoredump(gpcie);
 
 	/*
@@ -1681,35 +1718,30 @@ static void google_pcie_do_recovery(struct google_pcie *gpcie,
 
 	if (gpcie->cb_func) {
 		/*
-		 * Ensure devices don't try to suspend again during recovery.
+		 * Prevent runtime-suspend and system-suspend of the bus and its
+		 * children during recovery.
 		 *
 		 * NB: this imitates pci_host_handle_link_down() ->
 		 * pcie_do_recovery().
-		 *
-		 * pci_pm_runtime_get_sync/pci_pm_runtime_put:
-		 * We don't want the child devices to runtime-suspend during
-		 * a power-off/power-on sequence
-		 *
-		 * __pm_stay_awake/__relax:
-		 * We don't want system-suspend during
-		 * a power-off/power-on sequence
 		 */
-		mutex_lock(&gpcie->link_lock);
-		if (!gpcie->error_recovery_walk_rpm) {
-			__pm_stay_awake(gpcie->recovery_ws);
-			google_pcie_walk_bus(gpcie,
-					pci_pm_runtime_get_sync);
-			gpcie->error_recovery_walk_rpm = true;
-		}
-		mutex_unlock(&gpcie->link_lock);
+		scoped_guard(mutex, &gpcie->rpm_walk_lock)
+			google_pcie_hold_bus_rpm(gpcie, gpcie->recovery_ws,
+						 &gpcie->error_recovery_walk_rpm);
 
 		dev_dbg(gpcie->dev, "Invoking registered callback: %d\n",
 			cb_type);
 		gpcie->cb_func(cb_type, gpcie->cb_priv);
-	} else {
-		struct pci_bus *bus = gpcie->pci->pp.bridge->bus;
-		struct pci_dev *pci_dev;
 
+		/*
+		 * restore the latest good state for customized cb_func()
+		 * Setting state_saved to true is a workaround to re-use the
+		 * previous saved one.
+		 */
+		for_each_pci_bridge(pci_dev, bus) {
+			pci_dev->state_saved = true;
+			pci_restore_state(pci_dev);
+		}
+	} else {
 		__pm_stay_awake(gpcie->recovery_ws);
 
 		for_each_pci_bridge(pci_dev, bus)
@@ -1719,24 +1751,21 @@ static void google_pcie_do_recovery(struct google_pcie *gpcie,
 	}
 }
 
-static irqreturn_t google_pcie_cpl_timeout_thread(int irq, void *data)
+static void google_pcie_cpl_timeout_work_func(struct work_struct *work)
 {
-	struct google_pcie *gpcie = (struct google_pcie *)data;
+	struct google_pcie *gpcie = container_of(work, struct google_pcie, cpl_timeout_work);
 	unsigned long flags = 0;
 
-	mutex_lock(&gpcie->link_lock);
-	gpcie->in_cpl_timeout = true;
-	mutex_unlock(&gpcie->link_lock);
+	set_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags);
 
-	dev_info(gpcie->dev, "Starting cpl_timeout work\n");
+	dev_info(gpcie->dev, "Starting cpl_timeout recovery\n");
 
 	spin_lock_irqsave(&gpcie->link_stats_lock, flags);
 	gpcie->link_stats.complete_timeout_irq_count++;
 	spin_unlock_irqrestore(&gpcie->link_stats_lock, flags);
 
 	google_pcie_do_recovery(gpcie, GPCIE_CB_CPL_TIMEOUT);
-
-	return IRQ_HANDLED;
+	enable_irq(gpcie->cpl_timeout_irq);
 }
 
 static irqreturn_t google_pcie_cpl_timeout_handler(int irq, void *data)
@@ -1744,11 +1773,16 @@ static irqreturn_t google_pcie_cpl_timeout_handler(int irq, void *data)
 	struct google_pcie *gpcie = (struct google_pcie *)data;
 	dev_dbg(gpcie->dev, "Starting cpl_timeout handler\n");
 
-	return IRQ_WAKE_THREAD;
+	disable_irq_nosync(irq);
+	queue_work(gpcie->recovery_wq, &gpcie->cpl_timeout_work);
+	return IRQ_HANDLED;
 }
 
 static int gpcie_log_aer(struct pci_dev *dev, void *unused)
 {
+	struct aer_capability_regs aer_regs;
+	u32 *aer_regs_buf = (u32 *)&aer_regs;
+	int i, read_cnt = sizeof(struct aer_capability_regs) / sizeof(u32);
 	int aer = dev->aer_cap;
 	u32 status, mask;
 	u16 status16;
@@ -1756,15 +1790,16 @@ static int gpcie_log_aer(struct pci_dev *dev, void *unused)
 	if (!aer)
 		return 0;
 
-	pci_read_config_dword(dev, aer + PCI_ERR_COR_STATUS, &status);
-	pci_read_config_dword(dev, aer + PCI_ERR_COR_MASK, &mask);
+	for (i = 0; i < read_cnt; i++)
+		pci_read_config_dword(dev, aer + (i * sizeof(u32)), &aer_regs_buf[i]);
+
+	status = aer_regs.cor_status;
+	mask = aer_regs.cor_mask;
 
 	if (!PCI_POSSIBLE_ERROR(status) && !PCI_POSSIBLE_ERROR(mask) && (status & ~mask)) {
 		struct pci_driver *driver;
 
-		dev_info_ratelimited(&dev->dev,
-				     "AER correctable error: status=%#010x/mask=%#010x\n",
-				     status, mask);
+		pci_print_aer(dev, AER_CORRECTABLE, &aer_regs);
 
 		device_lock(&dev->dev);
 		driver = dev->driver;
@@ -1775,12 +1810,15 @@ static int gpcie_log_aer(struct pci_dev *dev, void *unused)
 		pci_write_config_dword(dev, aer + PCI_ERR_COR_STATUS, status);
 	}
 
-	pci_read_config_dword(dev, aer + PCI_ERR_UNCOR_STATUS, &status);
-	pci_read_config_dword(dev, aer + PCI_ERR_UNCOR_MASK, &mask);
+	status = aer_regs.uncor_status;
+	mask = aer_regs.uncor_mask;
 
 	if (!PCI_POSSIBLE_ERROR(status) && !PCI_POSSIBLE_ERROR(mask) && (status & ~mask)) {
-		dev_info(&dev->dev, "AER uncorrectable error: status=%#010x/mask=%#010x\n",
-			 status, mask);
+		if (status & PCI_ERR_ROOT_FATAL_RCV)
+			pci_print_aer(dev, AER_FATAL, &aer_regs);
+		else
+			pci_print_aer(dev, AER_NONFATAL, &aer_regs);
+
 		pci_write_config_dword(dev, aer + PCI_ERR_UNCOR_STATUS, status);
 	}
 
@@ -1791,32 +1829,33 @@ static int gpcie_log_aer(struct pci_dev *dev, void *unused)
 	return 0;
 }
 
-static irqreturn_t google_pcie_aggr_err_thread(int irq, void *data)
+static void google_pcie_aggr_err_work_func(struct work_struct *work)
 {
-	struct google_pcie *gpcie = (struct google_pcie *)data;
+	struct google_pcie *gpcie = container_of(work, struct google_pcie, aggr_err_work);
 	struct pci_bus *bus = gpcie->pci->pp.bridge->bus;
 	struct pci_dev *pci_dev;
 	u32 val;
 
-	dev_dbg(gpcie->dev, "Starting NF/F/CORR work\n");
+	dev_dbg(gpcie->dev, "Starting NF/F/CORR recovery\n");
 
 	val = readl(gpcie->sii_base + PE_ERR_INT_STS);
 	writel(val, gpcie->sii_base + PE_ERR_INT_STS);
 
 	if (!(val & (SEND_NF_ERR_STS | SEND_F_ERR_STS | SEND_CORR_ERR_STS))) {
 		dev_warn(gpcie->dev, "Missing NF/F/CORR status: %#010x\n", val);
-		return IRQ_NONE;
+		goto out;
 	}
 
 	if (val & SEND_NF_ERR_STS) {
 		val = dw_pcie_readl_dbi(gpcie->pci, gpcie->aer + PCI_ERR_UNCOR_STATUS);
 		if (val & PCI_ERR_UNC_COMP_TIME) {
-			dev_info(gpcie->dev, "Starting cpl_timeout work\n");
-
-			mutex_lock(&gpcie->link_lock);
-			gpcie->in_cpl_timeout = true;
-			mutex_unlock(&gpcie->link_lock);
-
+			/*
+			 * Fallback: On some platforms (like Malibu), there is no dedicated
+			 * CPL timeout interrupt, and it is routed through the aggregate
+			 * error interrupt instead.
+			 */
+			dev_info(gpcie->dev, "Starting cpl_timeout recovery\n");
+			set_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags);
 			google_pcie_do_recovery(gpcie, GPCIE_CB_CPL_TIMEOUT);
 		}
 	}
@@ -1825,8 +1864,8 @@ static irqreturn_t google_pcie_aggr_err_thread(int irq, void *data)
 		gpcie_log_aer(pci_dev, NULL);
 		pci_walk_bus(bus, gpcie_log_aer, NULL);
 	}
-
-	return IRQ_HANDLED;
+out:
+	enable_irq(gpcie->aggr_err_irq);
 }
 
 static irqreturn_t google_pcie_aggr_err_int_handler(int irq, void *data)
@@ -1841,35 +1880,35 @@ static irqreturn_t google_pcie_aggr_err_int_handler(int irq, void *data)
 
 	dev_dbg(gpcie->dev, "Starting NF/F/CORR handler\n");
 
-	return IRQ_WAKE_THREAD;
+	disable_irq_nosync(irq);
+	queue_work(gpcie->recovery_wq, &gpcie->aggr_err_work);
+	return IRQ_HANDLED;
 }
 
-static irqreturn_t google_pcie_link_down_thread(int irq, void *data)
+static void google_pcie_link_down_work_func(struct work_struct *work)
 {
-	struct google_pcie *gpcie = (struct google_pcie *)data;
+	struct google_pcie *gpcie = container_of(work, struct google_pcie, link_down_work);
 	unsigned long flags = 0;
 
-	dev_info(gpcie->dev, "Starting link_down thread\n");
+	dev_info(gpcie->dev, "Starting link_down recovery\n");
 
 	spin_lock_irqsave(&gpcie->link_up_lock, flags);
 	if (!gpcie->is_link_up) {
 		dev_warn(gpcie->dev, "Unexpected link down event when link is not up\n");
 		spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
-		return IRQ_HANDLED;
+		enable_irq(gpcie->link_down_irq);
+		return;
 	}
 	spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
 
-	mutex_lock(&gpcie->link_lock);
-	gpcie->in_link_down = true;
-	mutex_unlock(&gpcie->link_lock);
+	set_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags);
 
 	spin_lock_irqsave(&gpcie->link_stats_lock, flags);
 	gpcie->link_stats.link_down_irq_count++;
 	spin_unlock_irqrestore(&gpcie->link_stats_lock, flags);
 
 	google_pcie_do_recovery(gpcie, GPCIE_CB_LINK_DOWN);
-
-	return IRQ_HANDLED;
+	enable_irq(gpcie->link_down_irq);
 }
 
 static irqreturn_t google_pcie_link_down_handler(int irq, void *data)
@@ -1877,7 +1916,9 @@ static irqreturn_t google_pcie_link_down_handler(int irq, void *data)
 	struct google_pcie *gpcie = (struct google_pcie *)data;
 	dev_info(gpcie->dev, "Starting link_down handler\n");
 
-	return IRQ_WAKE_THREAD;
+	disable_irq_nosync(irq);
+	queue_work(gpcie->recovery_wq, &gpcie->link_down_work);
+	return IRQ_HANDLED;
 }
 
 static const char * const link_state_names[] = {
@@ -2107,140 +2148,30 @@ static void google_pcie_init_genpd(struct google_pcie *gpcie)
 	dev_pm_genpd_add_notifier(dev, &gpcie->top_nb);
 }
 
-/*
- * The algo here honor if there is any intersection of mask of
- * the existing msi vectors and the requesting msi vector. So we
- * could handle both narrow (1 bit set mask) and wide (0xffff...)
- * cases, return -EINVAL and reject the request if the result of
- * cpumask is empty, otherwise return 0 and have the calculated
- * result on the mask_to_check to pass down to the irq_chip.
- */
-static int google_pci_check_mask_compatibility(struct dw_pcie_rp *pp,
-					   unsigned long msi_irq_index,
-					   unsigned long hwirq_to_check,
-					   struct cpumask *mask_to_check)
+static void google_pcie_destroy_wq(void *data)
 {
-	unsigned long end, hwirq;
-	const struct cpumask *mask;
-	unsigned int virq;
-
-	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
-	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
-	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
-		if (hwirq == hwirq_to_check)
-			continue;
-		virq = irq_find_mapping(pp->irq_domain, hwirq);
-		if (!virq)
-			continue;
-		mask = irq_get_affinity_mask(virq);
-		if (!cpumask_and(mask_to_check, mask, mask_to_check))
-			return -EINVAL;
-	}
-
-	return 0;
+	destroy_workqueue(data);
 }
 
-static void google_pci_update_effective_affinity(struct dw_pcie_rp *pp,
-					     unsigned long msi_irq_index,
-					     const struct cpumask *effective_mask,
-					     unsigned long hwirq_to_check)
+static void google_pcie_override_portdrv(struct google_pcie *gpcie)
 {
-	struct irq_desc *desc_downstream;
-	unsigned int virq_downstream;
-	unsigned long end, hwirq;
+	struct pci_bus *bus = gpcie->pci->pp.bridge->bus;
+	struct pci_dev *pci_dev;
 
-	/*
-	 * update all the irq_data's effective mask
-	 * bind to this msi controller, so the correct
-	 * affinity would reflect on
-	 * /proc/irq/XXX/effective_affinity
-	 */
-	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
-	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
-	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
-		virq_downstream = irq_find_mapping(pp->irq_domain, hwirq);
-		if (!virq_downstream)
-			continue;
-		desc_downstream = irq_to_desc(virq_downstream);
-		irq_data_update_effective_affinity(&desc_downstream->irq_data,
-						   effective_mask);
+	for_each_pci_bridge(pci_dev, bus) {
+		/*
+		 * portdrv.c configures NO_DIRECT_COMPLETE and SMART_SUSPEND.
+		 * We want to override with SMART_SUSPEND and MAY_SKIP_RESUME.
+		 * Warn if the underlying configuration doesn't match what we
+		 * expect, in case the kernel did something new we weren't
+		 * expecting.
+		 */
+		WARN_ON_ONCE(!dev_pm_test_driver_flags(&pci_dev->dev, DPM_FLAG_NO_DIRECT_COMPLETE));
+		WARN_ON_ONCE(!dev_pm_test_driver_flags(&pci_dev->dev, DPM_FLAG_SMART_SUSPEND));
+		WARN_ON_ONCE(dev_pm_test_driver_flags(&pci_dev->dev, DPM_FLAG_MAY_SKIP_RESUME));
+
+		dev_pm_set_driver_flags(&pci_dev->dev, DPM_FLAG_SMART_SUSPEND | DPM_FLAG_MAY_SKIP_RESUME);
 	}
-}
-
-static int google_pci_msi_set_affinity(struct irq_data *d,
-				   const struct cpumask *mask, bool force)
-{
-	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
-	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
-	int ret;
-	int virq_parent;
-	unsigned long hwirq = d->hwirq;
-	unsigned long flags, msi_irq_index;
-	struct irq_desc *desc_parent;
-	const struct cpumask *effective_mask;
-	cpumask_var_t mask_result;
-
-	/*
-	 * The msi irq vectors are 32:1 aggregator to GIC SPI
-	 * line. so divid the hwirq by 32 to find out GIC SPI
-	 * line this msi vector map to.
-	 */
-	msi_irq_index = hwirq / MAX_MSI_IRQS_PER_CTRL;
-	if (!alloc_cpumask_var(&mask_result, GFP_ATOMIC))
-		return -ENOMEM;
-
-	/*
-	 * Loop through all possible msi vector to check if the
-	 * request one is compatible with all of them
-	 */
-	raw_spin_lock_irqsave(&pp->lock, flags);
-	cpumask_copy(mask_result, mask);
-	ret = google_pci_check_mask_compatibility(pp, msi_irq_index, hwirq, mask_result);
-	if (ret) {
-		dev_dbg(pci->dev, "Incompatible mask, request %*pbl, irq num %u\n",
-			cpumask_pr_args(mask), d->irq);
-		goto unlock;
-	}
-
-	dev_dbg(pci->dev, "Final mask, request %*pbl, irq num %u\n",
-		cpumask_pr_args(mask_result), d->irq);
-
-	virq_parent = pp->msi_irq[msi_irq_index];
-	desc_parent = irq_to_desc(virq_parent);
-	ret = desc_parent->irq_data.chip->irq_set_affinity(&desc_parent->irq_data,
-							   mask_result, force);
-
-	if (ret < 0)
-		goto unlock;
-
-	switch (ret) {
-	case IRQ_SET_MASK_OK:
-	case IRQ_SET_MASK_OK_DONE:
-		cpumask_copy(desc_parent->irq_common_data.affinity, mask);
-		fallthrough;
-	case IRQ_SET_MASK_OK_NOCOPY:
-		break;
-	}
-
-	effective_mask = irq_data_get_effective_affinity_mask(&desc_parent->irq_data);
-	google_pci_update_effective_affinity(pp, msi_irq_index, effective_mask, hwirq);
-	/*
-	 * We may need to accommodate the intersection of multiple overlapping affinity
-	 * requests, so if we're satisfying the request via a subset, leave the original
-	 * request alone. If we're moving to a non-intersecting affinity, update to use
-	 * the new affinity.
-	 */
-	if (d->irq) {
-		if (cpumask_subset(effective_mask, irq_get_affinity_mask(d->irq)))
-			ret = IRQ_SET_MASK_OK_NOCOPY;
-		else
-			ret = IRQ_SET_MASK_OK;
-	}
-
-unlock:
-	free_cpumask_var(mask_result);
-	raw_spin_unlock_irqrestore(&pp->lock, flags);
-	return ret;
 }
 
 static int google_pcie_probe(struct platform_device *pdev)
@@ -2320,15 +2251,34 @@ static int google_pcie_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	/*
+	 * Use a private ordered workqueue to serialize recovery tasks and prevent
+	 * AB-BA deadlocks. This path is strictly for error handling and does not
+	 * impact normal suspend/resume performance.
+	 */
+	gpcie->recovery_wq = alloc_ordered_workqueue("gpcie_recovery_%s",
+						     WQ_MEM_RECLAIM | WQ_FREEZABLE, dev_name(dev));
+	if (!gpcie->recovery_wq)
+		return -ENOMEM;
+
+	ret = devm_add_action_or_reset(dev, google_pcie_destroy_wq, gpcie->recovery_wq);
+	if (ret)
+		return ret;
+
+	/*
+	 * Note: These are dedicated platform interrupts and are
+	 * not shared. Masking them via disable_irq_nosync() in the handler is safe.
+	 */
+	INIT_WORK(&gpcie->cpl_timeout_work, google_pcie_cpl_timeout_work_func);
+	INIT_WORK(&gpcie->link_down_work, google_pcie_link_down_work_func);
+	INIT_WORK(&gpcie->aggr_err_work, google_pcie_aggr_err_work_func);
+
 	scnprintf(gpcie->cpl_timeout_irqname, sizeof(gpcie->cpl_timeout_irqname),
 		  "%s_cpl_timeout", dev_name(dev));
 	gpcie->cpl_timeout_irq = platform_get_irq_byname_optional(pdev, "cpl_timeout");
 	if (gpcie->cpl_timeout_irq > 0) {
-		ret = devm_request_threaded_irq(dev, gpcie->cpl_timeout_irq,
-				       google_pcie_cpl_timeout_handler,
-				       google_pcie_cpl_timeout_thread,
-				       IRQF_ONESHOT,
-				       gpcie->cpl_timeout_irqname, gpcie);
+		ret = devm_request_irq(dev, gpcie->cpl_timeout_irq, google_pcie_cpl_timeout_handler,
+				       0, gpcie->cpl_timeout_irqname, gpcie);
 		if (ret) {
 			dev_err(dev, "Failed to request cpl_timeout interrupt %d\n", ret);
 			return ret;
@@ -2339,11 +2289,8 @@ static int google_pcie_probe(struct platform_device *pdev)
 		gpcie->aggr_err_irq = platform_get_irq_byname(pdev, "aggr_err");
 		if (gpcie->aggr_err_irq < 0)
 			return -EINVAL;
-		ret = devm_request_threaded_irq(dev, gpcie->aggr_err_irq,
-				       google_pcie_aggr_err_int_handler,
-				       google_pcie_aggr_err_thread,
-				       IRQF_NO_AUTOEN | IRQF_ONESHOT,
-				       gpcie->aggr_err_irqname, gpcie);
+		ret = devm_request_irq(dev, gpcie->aggr_err_irq, google_pcie_aggr_err_int_handler,
+				       IRQF_NO_AUTOEN, gpcie->aggr_err_irqname, gpcie);
 		if (ret) {
 			dev_err(dev, "Failed to request aggregated interrupt %d\n", ret);
 			return ret;
@@ -2355,11 +2302,8 @@ static int google_pcie_probe(struct platform_device *pdev)
 	gpcie->link_down_irq = platform_get_irq_byname(pdev, "link_down");
 	if (gpcie->link_down_irq < 0)
 		return -EINVAL;
-	ret = devm_request_threaded_irq(dev, gpcie->link_down_irq,
-					google_pcie_link_down_handler,
-					google_pcie_link_down_thread,
-					IRQF_ONESHOT,
-					gpcie->link_down_irqname, gpcie);
+	ret = devm_request_irq(dev, gpcie->link_down_irq, google_pcie_link_down_handler, 0,
+			       gpcie->link_down_irqname, gpcie);
 	if (ret) {
 		dev_err(dev, "Failed to request link_down interrupt %d\n", ret);
 		return ret;
@@ -2419,10 +2363,14 @@ static int google_pcie_probe(struct platform_device *pdev)
 	if (ret)
 		goto unregister_recovery_wakeup_source;
 
+	ret = devm_mutex_init(dev, &gpcie->rpm_walk_lock);
+	if (ret)
+		goto unregister_recovery_wakeup_source;
+
 	power_stats_init(gpcie);
 
 	/* We probe while powered up. */
-	gpcie->powered_on = true;
+	google_pcie_set_powered_on(gpcie, true);
 
 	/* Tell dw_pcie_host_init() to skip waiting for the link to come up. */
 	pci->pp.use_linkup_irq = true;
@@ -2432,6 +2380,8 @@ static int google_pcie_probe(struct platform_device *pdev)
 		dev_err(dev, "Failed to initialize host\n");
 		goto unregister_recovery_wakeup_source;
 	}
+
+	google_pcie_override_portdrv(gpcie);
 
 	ret = google_pcie_init_debugfs(gpcie);
 	if (ret)
@@ -2468,6 +2418,19 @@ static void google_pcie_remove(struct platform_device *pdev)
 	struct google_pcie *gpcie = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
 
+	/* 1. Disable IRQs to stop new recovery work from being queued */
+	if (gpcie->cpl_timeout_irq > 0)
+		disable_irq(gpcie->cpl_timeout_irq);
+	if (gpcie->aggr_err_irq > 0)
+		disable_irq(gpcie->aggr_err_irq);
+	if (gpcie->link_down_irq > 0)
+		disable_irq(gpcie->link_down_irq);
+
+	/* 2. Flush the recovery workqueue. */
+	if (gpcie->recovery_wq)
+		flush_workqueue(gpcie->recovery_wq);
+
+	/* 3. PCIe Hardware and PM de-initialization */
 	__pm_stay_awake(gpcie->perst_ws);
 	pm_runtime_get_sync(dev);
 	dw_pcie_host_deinit(&gpcie->pci->pp);
@@ -2492,7 +2455,6 @@ MODULE_DEVICE_TABLE(of, google_pcie_of_match);
 static int google_pcie_runtime_suspend(struct device *dev)
 {
 	struct google_pcie *gpcie = dev_get_drvdata(dev);
-	unsigned long flags;
 	int ret;
 
 	trace_pci_suspend_start(dev);
@@ -2512,9 +2474,7 @@ static int google_pcie_runtime_suspend(struct device *dev)
 	 * Thereby, pcie registers are not accessible.
 	 * Therefore, mark pcie power off unconditionally.
 	 */
-	spin_lock_irqsave(&gpcie->power_on_lock, flags);
-	gpcie->powered_on = false;
-	spin_unlock_irqrestore(&gpcie->power_on_lock, flags);
+	google_pcie_set_powered_on(gpcie, false);
 
 err:
 	trace_pci_suspend_end(dev);
@@ -2576,7 +2536,14 @@ static int google_pcie_runtime_resume(struct device *dev)
 
 	guard(mutex)(&gpcie->link_lock);
 
-	gpcie->powered_on = true;
+	/*
+	 * The controller power and internal PERST are handled by genpd (CPM)
+	 * prior to reaching runtime_resume. The DBI registers are accessible,
+	 * so we mark powered_on = true to allow Root Port enumeration even if
+	 * the endpoint is not powered (power_ready). This ensures
+	 * tools like lspci still work on a dev board with no external card.
+	 */
+	google_pcie_set_powered_on(gpcie, true);
 
 	if (gpcie->power_ready) {
 		ret = __google_pcie_rc_poweron(gpcie);
@@ -2876,3 +2843,9 @@ module_exit(google_pcie_exit);
 MODULE_AUTHOR("Google LLC");
 MODULE_DESCRIPTION("Google PCIe V2 Driver");
 MODULE_LICENSE("GPL");
+
+/*
+ * TODO(tinghsin): Remove this in v7.0. It is exposed to non-CXL namespaces
+ * after commit e778ffefa34d ("ACPI: extlog: Trace CPER PCI Express Error Section").
+ */
+MODULE_IMPORT_NS(CXL);

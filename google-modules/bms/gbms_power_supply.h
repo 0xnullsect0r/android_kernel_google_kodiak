@@ -114,12 +114,13 @@ enum gbms_property {
 	GBMS_PROP_DUAL_BATTERY_DC_STATE,	/* GBMS dual battery disconnect state */
 	GBMS_PROP_CAPACITY_RAW_GDF,		/* GBMS used for ssoc_gdf (soc_raw) */
 	GBMS_PROP_CHG_INDEX_POWER,		/* GBMS used for getting power limit by chg index */
-	GBMS_PROP_MDIS_POWER,			/* GBMS used for getting power limit by mdis */
-	GBMS_PROP_MDIS_CP_FCC,			/* GBMS used for getting cp_fcc by mdis */
 	GBMS_PROP_CHARGE_STOP_LEVEL,	/* GBMS used for dynamic soc spoofing (Dwell v1.5) */
 	GBMS_PROP_CHARGE_START_LEVEL,	/* GBMS used for dynamic soc spoofing (Dwell v1.5) */
 	GBMS_PROP_DWELL_SOC_SPOOFING,	/* GBMS used for stopping soc spoofing (Dwell v1.5) */
 	GBMS_PROP_DWELL_STATE,		/* GBMS used for Dwell v1.5 Vtier reporting */
+	GBMS_PROP_INPUT_VOLTAGE_NOW,
+	GBMS_PROP_INPUT_CURRENT_NOW,
+	GBMS_PROP_PRI_CHG_MDIS,			/* GBMS pass pri_chg_mdis to google_wlc */
 };
 
 union gbms_propval {

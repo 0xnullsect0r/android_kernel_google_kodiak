@@ -173,6 +173,7 @@ CONDITIONAL_SRCS = {
     },
     "CONFIG_BUILD_POWERVR_PIXEL": {
         True: [
+            "customer/pixel/custom_command.c",
             "customer/pixel/dvfs.c",
             "pixel/dvfs.c",
             "pixel/dvfs_governor.c",
@@ -183,6 +184,7 @@ CONDITIONAL_SRCS = {
             "pixel/of.c",
             "pixel/mba.c",
             "pixel/physmem.c",
+            "pixel/scheduling.c",
             "pixel/sscd.c",
             "pixel/sysconfig.c",
             "pvrsrvkm/services/system/common/env/linux/interrupt_support.c",

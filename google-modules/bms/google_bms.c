@@ -33,6 +33,8 @@
 #include <linux/of.h>
 #include <linux/regmap.h>
 
+#include <misc/logbuffer.h>
+
 #include "google_psy.h"
 #include "google_bms.h"
 
@@ -1337,8 +1339,12 @@ int gbms_get_property(struct power_supply *psy, enum gbms_property psp,
 	dsc = gbms_desc_from_psy(psy);
 	if (dsc->get_property) {
 		ret = dsc->get_property(psy, psp, val);
-		if (ret == 0)
-			return 0;
+		/*
+		 * -EAGAIN is a valid error (e.g. driver not ready yet) and
+		 * must not be overwritten by the generic fallback below.
+		 */
+		if (ret == 0 || ret == -EAGAIN)
+			return ret;
 	}
 
 	if (!dsc->forward)
@@ -1407,6 +1413,9 @@ void gbms_tier_stats_init(struct gbms_ce_tier_stats *stats, int8_t idx)
 	stats->soc_in = -1;
 	stats->temp_min = GBMS_TIER_TEMP_MIN_DEFAULT;
 	stats->temp_max = GBMS_TIER_TEMP_MAX_DEFAULT;
+	stats->last_update_sec = -1;
+	stats->reentry_count = 0;
+	memset(stats->soc_in_repeated, 0, sizeof(stats->soc_in_repeated));
 }
 EXPORT_SYMBOL_GPL(gbms_tier_stats_init);
 
@@ -1423,9 +1432,10 @@ void gbms_chg_stats_tier(struct gbms_ce_tier_stats *tier,
 }
 EXPORT_SYMBOL_GPL(gbms_chg_stats_tier);
 
- void gbms_stats_update_tier(int temp_idx, int ibatt_ma, int temp, ktime_t elap,
+void gbms_stats_update_tier(u32 now, int temp_idx, int ibatt_ma, int temp, ktime_t elap,
 			     int cc, union gbms_charger_state *chg_state,
 			     enum gbms_msc_states_t msc_state, int soc_in,
+			     int vin_mv, int iin_ma, int vbatt_mv,
 			     struct gbms_ce_tier_stats *tier)
 {
 	const uint16_t icl_settled = chg_state->f.icl;
@@ -1451,11 +1461,30 @@ EXPORT_SYMBOL_GPL(gbms_chg_stats_tier);
 		tier->icl_min = icl_settled;
 		tier->icl_max = icl_settled;
 
+		tier->vin_min = vin_mv;
+		tier->vin_max = vin_mv;
+
+		tier->iin_min = iin_ma;
+		tier->iin_max = iin_ma;
+
+		tier->vbatt_min = vbatt_mv;
+		tier->vbatt_max = vbatt_mv;
+
 		tier->soc_in = soc_in;
 		tier->cc_in = cc;
 		tier->cc_total = 0;
+		tier->last_update_sec = now;
 		return;
 	}
+
+	/* Detect Re-entry */
+	if (tier->last_update_sec < now - elap) {
+		if (tier->reentry_count < MAX_VTIER_REENTRIES) {
+			tier->soc_in_repeated[tier->reentry_count] = soc_in;
+			tier->reentry_count++;
+		}
+	}
+	tier->last_update_sec = now;
 
 	/* crossed temperature tier */
 	if (temp_idx != tier->temp_idx)
@@ -1493,6 +1522,24 @@ EXPORT_SYMBOL_GPL(gbms_chg_stats_tier);
 		tier->ibatt_max = ibatt_ma;
 	tier->ibatt_sum += ibatt_ma * elap;
 
+	if (vin_mv < tier->vin_min)
+		tier->vin_min = vin_mv;
+	if (vin_mv > tier->vin_max)
+		tier->vin_max = vin_mv;
+	tier->vin_sum += vin_mv * elap;
+
+	if (iin_ma < tier->iin_min)
+		tier->iin_min = iin_ma;
+	if (iin_ma > tier->iin_max)
+		tier->iin_max = iin_ma;
+	tier->iin_sum += iin_ma * elap;
+
+	if (vbatt_mv < tier->vbatt_min)
+		tier->vbatt_min = vbatt_mv;
+	if (vbatt_mv > tier->vbatt_max)
+		tier->vbatt_max = vbatt_mv;
+	tier->vbatt_sum += vbatt_mv * elap;
+
 	tier->cc_total = cc - tier->cc_in;
 }
 EXPORT_SYMBOL_GPL(gbms_stats_update_tier);
@@ -1507,24 +1554,44 @@ int gbms_tier_stats_cstr(char *buff, int size,
 			  tier_stat->time_other;
 
 	long temp_avg, ibatt_avg, icl_avg;
+	long vin_avg, iin_avg, vbatt_avg;
 	int j, len = 0;
 
 	if (elap) {
 		temp_avg = div_s64(tier_stat->temp_sum, elap);
 		ibatt_avg = div_s64(tier_stat->ibatt_sum, elap);
 		icl_avg = div_s64(tier_stat->icl_sum, elap);
+		vin_avg = div_s64(tier_stat->vin_sum, elap);
+		iin_avg = div_s64(tier_stat->iin_sum, elap);
+		vbatt_avg = div_s64(tier_stat->vbatt_sum, elap);
 	} else {
 		temp_avg = 0;
 		ibatt_avg = 0;
 		icl_avg = 0;
+		vin_avg = 0;
+		iin_avg = 0;
+		vbatt_avg = 0;
 	}
 
 	len += scnprintf(&buff[len], size - len, "\n%d%c ",
 		tier_stat->vtier_idx,
 		(verbose) ? ':' : ',');
 
+	char re_str[128] = "";
+	int re_len = 0;
+
+	re_len += scnprintf(re_str + re_len, sizeof(re_str) - re_len,
+			    "%d.%02d", qnum_toint(q_soc), qnum_fracdgt(q_soc));
+
+	for (j = 0; j < tier_stat->reentry_count; j++) {
+		const qnum_t q_re_soc = qnum_from_q8_8(tier_stat->soc_in_repeated[j]);
+
+		re_len += scnprintf(re_str + re_len, sizeof(re_str) - re_len,
+				    ",%d.%02d", qnum_toint(q_re_soc), qnum_fracdgt(q_re_soc));
+	}
+
 	len += scnprintf(&buff[len], size - len,
-		"%d.%02d,%d,%d, %d,%d,%d, %d,%ld,%d, %d,%ld,%d, %d,%ld,%d",
+		"%d.%02d,%d,%d, %d,%d,%d, %d,%ld,%d, %d,%ld,%d, %d,%ld,%d, %d,%ld,%d, %d,%ld,%d, %d,%ld,%d, %s ",
 		qnum_toint(q_soc),
 		qnum_fracdgt(q_soc),
 		tier_stat->cc_in,
@@ -1540,7 +1607,17 @@ int gbms_tier_stats_cstr(char *buff, int size,
 		tier_stat->ibatt_max,
 		tier_stat->icl_min,
 		icl_avg,
-		tier_stat->icl_max);
+		tier_stat->icl_max,
+		tier_stat->vin_min,
+		vin_avg,
+		tier_stat->vin_max,
+		tier_stat->iin_min,
+		iin_avg,
+		tier_stat->iin_max,
+		tier_stat->vbatt_min,
+		vbatt_avg,
+		tier_stat->vbatt_max,
+		re_str);
 
 	if (!verbose || !elap)
 		return len;

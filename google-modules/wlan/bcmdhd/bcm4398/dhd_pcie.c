@@ -1,7 +1,7 @@
 /*
  * DHD Bus Module for PCIE
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -831,6 +831,7 @@ dhd_init_pwr_req_lock(dhd_bus_t *bus)
 {
 	if (!bus->pwr_req_lock) {
 		bus->pwr_req_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->pwr_req_lock);
 	}
 }
 
@@ -860,6 +861,7 @@ dhd_init_dongle_ds_lock(dhd_bus_t *bus)
 {
 	if (!bus->dongle_ds_lock) {
 		bus->dongle_ds_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->dongle_ds_lock);
 	}
 }
 
@@ -2600,6 +2602,20 @@ dhdpcie_chip_specific_init(dhd_bus_t *bus, uint chipid)
 	}
 }
 
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+static void dhd_l1ss_work_handler(struct work_struct *work)
+{
+	dhd_plat_l1ss_ctrl(1);
+}
+
+void dhd_schedule_l1ss_enable(dhd_pub_t *dhdp)
+{
+	dhd_bus_t *bus = dhdp->bus;
+
+	schedule_work(&bus->l1ss_enable_work);
+}
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
+
 static bool
 dhdpcie_dongle_attach(dhd_bus_t *bus)
 {
@@ -3072,7 +3088,9 @@ dhdpcie_dongle_attach(dhd_bus_t *bus)
 				DAR_PCIE_PWR_CTRL((bus->sih)->buscorerev), TRUE);
 		}
 	}
-
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+	INIT_WORK(&bus->l1ss_enable_work, dhd_l1ss_work_handler);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 	DHD_TRACE(("%s: EXIT: SUCCESS\n", __FUNCTION__));
 
 	return 0;
@@ -3449,6 +3467,7 @@ dhd_init_bus_lp_state_lock(dhd_bus_t *bus)
 {
 	if (!bus->bus_lp_state_lock) {
 		bus->bus_lp_state_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bus_lp_state_lock);
 	}
 }
 
@@ -3466,6 +3485,7 @@ dhd_init_backplane_access_lock(dhd_bus_t *bus)
 {
 	if (!bus->backplane_access_lock) {
 		bus->backplane_access_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->backplane_access_lock);
 	}
 }
 
@@ -3541,6 +3561,10 @@ dhdpcie_bus_release(dhd_bus_t *bus)
 			 */
 			dhd_detach(bus->dhd);
 			dhdpcie_bus_release_dongle(bus, osh, dongle_isolation, TRUE);
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+			DHD_PRINT(("%s: Cancel L1SS enable work\n", __func__));
+			cancel_work_sync(&bus->l1ss_enable_work);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #if defined(__linux__)
 			BCM_REFERENCE(bcmerror);
 #ifdef BOARD_STB
@@ -5059,6 +5083,7 @@ dhdpcie_get_link_state(dhd_bus_t *bus)
 		goto exit;
 	}
 
+	DHD_PRINT(("%s: Check cfg bar registers\n", __FUNCTION__));
 	/* check for pcie link down and link reset */
 	base_addr0 = dhd_pcie_config_read(bus, PCI_CFG_BAR0, sizeof(uint32));
 	base_addr1 = dhd_pcie_config_read(bus, PCI_CFG_BAR1, sizeof(uint32));
@@ -6948,6 +6973,7 @@ dhd_init_bar1_switch_lock(dhd_bus_t *bus)
 {
 	if (bus->bar1_switch_enab && !bus->bar1_switch_lock) {
 		bus->bar1_switch_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bar1_switch_lock);
 	}
 }
 
@@ -6965,6 +6991,7 @@ dhd_init_bar2_switch_lock(dhd_bus_t *bus)
 {
 	if (!bus->bar2_switch_lock) {
 		bus->bar2_switch_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bar2_switch_lock);
 	}
 }
 
@@ -10949,6 +10976,9 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state, bool byint)
 	uint32 d2h_mb_data = 0;
 	uint32 zero = 0;
 #endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	uint32 base_addr0;
+#endif /* CONFIG_SOC_LGA */
 
 	if (bus->dhd == NULL) {
 		DHD_ERROR(("bus not inited\n"));
@@ -10986,6 +11016,11 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state, bool byint)
 		DHD_ERROR(("Bus is already in RESUME state.\n"));
 		return BCME_OK;
 	}
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	DHD_PRINT(("%s: .. ", __FUNCTION__));
+	base_addr0 = dhd_pcie_config_read(bus, 0x10, sizeof(uint32));
+	DHD_PRINT(("base_addr0=0x%x\n", base_addr0));
+#endif /* CONFIG_SOC_LGA */
 
 	if (state) {
 
@@ -14486,6 +14521,9 @@ dhd_bus_handle_mb_data(dhd_bus_t *bus, uint32 d2h_mb_data, const char *context)
 	if (d2h_mb_data & D2HMB_DS_HOST_SLEEP_EXIT_ACK)  {
 		/* what should we do */
 		DHD_PRINT(("D2H_MB_DATA: D0 ACK\n"));
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+		dhd_schedule_l1ss_enable(bus->dhd);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #ifdef PCIE_INB_DW
 		if (INBAND_DW_ENAB(bus)) {
 			DHD_BUS_INB_DW_LOCK(bus->inb_lock, flags);
@@ -16212,6 +16250,7 @@ int dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 	/* Initialize the lock to serialize Device Wake Inband activities */
 	if (!bus->inb_lock) {
 		bus->inb_lock = osl_spin_lock_init(bus->dhd->osh);
+		OSL_LOCK_CLASS_SET(bus->inb_lock);
 	}
 #endif
 
@@ -16709,6 +16748,7 @@ dhd_bus_flow_ring_create_response(dhd_bus_t *bus, uint16 flowid, int32 status)
 		DHD_ERROR(("%s: invalid flowid:%d alloc_max:%d fid_max:%d\n",
 			__FUNCTION__, flowid, bus->dhd->num_h2d_rings,
 			bus->dhd->max_tx_flowid));
+		return;
 	}
 
 	flow_ring_node = DHD_FLOW_RING(bus->dhd, flowid);
@@ -16816,6 +16856,7 @@ dhd_bus_flow_ring_delete_response(dhd_bus_t *bus, uint16 flowid, uint32 status)
 		DHD_ERROR(("%s: invalid flowid:%d alloc_max:%d fid_max:%d\n",
 			__FUNCTION__, flowid, bus->dhd->num_h2d_rings,
 			bus->dhd->max_tx_flowid));
+		return;
 	}
 
 	flow_ring_node = DHD_FLOW_RING(bus->dhd, flowid);
@@ -16899,6 +16940,7 @@ dhd_bus_flow_ring_flush_response(dhd_bus_t *bus, uint16 flowid, uint32 status)
 		DHD_ERROR(("%s: invalid flowid:%d alloc_max:%d fid_max:%d\n",
 			__FUNCTION__, flowid, bus->dhd->num_h2d_rings,
 			bus->dhd->max_tx_flowid));
+		return;
 	}
 
 	flow_ring_node = DHD_FLOW_RING(bus->dhd, flowid);

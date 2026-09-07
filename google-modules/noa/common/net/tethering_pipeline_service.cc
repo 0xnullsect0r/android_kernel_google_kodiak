@@ -67,6 +67,14 @@ static int32_t TetheringEngineWlanPktProcessing(struct NestedRingStage *stage,
 			continue;
 		}
 
+#if defined(USE_NETENGINE_HW_OFFLOAD)
+		// Hardware offload is enabled. We skip software NAT lookups.
+		// Leave the action as PKT_ACTION_UNDECIDED so the packet
+		// flows to the next stage (SdnRxStage).
+		(void)ret;
+		(void)is_downstream;
+		continue;
+#else
 		ret = NetEngineTetheringHandleWlanPacket(&entry->pkt_info, &entry->forward_info,
 							 &is_downstream);
 		if (ret) {
@@ -79,6 +87,7 @@ static int32_t TetheringEngineWlanPktProcessing(struct NestedRingStage *stage,
 			net_engine_offload_util_cnt_inc(false, is_downstream);
 #endif /* linux */
 		}
+#endif
 	}
 	return 0;
 }
@@ -102,6 +111,13 @@ static int32_t TetheringEngineModemPktProcessing(struct NestedRingStage *stage,
 			continue;
 		}
 
+#if defined(USE_NETENGINE_HW_OFFLOAD)
+		// Hardware offload is enabled. We skip software NAT lookups.
+		// Leave the action as PKT_ACTION_UNDECIDED so the packet
+		// flows to the next stage (SdnRxStage).
+		(void)ret;
+		continue;
+#else
 		ret = NetEngineTetheringHandleModemPacket(&entry->pkt_info, &entry->forward_info);
 		if (ret) {
 			entry->pkt_info.action = PKT_ACTION_UNDECIDED;
@@ -113,6 +129,7 @@ static int32_t TetheringEngineModemPktProcessing(struct NestedRingStage *stage,
 			net_engine_offload_util_cnt_inc(false, is_downstream);
 #endif /* linux */
 		}
+#endif
 	}
 	return 0;
 }

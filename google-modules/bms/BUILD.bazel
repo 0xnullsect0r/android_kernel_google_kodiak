@@ -8,8 +8,12 @@ load(
     "ddk_config",
     "ddk_headers",
     "ddk_module",
-    "kernel_module_group",
 )
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -34,7 +38,6 @@ ddk_headers(
     name = "bms_headers",
     hdrs = [
         ":headers",
-        "//private/google-modules/bms/misc:headers",
     ],
     visibility = [
         "//private/google-modules/bms:__subpackages__",
@@ -73,15 +76,11 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/bms:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/power/reset:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/usb/typec/tcpm/google:tcpci_max77759",
     ],
@@ -105,7 +104,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ] + select({
         "//private/devices/google/common:soc_is_laguna_or_later": [
@@ -133,7 +133,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ] + select({
         "//private/devices/google/common:soc_is_laguna_or_later": [
@@ -161,7 +162,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -185,7 +187,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -207,7 +210,7 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -229,7 +232,7 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -254,7 +257,7 @@ ddk_module(
         ":google-bms",
         ":max1720x-battery",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -296,7 +299,7 @@ ddk_module(
     deps = [
         ":bms_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -316,16 +319,13 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":google-bms",
         ":max1720x-battery",
         ":max77729-pmic",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -342,9 +342,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
     ],
     deps = [
         ":bms_headers",
@@ -535,16 +532,13 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":google-bms",
         ":max77779-charger",
         ":max77779_pmic",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -583,15 +577,12 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":google-bms",
         ":max77779_pmic",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -612,15 +603,12 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":google-bms",
         ":max77779-charger",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -659,14 +647,11 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/power/mitigation:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -711,7 +696,8 @@ ddk_module(
         ":max77779-vimon",
         ":max77779_pmic",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -757,7 +743,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -782,7 +769,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -825,7 +813,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -920,7 +909,7 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -965,7 +954,8 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -1009,53 +999,9 @@ ddk_module(
         ":bms_headers",
         ":google-bms",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "bms",
-    srcs = [
-        ":google-battery",
-        ":google-bms",
-        ":google-charger",
-        ":google-cpm",
-        ":google-wlc",
-        ":google_ccd",
-        ":google_dock",
-        ":google_dual_batt_gauge",
-        ":hl7132",
-        ":ln8282_regulator",
-        ":ln8411",
-        ":max1720x-battery",
-        ":max20339",
-        ":max77729-pmic",
-        ":max77759-charger",
-        ":max77779-charger",
-        ":max77779-charger-i2c",
-        ":max77779-fg",
-        ":max77779-fg-i2c",
-        ":max77779-fwupdate",
-        ":max77779-sp",
-        ":max77779-sp-i2c",
-        ":max77779-usecase",
-        ":max77779-vimon",
-        ":max77779-vimon-i2c",
-        ":max77779_i2cm",
-        ":max77779_i2cm_i2c",
-        ":max77779_pmic",
-        ":max77779_pmic_i2c",
-        ":max77779_pmic_irq",
-        ":max77779_pmic_pinctrl",
-        ":max77779_pmic_sgpio",
-        ":max77779_vdroop",
-        ":p9221",
-        ":pca9468",
-        ":rt9471_charger",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )
 
@@ -1066,9 +1012,6 @@ ddk_module(
     ],
     out = "max77779-charger-spmi.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779-charger",
@@ -1086,9 +1029,6 @@ ddk_module(
     out = "max77779_i2cm_spmi.ko",
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779-charger",
@@ -1107,9 +1047,6 @@ ddk_module(
     out = "max77779_pmic_spmi.ko",
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779_pmic",
@@ -1127,9 +1064,6 @@ ddk_module(
     out = "max77779-vimon-spmi.ko",
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779-charger",
@@ -1148,15 +1082,38 @@ ddk_module(
     out = "max77779-sp-spmi.ko",
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779-sp",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/drivers/spmi:regmap-goog-spmi",
+    ],
+)
+
+ddk_config(
+    name = "test_config",
+    defconfig = "test/kunitconfig",
+    kconfigs = ["test/Kconfig"],
+    kernel_build = "//private/devices/google/common:kernel",
+    visibility = ["//visibility:private"],
+)
+
+ddk_module(
+    name = "google-ttf-test",
+    srcs = [
+        "test/google_ttf_test.c",
+    ],
+    out = "google_ttf_test.ko",
+    hdrs = [
+        "google_ttf.c",
+    ],
+    config = ":test_config",
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        ":bms_headers",
+        "//common:all_headers_aarch64",
+        "//private/google-modules/bms/misc:logbuffer",
     ],
 )
 
@@ -1168,9 +1125,6 @@ ddk_module(
     out = "max77779-fg-spmi.ko",
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":bms_headers",
         ":max77779-charger",

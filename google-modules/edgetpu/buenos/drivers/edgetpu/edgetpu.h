@@ -25,7 +25,7 @@
  * This number must be incremented when new features or fields are added, or when existing features
  * are marked deprecated.
  */
-#define _EDGETPU_INTERFACE_VERSION_MINOR 4
+#define _EDGETPU_INTERFACE_VERSION_MINOR 6
 
 /*
  * Interface version history:
@@ -34,6 +34,8 @@
  * 1.2: Add EDGETPU_TRIM_ENABLE; earlier versions to be considered not supporting trim.
  * 1.3: Add EDGETPU_IDENTIFY_CLIENT.
  * 1.4: EDGETPU_MAP_COHERENT implies EDGETPU_MAP_SKIP_CPU_SYNC for Zuma and beyond; remove PBHA.
+ * 1.5: Remove HWTRACE hardware tracing interfaces.
+ * 1.6: Deprecate per-die event registration and use edgetpu_event instead.
  */
 
 /*
@@ -58,7 +60,6 @@
 #define EDGETPU_MMAP_TRACE2_BUFFER_OFFSET 0x2000000
 #define EDGETPU_MMAP_LOG3_BUFFER_OFFSET 0x2100000
 #define EDGETPU_MMAP_TRACE3_BUFFER_OFFSET 0x2200000
-#define EDGETPU_MMAP_HWTRACE_BUFFER_OFFSET 0x2300000
 
 /* EdgeTPU map flag macros */
 
@@ -174,12 +175,21 @@ struct edgetpu_map_ioctl {
 #define EDGETPU_UNMAP_BUFFER \
 	_IOW(EDGETPU_IOCTL_BASE, 4, struct edgetpu_map_ioctl)
 
-/*
- * Event types for which device group eventfds can be registered
- * for notifications.
+/**
+ * enum edgetpu_event - Event types for which device group eventfds can be registered.
+ * @EDGETPU_EVENT_RESPDATA: Mailbox response data event.
+ * @EDGETPU_EVENT_FATAL_ERROR: Fatal error event.
+ * @EDGETPU_EVENT_TELEMETRY_LOG: Telemetry log event.
+ * @EDGETPU_EVENT_TELEMETRY_TRACE: Telemetry trace event.
+ * @EDGETPU_EVENT_NUM: Number of event types.
  */
-#define EDGETPU_EVENT_RESPDATA		0
-#define EDGETPU_EVENT_FATAL_ERROR	1
+enum edgetpu_event {
+	EDGETPU_EVENT_RESPDATA,
+	EDGETPU_EVENT_FATAL_ERROR,
+	EDGETPU_EVENT_TELEMETRY_LOG,
+	EDGETPU_EVENT_TELEMETRY_TRACE,
+	EDGETPU_EVENT_NUM,
+};
 
 struct edgetpu_event_register {
 	__u32 event_id;
@@ -256,20 +266,11 @@ struct edgetpu_mailbox_attr {
 #define EDGETPU_FINALIZE_GROUP \
 	_IO(EDGETPU_IOCTL_BASE, 8)
 
-/*
- * Event types for which per-die eventfds can be registered for
- * notifications.
- */
+/* (Deprecated) Keep the definitions for backward compatibility, use enum edgetpu_event instead. */
 #define EDGETPU_PERDIE_EVENT_LOGS_AVAILABLE		0x1000
 #define EDGETPU_PERDIE_EVENT_TRACES_AVAILABLE		0x1001
-#define EDGETPU_PERDIE_EVENT_HWTRACES_AVAILABLE		0x1002
 
-/*
- * Set eventfd for notification of per-die events from kernel.
- *
- * EINVAL: If @event_id is not one of EDGETPU_PERDIE_EVENT_*.
- * EBADF, EINVAL: If @eventfd is not a valid eventfd.
- */
+/* (Deprecated) Redirected to EDGETPU_SET_EVENTFD for backward compatibility. */
 #define EDGETPU_SET_PERDIE_EVENTFD \
 	_IOW(EDGETPU_IOCTL_BASE, 9, struct edgetpu_event_register)
 
@@ -277,7 +278,7 @@ struct edgetpu_mailbox_attr {
 #define EDGETPU_UNSET_EVENT \
 	_IOW(EDGETPU_IOCTL_BASE, 14, __u32)
 
-/* Unset event by event_id registered with EDGETPU_SET_PERDIE_EVENTFD. */
+/* (Deprecated) Redirected to EDGETPU_UNSET_EVENT for backward compatibility. */
 #define EDGETPU_UNSET_PERDIE_EVENT \
 	_IOW(EDGETPU_IOCTL_BASE, 15, __u32)
 

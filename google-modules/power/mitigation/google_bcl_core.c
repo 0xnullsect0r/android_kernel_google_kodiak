@@ -27,7 +27,9 @@
 #include <linux/mutex.h>
 #include <linux/power_supply.h>
 #include <linux/debugfs.h>
+#include <misc/gvotable.h>
 #include "bcl.h"
+
 #include "core_pmic/core_pmic_defs.h"
 #include "ifpmic/ifpmic_defs.h"
 #include "ifpmic/max77759/max77759_irq.h"
@@ -61,15 +63,28 @@ static int battery_supply_callback(struct notifier_block *nb,
 				   unsigned long event, void *data)
 {
 	struct bcl_device *bcl_dev = container_of(nb, struct bcl_device, psy_nb);
-	struct power_supply *bcl_psy;
+	struct power_supply *psy = data;
 
 	if (IS_ERR_OR_NULL(bcl_dev))
 		return NOTIFY_OK;
 
-	bcl_psy = bcl_dev->batt_psy;
-
-	if (!bcl_psy || event != PSY_EVENT_PROP_CHANGED)
+	if (event != PSY_EVENT_PROP_CHANGED || !psy || !psy->desc)
 		return NOTIFY_OK;
+
+	if (psy->desc->type == POWER_SUPPLY_TYPE_WIRELESS) {
+		union power_supply_propval wlc_online = {};
+		int ret;
+
+		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE,
+						&wlc_online);
+		if (ret == 0 && bcl_dev->toggle_wlc) {
+			gvotable_cast_vote(
+				bcl_dev->toggle_wlc, "BCL_DEV_VOTER", (void *)0,
+				(void *)(long)(wlc_online.intval ?
+						       WLC_ENABLED_TX :
+						       WLC_DISABLED_TX));
+		}
+	}
 
 	return NOTIFY_OK;
 }

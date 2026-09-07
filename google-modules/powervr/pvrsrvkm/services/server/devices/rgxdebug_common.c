@@ -3002,7 +3002,7 @@ void RGXDebugRequestProcess(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf,
 		}
 	}
 
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
+#if (defined(SUPPORT_WORKLOAD_ESTIMATION) && !defined(SUPPORT_WORKLOAD_ESTIMATION_FW))
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
 	{
 		/* Dump out the Workload estimation CCB. */

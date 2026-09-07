@@ -687,18 +687,13 @@ static int gs_panel_unregister_op_hz_notifier(struct gs_drm_connector *gs_connec
 static u32 gs_panel_get_panel_id(const struct gs_drm_connector *gs_connector)
 {
 	struct gs_panel *ctx = gs_connector_to_panel(gs_connector);
-	u32 id;
 
-	/*TODO(b/369165367): don't re-parse extinfo for this*/
-	if (kstrtou32(ctx->panel_extinfo, 16, &id)) {
-		dev_dbg(ctx->dev, "Could not read panel extinfo, getting from connector\n");
-		id = gs_connector->panel_id;
-	} else {
-		/* reverse here to match the id order read from bootloader */
-		id = swab32(id);
-	}
+	return ctx->panel_id;
+}
 
-	return id;
+static void gs_panel_connector_early_unregister(struct gs_drm_connector *gs_connector)
+{
+	gs_panel_node_detach(gs_connector);
 }
 
 static const struct gs_drm_connector_funcs gs_drm_connector_funcs = {
@@ -706,6 +701,7 @@ static const struct gs_drm_connector_funcs gs_drm_connector_funcs = {
 	.atomic_get_property = gs_panel_connector_get_property,
 	.atomic_set_property = gs_panel_connector_set_property,
 	.late_register = gs_panel_connector_late_register,
+	.early_unregister = gs_panel_connector_early_unregister,
 	.get_max_mipi_datarate = gs_panel_get_max_mipi_datarate,
 	.register_op_hz_notifier = gs_panel_register_op_hz_notifier,
 	.unregister_op_hz_notifier = gs_panel_unregister_op_hz_notifier,
@@ -1004,6 +1000,10 @@ static void gs_panel_connector_atomic_pre_commit(struct gs_drm_connector *gs_con
 static bool should_schedule_detect_fault(struct gs_panel *ctx,
 					 struct gs_drm_connector_state *gs_new_state)
 {
+	ktime_t now;
+	s64 delta_ms;
+	u32 fault_detect_interval_ms;
+
 	if (!gs_panel_has_func(ctx, detect_fault))
 		return false;
 
@@ -1015,6 +1015,20 @@ static bool should_schedule_detect_fault(struct gs_panel *ctx,
 
 	if (ctx->detect_fault_work_scheduled)
 		return false;
+
+	if (!gs_is_panel_active(ctx)) {
+		dev_dbg(ctx->dev, "skip fault detection (panel is not active)\n");
+		return false;
+	}
+
+	now = ktime_get();
+	delta_ms = ktime_ms_delta(now, ctx->timestamps.last_panel_fault_check_ts);
+	fault_detect_interval_ms = ctx->desc->fault_desc->detect_interval_ms;
+	if (delta_ms < fault_detect_interval_ms && ctx->ddic_read_fail_cnt == 0) {
+		dev_dbg(ctx->dev, "skip fault detection (%lldms since last check, <%ums)\n",
+			delta_ms, fault_detect_interval_ms);
+		return false;
+	}
 
 	return true;
 }

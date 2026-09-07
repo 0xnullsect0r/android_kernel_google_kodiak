@@ -9,8 +9,24 @@
 #include <linux/debugfs.h>
 #include <linux/hashtable.h>
 
+#include <misc/gvotable.h>
+
 #include "google_bms.h"
 #include "google_bms_usecase.h"
+
+struct bms_usecase_notify_data {
+	void *data;
+	struct bms_usecase_notify_cbs cbs;
+	char identifier[GVOTABLE_MAX_REASON_LEN];
+	struct list_head list;
+};
+
+struct bms_usecase_completion_data {
+	void *data;
+	bms_usecase_completion_cb from_uc_cb;
+	bms_usecase_completion_cb to_uc_cb;
+	struct list_head list;
+};
 
 static struct bms_usecase_data *singleton_bms_uc_data;
 
@@ -39,7 +55,7 @@ const char *bms_usecase_to_str(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->name;
 	}
 
@@ -52,7 +68,7 @@ bool bms_usecase_is_uc_wireless(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->is_wireless;
 	}
 
@@ -69,7 +85,7 @@ bool bms_usecase_is_uc_wired(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->is_wired;
 	}
 
@@ -86,7 +102,7 @@ bool bms_usecase_is_uc_standby(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->is_standby;
 	}
 
@@ -103,7 +119,7 @@ bool bms_usecase_is_uc_charging_enabled(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config && config->usecase == usecase)
 			return config->is_charging;
 	}
 
@@ -126,9 +142,8 @@ static int bms_usecase_get_chg_sel(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase) {
+		if (config && config->usecase == usecase)
 			return config->chg_index;
-		}
 	}
 
 	return BMS_USECASE_CHARGER_INDEX_INVALID;
@@ -160,7 +175,7 @@ bool bms_usecase_is_uc_cp(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->is_cp;
 	}
 
@@ -177,7 +192,7 @@ bool bms_usecase_is_uc_otg(enum gsu_usecases usecase)
 	struct gsu_usecase_config_t *config;
 
 	hash_for_each_possible(gsu_usecase_table, config, hnode, usecase) {
-		if (config->usecase == usecase)
+		if (config && config->usecase == usecase)
 			return config->is_otg;
 	}
 

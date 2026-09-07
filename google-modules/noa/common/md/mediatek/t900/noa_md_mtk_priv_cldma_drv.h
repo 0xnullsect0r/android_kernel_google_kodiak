@@ -116,6 +116,7 @@ struct cldma_traffic_tx {
 	unsigned long long tx_hw_pkt[HW_QUEUE_NUM];
 	unsigned long long tx_done_last_time[HW_QUEUE_NUM];
 	unsigned int tx_done_last_cnt[HW_QUEUE_NUM];
+	unsigned int hwo_delay_detected_cnt[HW_QUEUE_NUM];
 
 	/* tx irq event */
 	unsigned long long txq_done[HW_QUEUE_NUM];

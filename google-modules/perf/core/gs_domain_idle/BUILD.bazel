@@ -5,6 +5,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 # It's here to support the drivers/soc/google/vh/kernel/sched folder of the soc/gs/ repo.
 ddk_headers(
     name = "headers",
@@ -35,13 +40,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/soc/google/vh/kernel/sched:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
     ],
@@ -63,9 +61,6 @@ ddk_module(
     ],
     kconfig = "test/Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
     ],

@@ -2,12 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_library", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/iommu/arm-smmu-v3:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -154,6 +152,8 @@ ddk_library(
         "arm/arm-smmu-v3/pkvm/arm-smmu-v3-module.h",
         "arm/arm-smmu-v3/pkvm/arm_smmu_v3.h",
         "arm/arm-smmu-v3/pkvm/hyp-arm-smmu-v3-common-telemetry.h",
+        "arm/arm-smmu-v3/pkvm/hyp-arm-smmu-v3-telemetry.c",
+        "arm/arm-smmu-v3/pkvm/hyp-arm-smmu-v3-telemetry.h",
         "arm/arm-smmu-v3/pkvm/io-pgtable-arm.c",
         "io-pgtable-arm-common.c",
     ],

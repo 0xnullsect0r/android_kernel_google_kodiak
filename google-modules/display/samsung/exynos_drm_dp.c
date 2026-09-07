@@ -152,6 +152,14 @@ static bool dp_get_fast_training(struct dp_device *dp)
 	return (dp->host.fast_training && dp->sink.fast_training);
 }
 
+static void dp_connection_result_update(struct dp_device *dp, bool success)
+{
+	if (success)
+		dp->stats.connection_success++;
+	else
+		dp->stats.connection_failure++;
+}
+
 #define MAX_VOLTAGE_LEVEL 3
 #define MAX_PREEMPH_LEVEL 3
 
@@ -160,7 +168,7 @@ static bool dp_get_fast_training(struct dp_device *dp)
 #define DP_LINK_RATE_HBR2 2
 #define DP_LINK_RATE_HBR3 3
 
-static unsigned long dp_rate = DP_LINK_RATE_RBR;    /* RBR is the default */
+static unsigned long dp_rate = DP_LINK_RATE_HBR;    /* HBR is the default */
 module_param(dp_rate, ulong, 0664);
 MODULE_PARM_DESC(dp_rate, "use specific DP link rate by setting dp_rate=x");
 
@@ -1668,6 +1676,8 @@ static void dp_on_by_hpd_plug(struct dp_device *dp)
 		return;
 	}
 
+	dp_connection_result_update(dp, true);
+
 	if (dp->bist_mode == DP_BIST_OFF) {
 		/*
 		 * Notify userspace only about DP video path here.
@@ -1940,6 +1950,8 @@ static int dp_link_down_event_handler(struct dp_device *dp)
 			dp_update_link_status(dp, LINK_TRAINING_FAILURE);
 		else
 			dp_update_link_status(dp, LINK_TRAINING_FAILURE_SINK);
+
+		dp_connection_result_update(dp, false);
 		dp_err(dp, "failed to DP Link Up during re-negotiation\n");
 		return ret;
 	}
@@ -1964,6 +1976,8 @@ static int dp_downstream_port_event_handler(struct dp_device *dp, int new_sink_c
 				dp_update_link_status(dp, LINK_TRAINING_FAILURE);
 			else
 				dp_update_link_status(dp, LINK_TRAINING_FAILURE_SINK);
+
+			dp_connection_result_update(dp, false);
 			dp_err(dp, "failed to DP Link Up during DFP event\n");
 			return ret;
 		}
@@ -2093,6 +2107,7 @@ static void dp_work_hpd(enum hotplug_state state)
 
 HPD_PLUG_FAIL:
 	dp_err(dp, "[HPD_PLUG fail] Check CCIC or USB!!\n");
+	dp_connection_result_update(dp, false);
 	dp_set_hpd_state(dp, EXYNOS_HPD_UNPLUG);
 	hdcp_dplink_connect_state(DP_DISCONNECT);
 	dp_hw_deinit(&dp->hw_config);
@@ -2692,6 +2707,24 @@ static int dp_get_modes(struct drm_connector *connector)
 	return dp->num_modes;
 }
 
+static bool dp_allow_30hz_120hz = false;
+module_param(dp_allow_30hz_120hz, bool, 0664);
+MODULE_PARM_DESC(dp_allow_30hz_120hz, "Enable/disable support for 30 Hz and 120 Hz modes");
+
+static bool dp_mode_allowed(struct drm_display_mode *mode)
+{
+	if (drm_mode_vrefresh(mode) == 60)
+		return true;
+
+	if (drm_mode_vrefresh(mode) == 30 && dp_allow_30hz_120hz)
+		return true;
+
+	if (drm_mode_vrefresh(mode) == 120 && dp_allow_30hz_120hz)
+		return true;
+
+	return false;
+}
+
 static enum drm_mode_status dp_conn_mode_valid(struct drm_connector *connector, struct drm_display_mode *mode)
 {
 	struct dp_device *dp = connector_to_dp(connector);
@@ -2720,6 +2753,11 @@ static enum drm_mode_status dp_conn_mode_valid(struct drm_connector *connector, 
 	if (link_data_rate < mode_data_rate) {
 		dp_info(dp, "DROP: " DRM_MODE_FMT "\n", DRM_MODE_ARG(mode));
 		return MODE_CLOCK_HIGH;
+	}
+
+	if (!dp_mode_allowed(mode)) {
+		dp_info(dp, "DROP: " DRM_MODE_FMT "\n", DRM_MODE_ARG(mode));
+		return MODE_VSYNC;
 	}
 
 	dp_info(dp, "PICK: " DRM_MODE_FMT "\n", DRM_MODE_ARG(mode));
@@ -3323,6 +3361,25 @@ static ssize_t fec_dsc_not_supported_show(struct device *dev, struct device_attr
 }
 static DEVICE_ATTR_RO(fec_dsc_not_supported);
 
+/* Connection Result Sysfs */
+static ssize_t connection_success_show(struct device *dev, struct device_attribute *attr,
+					  char *buf)
+{
+	struct dp_device *dp = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", dp->stats.connection_success);
+}
+static DEVICE_ATTR_RO(connection_success);
+
+static ssize_t connection_failure_show(struct device *dev, struct device_attribute *attr,
+					  char *buf)
+{
+	struct dp_device *dp = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", dp->stats.connection_failure);
+}
+static DEVICE_ATTR_RO(connection_failure);
+
 static struct attribute *dp_stats_attrs[] = { &dev_attr_link_negotiation_failures.attr,
 					      &dev_attr_edid_read_failures.attr,
 					      &dev_attr_dpcd_read_failures.attr,
@@ -3342,6 +3399,8 @@ static struct attribute *dp_stats_attrs[] = { &dev_attr_link_negotiation_failure
 					      &dev_attr_max_res_other.attr,
 					      &dev_attr_fec_dsc_supported.attr,
 					      &dev_attr_fec_dsc_not_supported.attr,
+					      &dev_attr_connection_success.attr,
+					      &dev_attr_connection_failure.attr,
 					      NULL };
 
 static const struct attribute_group dp_stats_group = {

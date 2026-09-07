@@ -18,9 +18,10 @@
 #include <linux/stringify.h>
 #include <linux/tracepoint.h>
 
-#include "../../../edgetpu.h"
+#include "../../../edgetpu-client.h"
 #include "../../../edgetpu-device-group.h"
 #include "../../../edgetpu-internal.h"
+#include "../../../edgetpu.h"
 #include "../../../gcip-kernel-driver/include/gcip/gcip-kci.h"
 
 #define EDGETPU_TRACE_SYSTEM __stringify(TRACE_SYSTEM)

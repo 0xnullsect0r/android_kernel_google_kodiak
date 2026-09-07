@@ -271,6 +271,9 @@ int noa_wlan_cfg_space_global_write(struct noa_wlan_client *client, global_confi
 	case INTM_ADDR:
 		GLOBAL_CONFIG_WRITE(client, intm_addr, data_size, data_buf);
 		break;
+	case RX_PKT_TLV_SIZE:
+		GLOBAL_CONFIG_WRITE(client, rx_pkt_tlv_size, data_size, data_buf);
+		break;
 	case DOORBELL_ADDR:
 		GLOBAL_CONFIG_WRITE(client, doorbell_addr, data_size, data_buf);
 		break;
@@ -559,6 +562,7 @@ int noa_wlan_cfg_update_noa_wlan_sta_info(struct noa_wlan_client *client,
 		entry->dscp_tid_map_id = sta_info->dscp_tid_map_id;
 		entry->addry_en = sta_info->addry_en;
 		entry->addrx_en = sta_info->addrx_en;
+		entry->fw_metadata = sta_info->fw_metadata;
 
 		memcpy(entry->mac_addr, sta_info->addr, sizeof(uint8_t) * MAC_ADDR_LEN);
 		memcpy(entry->qos_txq_map, sta_info->qos_txq_map,

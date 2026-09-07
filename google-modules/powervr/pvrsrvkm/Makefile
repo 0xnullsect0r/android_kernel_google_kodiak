@@ -333,6 +333,7 @@ endif
 
 
 $(PVRSRV_MODNAME)-$(BUILD_POWERVR_PIXEL) += \
+    ../customer/pixel/custom_command.o \
     ../customer/pixel/dvfs.o \
     ../pixel/dvfs.o \
     ../pixel/dvfs_governor.o \
@@ -343,6 +344,7 @@ $(PVRSRV_MODNAME)-$(BUILD_POWERVR_PIXEL) += \
     ../pixel/of.o \
     ../pixel/mba.o \
     ../pixel/physmem.o \
+    ../pixel/scheduling.o
     ../pixel/sscd.o \
     ../pixel/sysconfig.o \
 		services/system/common/env/linux/interrupt_support.o

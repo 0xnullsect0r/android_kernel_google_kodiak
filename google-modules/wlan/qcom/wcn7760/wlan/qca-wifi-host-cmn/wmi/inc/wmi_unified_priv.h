@@ -29,6 +29,7 @@
 #include "wlan_scan_ucfg_api.h"
 #include "qdf_atomic.h"
 #include <wbuff.h>
+#include "wifi_pos_utils_i.h"
 
 #ifdef WLAN_FW_OFFLOAD
 #include "wlan_fwol_public_structs.h"
@@ -2402,6 +2403,12 @@ QDF_STATUS (*extract_sar_cap_service_ready_ext2)(
 		uint8_t *evt_buf,
 		struct wlan_psoc_host_service_ext2_param *ext2_param);
 
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+QDF_STATUS (*extract_rtt_peer_meas_caps_service_ready_ext2)(
+		wmi_unified_t wmi_handle, uint8_t *evt_buf,
+		struct wifi_pos_pmsr_fw_caps *caps);
+#endif /* WLAN_FEATURE_RTT_11AZ_SUPPORT */
+
 #ifdef WLAN_SUPPORT_TWT
 QDF_STATUS (*extract_twt_cap_service_ready_ext2)(
 		wmi_unified_t wmi_handle,
@@ -2991,6 +2998,19 @@ QDF_STATUS (*send_rtt_pasn_auth_status_cmd)
 
 QDF_STATUS (*send_rtt_pasn_deauth_cmd)(wmi_unified_t wmi_handle,
 				       struct qdf_mac_addr *peer_mac);
+#endif
+
+#if defined(WLAN_FEATURE_RTT_11AZ_SUPPORT)
+QDF_STATUS (*send_rtt_peer_meas_cancel_cmd)(wmi_unified_t wmi_handle,
+					    uint32_t req_id);
+
+QDF_STATUS (*send_rtt_peer_meas_req_cmd)(wmi_unified_t wmi_handle,
+					 struct wmi_rtt_peer_meas_req_cmd_params *params);
+
+QDF_STATUS (*extract_rtt_peer_meas_report_ev)
+			(wmi_unified_t wmi_handle,
+			 void *evt_buf,
+			 struct wifi_pos_peer_meas_report *dst);
 #endif
 
 QDF_STATUS (*extract_hw_mode_resp_event)(wmi_unified_t wmi_handle,
@@ -3693,6 +3713,13 @@ QDF_STATUS
 QDF_STATUS
 	(*send_vdev_ch_hop_sched_cmd)(wmi_unified_t wmi_handle,
 				      struct vdev_ch_hop_sched_params *param);
+QDF_STATUS
+	(*send_vdev_get_chan_hop_status_cmd)(wmi_unified_t wmi_handle,
+					     uint8_t vdev_id);
+QDF_STATUS
+(*extract_vdev_chan_hop_status)(wmi_unified_t wmi_handle,
+				void *evt_buf,
+				struct vdev_chan_hop_status_response *resp);
 #endif
 
 #if defined(DRIVER_PASSTHRU_MODE) || defined(WLAN_FEATURE_DSRC)
@@ -3877,7 +3904,7 @@ struct wmi_process_fw_event_params {
 };
 
 /**
- * wmi_mtrace() - Wrappper function for qdf_mtrace api
+ * wmi_mtrace() - Wrapper function for qdf_mtrace api
  * @message_id: 32-Bit Wmi message ID
  * @vdev_id: Vdev ID
  * @data: Actual message contents

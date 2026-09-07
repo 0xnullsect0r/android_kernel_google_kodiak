@@ -128,6 +128,11 @@ int gs_panel_sysfs_create_bl_files(struct device *bl_dev, struct gs_panel *ctx);
  * @gs_connector: Pointer to gs_connector
  */
 void gs_panel_node_attach(struct gs_drm_connector *gs_connector);
+/**
+ * gs_panel_node_detach - Removes sysfs entries for panel
+ * @gs_connector: Pointer to gs_connector
+ */
+void gs_panel_node_detach(struct gs_drm_connector *gs_connector);
 
 /**
  * gs_panel_set_panel_state - Sets the panel state and logs the change

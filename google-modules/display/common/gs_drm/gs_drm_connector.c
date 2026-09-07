@@ -206,6 +206,15 @@ static int gs_drm_connector_late_register(struct drm_connector *connector)
 	return -EINVAL;
 }
 
+static void gs_drm_connector_early_unregister(struct drm_connector *connector)
+{
+	struct gs_drm_connector *gs_connector = to_gs_connector(connector);
+	const struct gs_drm_connector_funcs *funcs = gs_connector->funcs;
+
+	if (funcs && funcs->early_unregister)
+		funcs->early_unregister(gs_connector);
+}
+
 static const struct drm_connector_funcs base_drm_connector_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.reset = gs_drm_connector_reset,
@@ -216,6 +225,7 @@ static const struct drm_connector_funcs base_drm_connector_funcs = {
 	.atomic_set_property = gs_drm_connector_set_property,
 	.atomic_print_state = gs_drm_connector_print_state,
 	.late_register = gs_drm_connector_late_register,
+	.early_unregister = gs_drm_connector_early_unregister,
 };
 
 bool is_gs_drm_connector(const struct drm_connector *connector)
@@ -416,6 +426,46 @@ static int gs_drm_connector_create_pmic_errors_property(struct gs_drm_connector 
 
 	return 0;
 }
+
+bool gs_drm_connector_check_ddic_errors(struct gs_drm_connector_state *state)
+{
+	const unsigned long *errors = state->panel_errors;
+
+	if (test_bit(GS_PANEL_ERR_DSI_ECC_MULTI, errors) &&
+	    test_bit(GS_PANEL_ERR_DSI_CHECKSUM, errors))
+		return true;
+
+	if (test_bit(GS_PANEL_ERR_VLIN1, errors) && test_bit(GS_PANEL_ERR_VGH, errors))
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_ddic_errors);
+
+bool gs_drm_connector_check_gram_errors(struct gs_drm_connector_state *state)
+{
+	if (state->trigger_dumps_for_gram_collision &&
+	    !state->coredump_for_gram_collision_triggered) {
+		state->trigger_dumps_for_gram_collision = false;
+		/* won't trigger coredump again until the next reboot */
+		state->coredump_for_gram_collision_triggered = true;
+		return true;
+	}
+	return false;
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_gram_errors);
+
+bool gs_drm_connector_check_dsi_errors(struct gs_drm_connector_state *state)
+{
+	return test_bit(GS_DSI_ERR_HARD_RSTN, state->dsi_errors);
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_dsi_errors);
+
+bool gs_drm_connector_check_pmic_errors(struct gs_drm_connector_state *state)
+{
+	return !bitmap_empty(state->pmic_errors, GS_PMIC_ERR_MAX);
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_pmic_errors);
 
 static int gs_drm_connector_create_luminance_properties(struct gs_drm_connector *gs_connector)
 {
@@ -833,7 +883,7 @@ static const char *strip_optional_panel_name_prefix(const char *name)
  * "panel_name.panel_id", where panel_id is a 6- or 8-character hex string. This
  * function parses that string into an integer.
  *
- * Return: 32-bit integer representing the panel_id, or INVALID_PANEL_ID if
+ * Return: 32-bit integer representing the panel_id, or PANEL_ID_INVALID_VALUE if
  *         invalid or missing
  */
 static u32 dsim_get_panel_id(const char *name)
@@ -846,7 +896,7 @@ static u32 dsim_get_panel_id(const char *name)
 	 * otherwise return an invalid panel ID
 	 */
 	if (!p)
-		return INVALID_PANEL_ID;
+		return PANEL_ID_INVALID_VALUE;
 
 	p++;
 
@@ -856,7 +906,7 @@ static u32 dsim_get_panel_id(const char *name)
 		return __builtin_bswap32(*(u32 *)panel_id);
 	}
 
-	return INVALID_PANEL_ID;
+	return PANEL_ID_INVALID_VALUE;
 }
 
 /*
@@ -881,7 +931,7 @@ static int parse_panel_name(struct gs_drm_connector *gs_connector)
 		 * With no valid preferred name, presume invalid ID; panel
 		 * driver will check extinfo for id after first enable
 		 */
-		gs_connector->panel_id = INVALID_PANEL_ID;
+		gs_connector->panel_id = PANEL_ID_INVALID_VALUE;
 
 		return connector_add_mipi_dsi_device_preferred(gs_connector);
 	}

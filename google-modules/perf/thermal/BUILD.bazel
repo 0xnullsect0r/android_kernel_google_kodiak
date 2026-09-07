@@ -9,11 +9,10 @@ load(
     "kernel_module_group",
 )
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_config(
     name = "test_config",
@@ -90,7 +89,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/google-modules/soc/rdo:__subpackages__"],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
@@ -226,9 +224,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/thermal:google_devfreq_tj_cdev",
@@ -281,9 +276,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/core/google_pm_qos",
@@ -309,9 +301,6 @@ ddk_module(
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/thermal:google_thermal_cpm_mbox",
@@ -373,9 +362,6 @@ ddk_module(
     ],
     kconfig = "test/Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/core/google_pm_qos",
@@ -412,9 +398,6 @@ ddk_module(
     ],
     kconfig = "test/Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/core/google_pm_qos",

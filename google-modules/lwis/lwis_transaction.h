@@ -138,6 +138,7 @@ struct lwis_pending_transaction_id {
 	struct list_head node;
 	/* Make sure not to remove the callback from the fence if it is being triggered. */
 	bool triggered;
+	bool free_on_trigger;
 	/* Transaction id to be looked up during triggering. */
 	int64_t id;
 };
@@ -155,7 +156,7 @@ void lwis_transaction_fence_trigger(struct lwis_client *client, struct dma_fence
 
 int lwis_transaction_cancel(struct lwis_client *client, int64_t id);
 
-void lwis_transaction_free(struct lwis_device *lwis_dev, struct lwis_transaction **ptransaction);
+void lwis_transaction_free(struct lwis_client *client, struct lwis_transaction **ptransaction);
 void lwis_free_transaction_io_entries(struct lwis_device *lwis_dev, struct lwis_io_entry *entries,
 				      int num_io_entries);
 

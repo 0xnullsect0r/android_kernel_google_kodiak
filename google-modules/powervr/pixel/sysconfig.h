@@ -116,6 +116,8 @@ struct pixel_gpu_device {
 	struct pixel_fw_info fw_footer;
 
 	struct gpu_uevent_ctx gpu_uevent_ctx;
+
+	u32 scheduling_max_deferral;
 };
 
 unsigned int get_time_multiplier(void);

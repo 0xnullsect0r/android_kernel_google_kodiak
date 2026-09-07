@@ -37,6 +37,10 @@
 #include <soc/google/exynos-modem-ctrl.h>
 #include <soc/google/modem_notifier.h>
 
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
+#include <misc/logbuffer.h>
+#endif
+
 #if IS_ENABLED(CONFIG_S5910)
 #include <linux/s5910.h>
 #endif

@@ -879,6 +879,10 @@ static void dp_set_rx_mode_value(struct wlan_dp_psoc_context *dp_ctx)
 }
 
 #ifdef WLAN_DP_AFFINITY_OVERRIDE_FEATURE
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+#include <linux/cpufreq.h>
+#endif
+
 /**
  * enum dp_affinity_type - DP affinity type
  * @DP_RX_INTR_AFFN: RX Interrupt affinity
@@ -1031,7 +1035,11 @@ static inline void dp_configure_affn_override_mask(
 	int package_id;
 	uint8_t cluster_id, affinity;
 	uint32_t cpu_clusterwise_mask, start_cpu_id;
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	bool use_default = false;
+#else
 	bool use_default = (tput_level == DP_AFFN_OVERRIDE_TPUT_LEVEL_IDLE);
+#endif
 	qdf_cpu_mask *temp_cpu_mask;
 
 	if (!use_default) {
@@ -1100,7 +1108,11 @@ static inline void dp_affinity_override_params_init(
 	uint8_t tput_lvl, affn_type;
 	uint32_t dp_affn_override_masks[
 			DP_AFFN_OVERRIDE_MAX_TPUT_LEVELS] = {
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+		dp_cfg->dp_affn_override_low_tput_mask,
+#else
 		0,
+#endif
 		dp_cfg->dp_affn_override_low_tput_mask,
 		dp_cfg->dp_affn_override_mid_tput_mask,
 		dp_cfg->dp_affn_override_high_tput_mask
@@ -1166,6 +1178,63 @@ static inline void dp_affinity_override_params_init(
 	}
 }
 
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+struct dp_cluster_cpufreq {
+	uint32_t target_freq;
+	uint32_t orig_min_freq;
+	uint32_t orig_max_freq;
+	bool boosted;
+};
+
+static struct dp_cluster_cpufreq dp_cluster_cpufreq_tbl[] = {
+	/* Cluster 0: little core */
+	{ 0, 0, 0, false },
+	/* Cluster 1: mid core */
+	{ 0, 0, 0, false },
+	/* Cluster 2: big core */
+	{ 0, 0, 0, false },
+};
+
+static inline int dp_affn_get_cluster_id(struct wlan_dp_psoc_context *dp_ctx,
+					 unsigned int cpu,
+					 struct cpufreq_policy *policy)
+{
+	int cl_id = -1;
+	uint32_t little_core_start_cpu;
+	uint32_t mid_core_start_cpu;
+	uint32_t big_core_start_cpu;
+
+	if (!dp_ctx)
+		return -1;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)) && defined(topology_cluster_id)
+	cl_id = topology_cluster_id(cpu);
+	if (cl_id >= 0 && cl_id < ARRAY_SIZE(dp_cluster_cpufreq_tbl))
+		return cl_id;
+#endif
+
+	little_core_start_cpu = dp_ctx->dp_cfg.dp_cpu_little_core_start_cpu;
+	mid_core_start_cpu = dp_ctx->dp_cfg.dp_cpu_mid_core_start_cpu;
+	big_core_start_cpu = dp_ctx->dp_cfg.dp_cpu_big_core_start_cpu;
+
+	if (policy) {
+		if (policy->cpu == little_core_start_cpu ||
+		    policy->cpu < mid_core_start_cpu)
+			return 0;
+		if (policy->cpu == mid_core_start_cpu ||
+		    policy->cpu < big_core_start_cpu)
+			return 1;
+		return 2;
+	}
+
+	if (cpu < mid_core_start_cpu)
+		return 0;
+	if (cpu < big_core_start_cpu)
+		return 1;
+	return 2;
+}
+#endif
+
 void dp_affn_override_init(struct wlan_objmgr_psoc *psoc)
 {
 	struct wlan_dp_psoc_context *dp_ctx = dp_psoc_get_priv(psoc);
@@ -1182,6 +1251,29 @@ void dp_affn_override_init(struct wlan_objmgr_psoc *psoc)
 	dp_affinity_override_params_init(dp_ctx);
 	dp_affn_override_print_params(dp_ctx);
 
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	if (dp_ctx && dp_ctx->dp_cfg.dp_cpu_perf_freq_boost_enable) {
+		dp_cluster_cpufreq_tbl[0].target_freq =
+				dp_ctx->dp_cfg.dp_cpu_little_core_perf_freq;
+		dp_cluster_cpufreq_tbl[1].target_freq =
+				dp_ctx->dp_cfg.dp_cpu_mid_core_perf_freq;
+		dp_cluster_cpufreq_tbl[2].target_freq =
+				dp_ctx->dp_cfg.dp_cpu_big_core_perf_freq;
+
+		unsigned int cpu;
+		qdf_for_each_possible_cpu(cpu) {
+			struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
+			int cl_id = dp_affn_get_cluster_id(dp_ctx, cpu, policy);
+			dp_info("WLAN_AFF DEBUG init cpu %u: mapped_cluster=%d "
+					"(policy_cpu=%u cur=%u min=%u max=%u)\n", cpu, cl_id,
+					 policy ? policy->cpu : 999, policy ? policy->cur : 0,
+					 policy ? policy->min : 0, policy ? policy->max : 0);
+			if (policy)
+				cpufreq_cpu_put(policy);
+		}
+	}
+#endif
+
 	dp_ctx->dp_affn_override_curr_tput_level = -1;
 	dp_ctx->dp_affn_sample_count = 0;
 	qdf_mem_zero(dp_ctx->dp_affn_pkt_count_samples,
@@ -1191,6 +1283,120 @@ void dp_affn_override_init(struct wlan_objmgr_psoc *psoc)
 	dp_ctx->dp_affn_decision_sample_idx = 0;
 	qdf_cpumask_clear(&dp_ctx->rx_thread_cpu_mask);
 }
+
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+static inline void dp_affn_override_boost_cpufreq(struct wlan_dp_psoc_context *dp_ctx)
+{
+	struct cpufreq_policy *policy;
+	unsigned int cpu;
+	int cluster_id;
+	uint32_t target_freq;
+	uint32_t target_max;
+	uint32_t new_min;
+	bool min_changed;
+	bool max_changed;
+
+	if (!dp_ctx || !dp_ctx->dp_cfg.dp_cpu_perf_freq_boost_enable)
+		return;
+
+	qdf_for_each_possible_cpu(cpu) {
+		policy = cpufreq_cpu_get(cpu);
+		cluster_id = dp_affn_get_cluster_id(dp_ctx, cpu, policy);
+		if (cluster_id < 0 || cluster_id >= ARRAY_SIZE(dp_cluster_cpufreq_tbl)) {
+			if (policy)
+				cpufreq_cpu_put(policy);
+			continue;
+		}
+
+		if (policy) {
+			target_freq = dp_cluster_cpufreq_tbl[cluster_id].target_freq;
+			target_max = (policy->cpuinfo.max_freq > 0 &&
+					  policy->cpuinfo.max_freq < target_freq) ?
+					  policy->cpuinfo.max_freq : target_freq;
+
+			min_changed = false;
+			max_changed = false;
+
+			if (!dp_cluster_cpufreq_tbl[cluster_id].boosted) {
+				dp_cluster_cpufreq_tbl[cluster_id].orig_min_freq = policy->min;
+				dp_cluster_cpufreq_tbl[cluster_id].orig_max_freq = policy->max;
+				dp_cluster_cpufreq_tbl[cluster_id].boosted = true;
+			}
+
+			if (policy->max < target_max) {
+				policy->max = target_max;
+				max_changed = true;
+			}
+
+			if (policy->max < target_freq)
+				new_min = policy->max;
+			else
+				new_min = target_freq;
+
+			if (policy->min != new_min) {
+				policy->min = new_min;
+				min_changed = true;
+			}
+			cpufreq_cpu_put(policy);
+		}
+	}
+}
+
+static inline void dp_affn_override_restore_cpufreq(struct wlan_dp_psoc_context *dp_ctx)
+{
+	struct cpufreq_policy *policy;
+	unsigned int cpu;
+	int cluster_id;
+
+	if (!dp_ctx || !dp_ctx->dp_cfg.dp_cpu_perf_freq_boost_enable)
+		return;
+
+	qdf_for_each_possible_cpu(cpu) {
+		policy = cpufreq_cpu_get(cpu);
+		cluster_id = dp_affn_get_cluster_id(dp_ctx, cpu, policy);
+		if (cluster_id < 0 || cluster_id >= ARRAY_SIZE(dp_cluster_cpufreq_tbl)) {
+			if (policy)
+				cpufreq_cpu_put(policy);
+			continue;
+		}
+
+		if (!dp_cluster_cpufreq_tbl[cluster_id].boosted) {
+			if (policy)
+				cpufreq_cpu_put(policy);
+			continue;
+		}
+
+		if (policy) {
+			if (policy->min != dp_cluster_cpufreq_tbl[cluster_id].orig_min_freq ||
+			    policy->max != dp_cluster_cpufreq_tbl[cluster_id].orig_max_freq) {
+				policy->min = dp_cluster_cpufreq_tbl[cluster_id].orig_min_freq;
+				policy->max = dp_cluster_cpufreq_tbl[cluster_id].orig_max_freq;
+			}
+			dp_cluster_cpufreq_tbl[cluster_id].boosted = false;
+			cpufreq_cpu_put(policy);
+		}
+	}
+}
+
+void dp_affn_override_deinit(struct wlan_objmgr_psoc *psoc)
+{
+	struct wlan_dp_psoc_context *dp_ctx = dp_psoc_get_priv(psoc);
+
+	if (!dp_ctx || !wlan_dp_cfg_is_affn_override_enabled(&dp_ctx->dp_cfg))
+		return;
+
+	dp_affn_override_restore_cpufreq(dp_ctx);
+}
+#else
+static inline void dp_affn_override_boost_cpufreq(struct wlan_dp_psoc_context *dp_ctx)
+{}
+
+static inline void dp_affn_override_restore_cpufreq(struct wlan_dp_psoc_context *dp_ctx)
+{}
+
+void dp_affn_override_deinit(struct wlan_objmgr_psoc *psoc)
+{}
+#endif /* CONFIG_WCN_GOOGLE */
 
 /**
  * dp_affn_override_cfg_init() - DP affinity override cfg init
@@ -1233,6 +1439,29 @@ void dp_affn_override_cfg_init(
 					cfg_get(
 					psoc,
 					CFG_DP_AFFN_OVERRIDE_HIGH_TPUT_MASK);
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	config->dp_cpu_perf_freq_boost_enable = cfg_get(
+					psoc,
+					CFG_DP_CPU_PERF_FREQ_BOOST_ENABLE);
+	config->dp_cpu_little_core_perf_freq = cfg_get(
+					psoc,
+					CFG_DP_CPU_LITTLE_CORE_PERF_FREQ);
+	config->dp_cpu_mid_core_perf_freq = cfg_get(
+					psoc,
+					CFG_DP_CPU_MID_CORE_PERF_FREQ);
+	config->dp_cpu_big_core_perf_freq = cfg_get(
+					psoc,
+					CFG_DP_CPU_BIG_CORE_PERF_FREQ);
+	config->dp_cpu_little_core_start_cpu = cfg_get(
+					psoc,
+					CFG_DP_CPU_LITTLE_CORE_START_CPU);
+	config->dp_cpu_mid_core_start_cpu = cfg_get(
+					psoc,
+					CFG_DP_CPU_MID_CORE_START_CPU);
+	config->dp_cpu_big_core_start_cpu = cfg_get(
+					psoc,
+					CFG_DP_CPU_BIG_CORE_START_CPU);
+#endif
 }
 
 /**
@@ -1366,6 +1595,13 @@ static inline void dp_set_affinity_override(
 	      dp_affn_override_tput_lvl < DP_AFFN_OVERRIDE_MAX_TPUT_LEVELS))
 		return;
 
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	if (dp_affn_override_tput_lvl == DP_AFFN_OVERRIDE_TPUT_LEVEL_HIGH)
+		dp_affn_override_boost_cpufreq(dp_ctx);
+	else
+		dp_affn_override_restore_cpufreq(dp_ctx);
+#endif
+
 	uint32_t rx_intr_affn_mask =
 			affn_param->dp_affn_override_rx_intr_mask[
 					dp_affn_override_tput_lvl];
@@ -1475,6 +1711,14 @@ void wlan_dp_affn_override_handler(
 	struct wlan_dp_psoc_context *dp_ctx,
 	uint64_t total_packets)
 {
+#if IS_ENABLED(CONFIG_WCN_GOOGLE)
+	if (total_packets > (uint64_t)dp_ctx->dp_cfg.dp_affn_override_high_threshold ||
+	    dp_ctx->dp_affn_override_curr_tput_level == DP_AFFN_OVERRIDE_TPUT_LEVEL_HIGH)
+		dp_affn_override_boost_cpufreq(dp_ctx);
+	else
+		dp_affn_override_restore_cpufreq(dp_ctx);
+#endif
+
 	enum dp_affn_override_tput_level curr_level, winner_level, sample_level;
 	enum dp_affn_override_tput_level upgrade_target;
 	enum dp_affn_override_tput_level downgrade_target;

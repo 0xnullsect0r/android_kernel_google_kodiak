@@ -1344,8 +1344,10 @@ static QDF_STATUS send_roam_invoke_cmd_tlv(wmi_unified_t wmi_handle,
 		cmd->num_chan = 0;
 		cmd->num_bssid = 0;
 		cmd->roam_scan_mode = WMI_ROAM_INVOKE_SCAN_MODE_CACHE_MAP;
+		if (!roaminvoke->skip_full_scan)
+			cmd->flags |=
+				(1 << WMI_ROAM_INVOKE_FLAG_FULL_SCAN_IF_NO_CANDIDATE);
 		cmd->flags |=
-			(1 << WMI_ROAM_INVOKE_FLAG_FULL_SCAN_IF_NO_CANDIDATE) |
 			(1 << WMI_ROAM_INVOKE_FLAG_SELECT_CANDIDATE_CONSIDER_SCORE);
 		cmd->reason = ROAM_INVOKE_REASON_USER_SPACE;
 	} else {
@@ -1923,7 +1925,12 @@ extract_roam_initial_info_tlv(wmi_unified_t wmi_handle, void *evt_buf,
 
 	dst->present = true;
 	dst->roam_full_scan_count = src_data->roam_full_scan_count;
-	dst->rssi_th = src_data->rssi_th;
+
+	if (!wmi_service_enabled(wmi_handle, wmi_service_hw_db2dbm_support))
+		dst->rssi_th = src_data->rssi_th + WMI_NOISE_FLOOR_DBM_DEFAULT;
+	else
+		dst->rssi_th = src_data->rssi_th;
+
 	dst->cu_th = src_data->cu_th;
 	dst->fw_cancel_timer_bitmap = src_data->timer_canceled;
 

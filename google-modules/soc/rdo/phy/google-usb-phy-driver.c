@@ -349,6 +349,15 @@ struct phy_tune_param {
 	u32 value;
 };
 
+struct aux_tune_params {
+	u32 aux_ctrl : 4;
+	u32 aux_dp_dn_swap : 1;
+	u32 aux_hys_tune : 2;
+	u32 aux_pwdnb : 1;
+	u32 aux_vod_tune : 1;
+	u32 reserved_32_9 : 23;
+};
+
 struct google_usb_phy {
 	struct device *dev;
 	const struct google_usb_phy_driverdata *drv_data;
@@ -391,6 +400,8 @@ struct google_usb_phy {
 	int num_phy_tune_params_g1;
 	struct phy_tune_param *phy_tune_params_g1;
 	u32 phy_workarounds;
+	bool aux_tune_ovrd_en;
+	struct aux_tune_params aux_tune_params_ovrd;
 };
 
 struct google_usb_phy_otp_names {
@@ -1438,9 +1449,15 @@ extern int google_dpphy_aux_powerup(struct phy *phy)
 	}
 
 	aux_ctrl.reg_value = readl(gphy->dp_top_csr_base + DP_TOP_CSR_AUX_CTRL_OFFSET);
-	aux_ctrl.bf.phy_aux_ctrl = 1;
-	aux_ctrl.bf.phy_aux_hys_tune = 2;
-	aux_ctrl.bf.phy_aux_vod_tune = 1;
+	if (gphy->aux_tune_ovrd_en) {
+		aux_ctrl.bf.phy_aux_ctrl = gphy->aux_tune_params_ovrd.aux_ctrl;
+		aux_ctrl.bf.phy_aux_hys_tune = gphy->aux_tune_params_ovrd.aux_hys_tune;
+		aux_ctrl.bf.phy_aux_vod_tune = gphy->aux_tune_params_ovrd.aux_vod_tune;
+	} else {
+		aux_ctrl.bf.phy_aux_ctrl = 1;
+		aux_ctrl.bf.phy_aux_hys_tune = 2;
+		aux_ctrl.bf.phy_aux_vod_tune = 1;
+	}
 	writel(aux_ctrl.reg_value, gphy->dp_top_csr_base + DP_TOP_CSR_AUX_CTRL_OFFSET);
 
 	udelay(300);
@@ -2501,6 +2518,114 @@ static ssize_t phy_tune_params_show(struct device *dev, struct device_attribute 
 }
 static DEVICE_ATTR_RO(phy_tune_params);
 
+static ssize_t aux_tune_ovrd_en_show(struct device *dev, struct device_attribute *attr,
+				     char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", gphy->aux_tune_ovrd_en);
+}
+
+static ssize_t aux_tune_ovrd_en_store(struct device *dev, struct device_attribute *attr,
+				      const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	bool val;
+	int res;
+
+	res = kstrtobool(buf, &val);
+	if (res)
+		return res;
+
+	gphy->aux_tune_ovrd_en = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_tune_ovrd_en);
+
+static ssize_t aux_ctrl_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_ctrl);
+}
+
+static ssize_t aux_ctrl_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			      size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0xF) {
+		dev_err(dev, "invalid aux_ctrl value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_ctrl = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_ctrl);
+
+static ssize_t aux_hys_tune_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_hys_tune);
+}
+
+static ssize_t aux_hys_tune_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0x3) {
+		dev_err(dev, "invalid aux_hys_tune value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_hys_tune = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_hys_tune);
+
+static ssize_t aux_vod_tune_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_vod_tune);
+}
+
+static ssize_t aux_vod_tune_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0x1) {
+		dev_err(dev, "invalid aux_vod_tune value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_vod_tune = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_vod_tune);
+
 GOOGLE_USB_PHY_REG_ATTR(sup_dig_lvl_ovrd_in, SUP_DIG_LVL_OVRD_IN, DPTX);
 
 GOOGLE_USB_PHY_REG_ATTR(phy_cfg4, DP_USBCS_PHY_CFG4_OFFSET, DPTOP);
@@ -2547,10 +2672,24 @@ static const struct attribute_group usb_phy_group = {
 	.attrs = usb_phy_attrs,
 };
 
+static struct attribute *aux_tune_params_attrs[] = {
+	&dev_attr_aux_tune_ovrd_en.attr,
+	&dev_attr_aux_ctrl.attr,
+	&dev_attr_aux_hys_tune.attr,
+	&dev_attr_aux_vod_tune.attr,
+	NULL
+};
+
+static const struct attribute_group aux_tune_params_group = {
+	.name = "aux_tune_params",
+	.attrs = aux_tune_params_attrs,
+};
+
 static const struct attribute_group *usb_phy_groups[] = {
 	&usb_phy_group,
 	&phy_registers_group,
 	&phy_coeffs_group,
+	&aux_tune_params_group,
 	NULL,
 };
 

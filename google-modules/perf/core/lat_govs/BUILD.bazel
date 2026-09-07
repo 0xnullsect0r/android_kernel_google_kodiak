@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_module(
     name = "gs_governor_utils",
     srcs = [
@@ -18,9 +23,6 @@ ddk_module(
     ],
     includes = ["."],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/core/gs_perf_mon",
@@ -36,9 +38,6 @@ ddk_module(
     defconfig = "cmefreq_gov_enabled_defconfig",
     kconfig = "cmefreq_gov_Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":gs_governor_utils",
         "//common:all_headers_aarch64",
@@ -134,10 +133,6 @@ alias(
         ":gs_governor_dsulat_enabled": ":gs_governor_dsulat_real",
         "//conditions:default": ":gs_governor_dsulat_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/soc/google/vh/kernel/sched:__subpackages__",
-    ],
 )
 
 config_setting(
@@ -152,8 +147,4 @@ alias(
         ":gs_governor_memlat_enabled": ":gs_governor_memlat_real",
         "//conditions:default": ":gs_governor_memlat_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/soc/google/vh/kernel/sched:__subpackages__",
-    ],
 )

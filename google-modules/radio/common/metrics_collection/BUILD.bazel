@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 label_flag(
     name = "metrics_collection",
     build_setting_default = ":metrics_collection_disabled",
@@ -58,10 +63,6 @@ ddk_module(
     ],
     includes = ["include"],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",

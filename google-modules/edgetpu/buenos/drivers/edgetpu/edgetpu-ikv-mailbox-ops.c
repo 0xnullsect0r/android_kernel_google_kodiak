@@ -2,7 +2,7 @@
 /*
  * GCIP Mailbox Ops for the in-kernel VII mailbox
  *
- * Copyright (C) 2024-2025 Google LLC
+ * Copyright (C) 2024-2026 Google LLC
  */
 
 #include <linux/atomic.h>
@@ -15,6 +15,7 @@
 #include <iif/iif-shared.h>
 
 #include "edgetpu-firmware.h"
+#include "edgetpu-iif.h"
 #include "edgetpu-ikv-mailbox-ops.h"
 #include "edgetpu-ikv.h"
 #include "edgetpu-iremap-pool.h"
@@ -139,11 +140,6 @@ static u64 edgetpu_ikv_get_resp_elem_seq(struct gcip_mailbox *mailbox, void *res
 	return edgetpu_vii_response_get_seq_number(resp);
 }
 
-static void edgetpu_ikv_set_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp, u64 seq)
-{
-	edgetpu_vii_response_set_seq_number(resp, seq);
-}
-
 static int edgetpu_ikv_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
 {
 	struct edgetpu_ikv *ikv = gcip_mailbox_get_data(mailbox);
@@ -169,8 +165,8 @@ static int edgetpu_ikv_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
 static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 						struct gcip_mailbox_awaiter *gcip_awaiter)
 {
+	struct edgetpu_iif *etiif;
 	struct edgetpu_ikv_response *ikv_resp;
-	unsigned long flags;
 	int ret;
 
 	/*
@@ -178,6 +174,7 @@ static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, vo
 	 * support), there's no need to check it.
 	 */
 	ikv_resp = container_of(gcip_awaiter, struct edgetpu_ikv_response, gcip_awaiter);
+	etiif = ikv_resp->etikv->etdev->etiif;
 
 	/*
 	 * This function call is meaningful only for IIFs in the arrays.
@@ -214,16 +211,13 @@ static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, vo
 	 * submitted to the firmware and the kernel driver doesn't need to care signaling out-fences
 	 * with an error caused in the driver side.
 	 */
-	ret = gcip_fence_array_submit_waiter_and_signaler(
-		ikv_resp->in_fence_array, ikv_resp->out_fence_array, NULL, NULL, IIF_IP_TPU);
+	ret = edgetpu_iif_submit_waiter_and_signaler(etiif, ikv_resp->in_fence_array,
+						     ikv_resp->out_fence_array,
+						     ikv_resp->poll_cb_array);
 	if (ret) {
 		dev_err(mailbox->dev, "Failed to submit waiter or signaler to fences, ret=%d", ret);
 		return ret;
 	}
-
-	spin_lock_irqsave(ikv_resp->queue_lock, flags);
-	list_add_tail(&ikv_resp->list_entry, ikv_resp->pending_queue);
-	spin_unlock_irqrestore(ikv_resp->queue_lock, flags);
 
 	return 0;
 }
@@ -263,7 +257,6 @@ const struct gcip_mailbox_ops ikv_mailbox_ops = {
 	.acquire_rx_queue_lock = edgetpu_ikv_acquire_resp_queue_lock,
 	.release_rx_queue_lock = edgetpu_ikv_release_resp_queue_lock,
 	.get_resp_elem_seq = edgetpu_ikv_get_resp_elem_seq,
-	.set_resp_elem_seq = edgetpu_ikv_set_resp_elem_seq,
 	.wait_for_tx_queue_not_full = edgetpu_ikv_wait_for_cmd_queue_not_full,
 	.before_enqueue_wait_list = edgetpu_ikv_before_enqueue_wait_list,
 	.after_enqueue_cmd = edgetpu_ikv_after_enqueue_cmd,

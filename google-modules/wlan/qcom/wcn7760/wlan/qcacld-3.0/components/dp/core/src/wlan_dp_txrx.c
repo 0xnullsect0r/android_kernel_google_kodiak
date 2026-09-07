@@ -136,7 +136,7 @@ static int dp_intf_is_tx_allowed(qdf_nbuf_t nbuf,
 
 	cdp_peer_get_info_by_peer_addr(soc, peer_mac, link_id,
 				       peer_info);
-	dp_set_peer_txpt_idx(nbuf, peer_info);
+	dp_set_peer_search_idx(nbuf, peer_info);
 
 	peer_state = peer_info->state;
 
@@ -650,6 +650,7 @@ dp_start_xmit(struct wlan_dp_link *dp_link, qdf_nbuf_t nbuf)
 			++dp_intf->dp_stats.dhcp_stats.dhcp_req_count;
 			is_dhcp = true;
 		}
+		dp_intf->dhcp_ltxid = qdf_nbuf_get_dhcp_transaction_id(nbuf);
 	} else if ((pkt_type == QDF_NBUF_CB_PACKET_TYPE_ICMP) ||
 		   (pkt_type == QDF_NBUF_CB_PACKET_TYPE_ICMPv6)) {
 		dp_mark_icmp_req_to_fw(dp_ctx, nbuf);
@@ -777,8 +778,11 @@ QDF_STATUS dp_start_xmit_passthru(struct wlan_dp_link *dp_link, qdf_nbuf_t nbuf)
 {
 	struct wlan_dp_intf *dp_intf = dp_link->dp_intf;
 	struct wlan_dp_psoc_context *dp_ctx = dp_intf->dp_ctx;
+	struct cdp_peer_output_param peer_info = {0};
 	struct dp_tx_rx_stats *stats;
 	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+	uint8_t *dest_mac;
+	uint16_t rt_hdr_len;
 	int cpu = qdf_get_smp_processor_id();
 
 	stats = &dp_intf->dp_stats.tx_rx_stats;
@@ -828,6 +832,18 @@ QDF_STATUS dp_start_xmit_passthru(struct wlan_dp_link *dp_link, qdf_nbuf_t nbuf)
 		dp_err_rl("TX function not registered by the data path");
 		goto drop_pkt_and_release_nbuf;
 	}
+
+	rt_hdr_len = qdf_nbuf_get_radiotap_len(nbuf);
+	qdf_nbuf_pull_head(nbuf, rt_hdr_len);
+	dest_mac = qdf_nbuf_ieee80211_get_dest_mac(nbuf);
+	qdf_nbuf_push_head(nbuf, rt_hdr_len);
+
+	cdp_peer_get_info_by_peer_addr(soc, dest_mac, dp_link->link_id,
+				       &peer_info);
+
+	if (peer_info.is_peer_assoc_done)
+		dp_set_peer_search_idx(nbuf, &peer_info);
+
 
 	QDF_NBUF_CB_TX_VDEV_CTX(nbuf) = dp_link->link_id;
 
@@ -1968,7 +1984,8 @@ QDF_STATUS dp_rx_packet_cbk(void *dp_link_context,
 		dp_event_eapol_log(nbuf, QDF_RX);
 		qdf_dp_trace_log_pkt(dp_link->link_id, nbuf, QDF_RX,
 				     QDF_TRACE_DEFAULT_PDEV_ID,
-				     dp_intf->device_mode);
+				     dp_intf->device_mode,
+				     dp_intf->dhcp_ltxid);
 
 		DPTRACE(qdf_dp_trace(nbuf,
 				     QDF_DP_TRACE_RX_PACKET_PTR_RECORD,
@@ -2141,7 +2158,8 @@ QDF_STATUS dp_rx_packet_cbk_passthru(void *dp_link_context, qdf_nbuf_t rx_nbuf)
 
 		qdf_dp_trace_log_pkt(dp_link->link_id, nbuf, QDF_RX,
 				     QDF_TRACE_DEFAULT_PDEV_ID,
-				     dp_intf->device_mode);
+				     dp_intf->device_mode,
+				     dp_intf->dhcp_ltxid);
 
 		DPTRACE(qdf_dp_trace(nbuf,
 				     QDF_DP_TRACE_RX_PACKET_PTR_RECORD,

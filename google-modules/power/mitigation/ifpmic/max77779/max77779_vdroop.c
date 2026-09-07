@@ -23,6 +23,9 @@
 #define MAX77779_SP_CLR_BYTES 1
 #define DEFAULT_VIMON_TRIG VIMON_BATOILO1_TRIGGER
 
+#define BCL_FACTORY_OILO_LIM 4800
+#define BCL_FACTORY_OILO_DEB 0
+
 struct max77779_sample_data {
 	uint16_t v_val;
 	int16_t i_val;
@@ -484,6 +487,14 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->batt_irq_conf2.batoilo_lower_limit = ret ? BO_LOWER_LIMIT : retval;
 	ret = of_property_read_u32(np, "batoilo2_upper", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_upper_limit = ret ? BO_UPPER_LIMIT : retval;
+#ifdef BCL_FACTORY_BUILD
+	bcl_dev->batt_irq_conf1.batoilo_trig_lvl =
+			(BCL_FACTORY_OILO_LIM -
+			 bcl_dev->batt_irq_conf1.batoilo_lower_limit) / BO_STEP;
+	bcl_dev->batt_irq_conf2.batoilo_trig_lvl =
+			(BCL_FACTORY_OILO_LIM -
+			 bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+#else
 	ret = of_property_read_u32(np, "batoilo_trig_lvl", &retval);
 	retval = ret ? BO_LIMIT : retval;
 	bcl_dev->batt_irq_conf1.batoilo_trig_lvl =
@@ -492,6 +503,7 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	retval = ret ? BO_LIMIT : retval;
 	bcl_dev->batt_irq_conf2.batoilo_trig_lvl =
 			(retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+#endif
 	ret = of_property_read_u32(np, "batoilo_usb_trig_lvl", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_usb_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
@@ -530,10 +542,15 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->batt_irq_conf1.batoilo_int_rel = ret ? BO_INT_REL_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_int_rel", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_int_rel = ret ? BO_INT_REL_DEFAULT : retval;
+#ifdef BCL_FACTORY_BUILD
+	bcl_dev->batt_irq_conf1.batoilo_det = BCL_FACTORY_OILO_DEB;
+	bcl_dev->batt_irq_conf2.batoilo_det = BCL_FACTORY_OILO_DEB;
+#else
 	ret = of_property_read_u32(np, "batoilo_det", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_det = ret ? BO_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_det", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_det = ret ? BO_INT_DET_DEFAULT : retval;
+#endif
 	ret = of_property_read_u32(np, "batoilo_int_det", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_int_det = ret ? BO_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_int_det", &retval);

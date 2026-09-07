@@ -103,6 +103,7 @@ typedef enum WlanCmdId {
 	kWlanCmdPacketSnifferReset,
 	kWlanCmdUpdateUp2Flow,
 	kWlanCmdUpdateFlowIdLookUpEntry,
+	kWlanCmdRxHandoverSync,
 	kWlanCmdIdEnd,
 	kWlanCmdIdNum = kWlanCmdIdEnd,
 } WlanCmdId;

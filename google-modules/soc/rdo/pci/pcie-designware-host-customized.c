@@ -115,18 +115,6 @@ static void goog_chained_msi_isr(struct irq_desc *desc)
 	chained_irq_exit(chip, desc);
 }
 
-void goog_setup_chained_irq_handler(struct dw_pcie_rp *pp)
-{
-	u32 ctrl, num_ctrls;
-
-	num_ctrls = pp->num_vectors / MAX_MSI_IRQS_PER_CTRL;
-	for (ctrl = 0; ctrl < num_ctrls; ctrl++) {
-		if (pp->msi_irq[ctrl] > 0)
-			irq_set_chained_handler_and_data(pp->msi_irq[ctrl],
-							goog_chained_msi_isr, pp);
-	}
-}
-
 static void goog_pci_bottom_ack(struct irq_data *d)
 {
 	struct dw_pcie_rp *pp  = irq_data_get_irq_chip_data(d);
@@ -176,7 +164,7 @@ static void goog_pci_bottom_mask(struct irq_data *d)
 	raw_spin_unlock_irqrestore(&pp->lock, flags);
 }
 
-void goog_pci_bottom_unmask(struct irq_data *d)
+static void goog_pci_bottom_unmask(struct irq_data *d)
 {
 	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
@@ -231,56 +219,240 @@ static struct msi_domain_info dw_pcie_msi_domain_info = {
 	.chip	= &dw_pcie_msi_irq_chip,
 };
 
-/*
- * Duped with implementation in the pcie-google.c, need to restruct later.
- */
-static int dw_pcie_irq_domain_alloc(struct irq_domain *domain,
+static int google_pcie_irq_domain_alloc(struct irq_domain *domain,
 				    unsigned int virq, unsigned int nr_irqs,
 				    void *args)
 {
 	struct dw_pcie_rp *pp = domain->host_data;
-	unsigned long flags;
-	u32 i;
-	int bit;
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct google_pcie *gpcie = dev_get_drvdata(pci->dev);
+	const struct cpumask *mask;
+	unsigned long flags, index, start, size;
+	int irq, ctrl, p_irq, *msi_vec_index;
+	unsigned int num_ctrls = (pp->num_vectors / MAX_MSI_IRQS_PER_CTRL);
+
+	/*
+	 * All IRQs on a given controller will use the same parent interrupt,
+	 * and therefore the same CPU affinity. We try to honor any CPU spreading
+	 * requests by assigning distinct affinity masks to distinct vectors.
+	 * The algorithm here honor whoever comes first can bind the MSI controller to
+	 * its irq affinity mask, or compare its cpumask against
+	 * currently recorded to decide if binding to this MSI controller.
+	 */
+
+	if (!gpcie)
+		return -EINVAL;
+
+	msi_vec_index = kcalloc(nr_irqs, sizeof(*msi_vec_index), GFP_KERNEL);
+	if (!msi_vec_index)
+		return -ENOMEM;
 
 	raw_spin_lock_irqsave(&pp->lock, flags);
 
-	bit = bitmap_find_free_region(pp->msi_irq_in_use, pp->num_vectors,
-				      order_base_2(nr_irqs));
+	for (irq = 0; irq < nr_irqs; irq++) {
+		mask = irq_get_affinity_mask(virq + irq);
+		for (ctrl = 0; ctrl < num_ctrls; ctrl++) {
+			start = ctrl * MAX_MSI_IRQS_PER_CTRL;
+			size = start + MAX_MSI_IRQS_PER_CTRL;
+			if (find_next_bit(pp->msi_irq_in_use, size, start) >= size ||
+			    cpumask_empty(&gpcie->msi_ctrl_to_cpu[ctrl])) {
+				cpumask_copy(&gpcie->msi_ctrl_to_cpu[ctrl], mask);
+				break;
+			}
+
+			if (cpumask_equal(&gpcie->msi_ctrl_to_cpu[ctrl], mask) &&
+			    find_next_zero_bit(pp->msi_irq_in_use, size, start) < size)
+				break;
+		}
+
+		/*
+		 * No MSI controller matches. Unwind the allocation we
+		 * started.
+		 */
+		if (ctrl == num_ctrls) {
+			for (p_irq = irq - 1; p_irq >= 0; p_irq--)
+				bitmap_clear(pp->msi_irq_in_use, msi_vec_index[p_irq], 1);
+			raw_spin_unlock_irqrestore(&pp->lock, flags);
+			kfree(msi_vec_index);
+			return -ENOSPC;
+		}
+
+		index = bitmap_find_next_zero_area(pp->msi_irq_in_use,
+						   size,
+						   start,
+						   1,
+						   0);
+		bitmap_set(pp->msi_irq_in_use, index, 1);
+		msi_vec_index[irq] = index;
+	}
 
 	raw_spin_unlock_irqrestore(&pp->lock, flags);
 
-	if (bit < 0)
-		return -ENOSPC;
-
-	for (i = 0; i < nr_irqs; i++)
-		irq_domain_set_info(domain, virq + i, bit + i,
+	for (irq = 0; irq < nr_irqs; irq++)
+		irq_domain_set_info(domain, virq + irq, msi_vec_index[irq],
 				    pp->msi_irq_chip,
 				    pp, handle_edge_irq,
 				    NULL, NULL);
+	kfree(msi_vec_index);
 
 	return 0;
 }
 
-static void dw_pcie_irq_domain_free(struct irq_domain *domain,
+static void google_pcie_irq_domain_free(struct irq_domain *domain,
 				    unsigned int virq, unsigned int nr_irqs)
 {
-	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
+	struct irq_data *d;
 	struct dw_pcie_rp *pp = domain->host_data;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&pp->lock, flags);
-
-	bitmap_release_region(pp->msi_irq_in_use, d->hwirq,
-			      order_base_2(nr_irqs));
-
+	for (int i = 0; i < nr_irqs; i++) {
+		d = irq_domain_get_irq_data(domain, virq + i);
+		bitmap_clear(pp->msi_irq_in_use, d->hwirq, 1);
+	}
 	raw_spin_unlock_irqrestore(&pp->lock, flags);
 }
 
 static const struct irq_domain_ops dw_pcie_msi_domain_ops = {
-	.alloc	= dw_pcie_irq_domain_alloc,
-	.free	= dw_pcie_irq_domain_free,
+	.alloc	= google_pcie_irq_domain_alloc,
+	.free	= google_pcie_irq_domain_free,
 };
+
+/*
+ * The algo here honor if there is any intersection of mask of
+ * the existing msi vectors and the requesting msi vector. So we
+ * could handle both narrow (1 bit set mask) and wide (0xffff...)
+ * cases, return -EINVAL and reject the request if the result of
+ * cpumask is empty, otherwise return 0 and have the calculated
+ * result on the mask_to_check to pass down to the irq_chip.
+ */
+static int google_pci_check_mask_compatibility(struct dw_pcie_rp *pp,
+					   unsigned long msi_irq_index,
+					   unsigned long hwirq_to_check,
+					   struct cpumask *mask_to_check)
+{
+	unsigned long end, hwirq;
+	const struct cpumask *mask;
+	unsigned int virq;
+
+	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
+	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
+	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
+		if (hwirq == hwirq_to_check)
+			continue;
+		virq = irq_find_mapping(pp->irq_domain, hwirq);
+		if (!virq)
+			continue;
+		mask = irq_get_affinity_mask(virq);
+		if (!cpumask_and(mask_to_check, mask, mask_to_check))
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static void google_pci_update_effective_affinity(struct dw_pcie_rp *pp,
+					     unsigned long msi_irq_index,
+					     const struct cpumask *effective_mask,
+					     unsigned long hwirq_to_check)
+{
+	struct irq_desc *desc_downstream;
+	unsigned int virq_downstream;
+	unsigned long end, hwirq;
+
+	/*
+	 * update all the irq_data's effective mask
+	 * bind to this msi controller, so the correct
+	 * affinity would reflect on
+	 * /proc/irq/XXX/effective_affinity
+	 */
+	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
+	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
+	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
+		virq_downstream = irq_find_mapping(pp->irq_domain, hwirq);
+		if (!virq_downstream)
+			continue;
+		desc_downstream = irq_to_desc(virq_downstream);
+		irq_data_update_effective_affinity(&desc_downstream->irq_data,
+						   effective_mask);
+	}
+}
+
+static int google_pci_msi_set_affinity(struct irq_data *d,
+				   const struct cpumask *mask, bool force)
+{
+	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	int ret;
+	int virq_parent;
+	unsigned long hwirq = d->hwirq;
+	unsigned long flags, msi_irq_index;
+	struct irq_desc *desc_parent;
+	const struct cpumask *effective_mask;
+	cpumask_var_t mask_result;
+
+	/*
+	 * The msi irq vectors are 32:1 aggregator to GIC SPI
+	 * line. so divid the hwirq by 32 to find out GIC SPI
+	 * line this msi vector map to.
+	 */
+	msi_irq_index = hwirq / MAX_MSI_IRQS_PER_CTRL;
+	if (!alloc_cpumask_var(&mask_result, GFP_ATOMIC))
+		return -ENOMEM;
+
+	/*
+	 * Loop through all possible msi vector to check if the
+	 * request one is compatible with all of them
+	 */
+	raw_spin_lock_irqsave(&pp->lock, flags);
+	cpumask_copy(mask_result, mask);
+	ret = google_pci_check_mask_compatibility(pp, msi_irq_index, hwirq, mask_result);
+	if (ret) {
+		dev_dbg(pci->dev, "Incompatible mask, request %*pbl, irq num %u\n",
+			cpumask_pr_args(mask), d->irq);
+		goto unlock;
+	}
+
+	dev_dbg(pci->dev, "Final mask, request %*pbl, irq num %u\n",
+		cpumask_pr_args(mask_result), d->irq);
+
+	virq_parent = pp->msi_irq[msi_irq_index];
+	desc_parent = irq_to_desc(virq_parent);
+	ret = desc_parent->irq_data.chip->irq_set_affinity(&desc_parent->irq_data,
+							   mask_result, force);
+
+	if (ret < 0)
+		goto unlock;
+
+	switch (ret) {
+	case IRQ_SET_MASK_OK:
+	case IRQ_SET_MASK_OK_DONE:
+		cpumask_copy(desc_parent->irq_common_data.affinity, mask);
+		fallthrough;
+	case IRQ_SET_MASK_OK_NOCOPY:
+		break;
+	}
+
+	effective_mask = irq_data_get_effective_affinity_mask(&desc_parent->irq_data);
+	google_pci_update_effective_affinity(pp, msi_irq_index, effective_mask, hwirq);
+	/*
+	 * We may need to accommodate the intersection of multiple overlapping affinity
+	 * requests, so if we're satisfying the request via a subset, leave the original
+	 * request alone. If we're moving to a non-intersecting affinity, update to use
+	 * the new affinity.
+	 */
+	if (d->irq) {
+		if (cpumask_subset(effective_mask, irq_get_affinity_mask(d->irq)))
+			ret = IRQ_SET_MASK_OK_NOCOPY;
+		else
+			ret = IRQ_SET_MASK_OK;
+	}
+
+unlock:
+	free_cpumask_var(mask_result);
+	raw_spin_unlock_irqrestore(&pp->lock, flags);
+	return ret;
+}
 
 static struct irq_chip goog_pci_msi_bottom_irq_chip = {
 	.name = "DWPCI-MSI",
@@ -288,6 +460,7 @@ static struct irq_chip goog_pci_msi_bottom_irq_chip = {
 	.irq_compose_msi_msg = goog_pci_setup_msi_msg,
 	.irq_mask = goog_pci_bottom_mask,
 	.irq_unmask = goog_pci_bottom_unmask,
+	.irq_set_affinity = google_pci_msi_set_affinity,
 };
 
 static void goog_pcie_free_msi(struct dw_pcie_rp *pp)

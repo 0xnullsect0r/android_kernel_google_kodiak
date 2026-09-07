@@ -17,7 +17,7 @@
 #include <linux/property.h>
 #include <linux/rfkill.h>
 #include <linux/rtc.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 #include <linux/kfifo.h>
 #include <linux/slab.h>
 #include <soc/google/exynos-cpupm.h>
@@ -204,6 +204,9 @@ static irqreturn_t nitrous_host_wake_isr(int irq, void *data)
 		pm_stay_awake(lpm->dev);
 		exynos_update_ip_idle_status(lpm->idle_bt_rx_ip_index, STATUS_BUSY);
 
+		/* Automatically trigger Runtime PM Resume (Wakes UART & asserts DEV_WAKE) */
+		pm_runtime_get(lpm->dev);
+
 		/* get timestamp for logging */
 		ktime_get_real_ts64(&ts);
 
@@ -219,6 +222,10 @@ static irqreturn_t nitrous_host_wake_isr(int irq, void *data)
 		exynos_update_ip_idle_status(lpm->idle_bt_rx_ip_index, STATUS_IDLE);
 		/* Release host-wake wakelock */
 		pm_wakeup_dev_event(lpm->dev, lpm->wakelock_ctrl, false);
+
+		/* Allow Runtime PM to autosuspend UART & DEV_WAKE after delay */
+		pm_runtime_mark_last_busy(lpm->dev);
+		pm_runtime_put_autosuspend(lpm->dev);
 
 		/* Get timestamp for logging */
 		ktime_get_real_ts64(&ts);
@@ -636,7 +643,7 @@ static void toggle_timesync(struct nitrous_bt_lpm *lpm)
 	if (lpm->timesync_state == TIMESYNC_NOT_SUPPORTED)
 		return;
 	rc = devm_request_irq(lpm->dev, lpm->irq_timesync, ntirous_timesync_isr,
-			IRQF_TRIGGER_RISING, "bt_timesync", lpm);
+			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "bt_timesync", lpm);
 	if (unlikely(rc)) {
 		lpm->timesync_state = TIMESYNC_SUPPORTED;
 		dev_logbuffer_logk(lpm->dev, lpm->log, LOGLEVEL_ERR,

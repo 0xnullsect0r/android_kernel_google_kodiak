@@ -9,6 +9,8 @@
 
 #include <linux/module.h>
 
+#if IS_ENABLED(CONFIG_AOSS_SSR_NOTIFIER)
+
 static BLOCKING_NOTIFIER_HEAD(aoss_ssr_notifier);
 
 int aoss_ssr_add_notifier(struct notifier_block *nb)
@@ -28,6 +30,8 @@ void aoss_ssr_notify(enum aoss_ssr_notifier_event_t event)
 	blocking_notifier_call_chain(&aoss_ssr_notifier, event, NULL);
 }
 EXPORT_SYMBOL_GPL(aoss_ssr_notify);
+
+#endif
 
 MODULE_AUTHOR("Alex Iacobucci <alexiacobucci@google.com>");
 MODULE_DESCRIPTION("Google AOSS SSR Notifier");

@@ -58,7 +58,7 @@ static int thermal_tj_pressure_process_irq(struct notifier_block *nb, unsigned l
 {
 	// Check immediately if the device is in passive polling
 	if (tj_pressure_data.current_polling_delay_ms == tj_pressure_data.passive_polling_delay_ms)
-		mod_delayed_work(system_wq, &thermal_pressure_tj_work, 0);
+		mod_delayed_work(system_unbound_wq, &thermal_pressure_tj_work, 0);
 
 	return NOTIFY_OK;
 }
@@ -116,7 +116,8 @@ static void apply_tj_thermal_pressure(struct work_struct *work)
 
 out:
 	tj_pressure_data.current_polling_delay_ms = polling_delay_ms;
-	schedule_delayed_work(&thermal_pressure_tj_work, msecs_to_jiffies(polling_delay_ms));
+	queue_delayed_work(system_unbound_wq, &thermal_pressure_tj_work,
+			   msecs_to_jiffies(polling_delay_ms));
 }
 
 static void thermal_pressure_tj_remove(struct platform_device *pdev)
@@ -312,8 +313,8 @@ static int thermal_pressure_tj_probe(struct platform_device *pdev)
 		}
 	}
 
-	schedule_delayed_work(&thermal_pressure_tj_work,
-			      msecs_to_jiffies(tj_pressure_data.current_polling_delay_ms));
+	queue_delayed_work(system_unbound_wq, &thermal_pressure_tj_work,
+			   msecs_to_jiffies(tj_pressure_data.current_polling_delay_ms));
 	dev_dbg(
 		dev,
 		"Tj thermal pressure module probe complete. Scheduled a delayed work after %d ms\n",

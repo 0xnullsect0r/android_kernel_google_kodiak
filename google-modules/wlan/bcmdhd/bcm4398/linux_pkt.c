@@ -1,7 +1,7 @@
 /*
  * Linux Packet (skb) interface
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -891,8 +891,6 @@ osl_pkt_orphan_partial(struct sk_buff *skb)
 	if (!skb->destructor || skb->destructor == sock_wfree)
 		return;
 
-	if (!skb->sk || skb->sk->sk_protocol != IPPROTO_TCP)
-	    return;
 
 	if (unlikely(!p_tcp_wfree)) {
 		/* this is a hack to get tcp_wfree pointer since it's not

@@ -90,10 +90,8 @@ int godpm_blocking_notifier_call_chain(struct blocking_notifier_head *nh,
 				       unsigned long val, void *v);
 bool godpm_schedule_delayed_work(struct delayed_work *dwork,
 				 unsigned long delay);
-bool godpm_mod_delayed_work(struct workqueue_struct *wq,
-			    struct delayed_work *dwork,
-			    unsigned long delay);
-bool godpm_cancel_delayed_work_sync(struct delayed_work *dwork);
+bool godpm_mod_delayed_work(struct delayed_work *dwork, unsigned long delay);
+bool godpm_cancel_delayed_work(struct delayed_work *dwork);
 ktime_t godpm_ktime_get(void);
 void odpm_polling_work(struct work_struct *work);
 

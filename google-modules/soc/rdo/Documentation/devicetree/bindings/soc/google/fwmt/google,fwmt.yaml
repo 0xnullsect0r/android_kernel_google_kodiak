@@ -5,14 +5,14 @@
 $id: http://devicetree.org/schemas/soc/google/fwmt/google,fwmt.yaml#
 $schema: http://devicetree.org/meta-schemas/base.yaml#
 
-title: GDMC FWMT (Firmware Metrics)
+title: FWMT (Firmware Metrics)
 
 maintainers:
   - Filip Konieczny <filipkonieczny@google.com>
 
 description:
   This driver offers its interface through character devices, and it enables
-  retrieval of metrics collected by GDMC firmware.
+  retrieval of metrics collected by the firmware.
 
 properties:
   compatible:
@@ -22,10 +22,14 @@ properties:
     description:
       A phandle to the mailbox controller used for communication with the GDMC.
 
+  mboxes:
+    description:
+      A phandle to the mailbox controller used for communication with the CPM.
+
   memory-region:
     description:
       A phandle to a reserved memory region used for DMA buffers to exchange
-      data with the GDMC firmware.
+      data with the firmware.
 
   buffer-offset:
     description:
@@ -38,6 +42,7 @@ properties:
 required:
   - compatible
   - gdmc-iface
+  - mboxes
   - memory-region
   - buffer-offset
   - buffer-size
@@ -49,6 +54,7 @@ examples:
     fwmt: fwmt {
       compatible = "google,fwmt-gdmc";
       gdmc-iface = <&goog_mba_gdmc_iface>;
+      mboxes = <&goog_mba_cpm_iface>;
       memory-region = <&gdmc_metrics_dma_buffer>;
       buffer-offset = <0x0>;
       buffer-size = <0x2000>;

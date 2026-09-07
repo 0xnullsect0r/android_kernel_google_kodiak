@@ -56,6 +56,7 @@
 
 #include "aoc_firmware.h"
 #include "aoc_ramdump_regions.h"
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
 
 #define AOC_MAX_MINOR (1U)
 
@@ -153,6 +154,9 @@ static int aoc_coredump_reset_delay_ms;
 module_param(aoc_coredump_reset_delay_ms, int, 0644);
 MODULE_PARM_DESC(aoc_coredump_reset_delay_ms, "Delay between collecting coredump and starting SSR");
 
+static bool aoc_en_kernel_ambss_voting = true;
+module_param(aoc_en_kernel_ambss_voting, bool, 0644);
+MODULE_PARM_DESC(aoc_en_kernel_ambss_voting, "Enable kernel AMBSS voting.");
 
 static struct aoc_module_parameters aoc_module_params = {
 	.aoc_autoload_firmware = &aoc_autoload_firmware,
@@ -165,6 +169,7 @@ static struct aoc_module_parameters aoc_module_params = {
 	.aoc_panic_on_ssr_failure = &aoc_panic_on_ssr_failure,
 	.aoc_ssr_hysteresis_threshold_ms =  &aoc_ssr_hysteresis_threshold_ms,
 	.aoc_coredump_reset_delay_ms = &aoc_coredump_reset_delay_ms,
+	.aoc_en_kernel_ambss_voting = &aoc_en_kernel_ambss_voting,
 };
 
 static int aoc_core_suspend(struct device *dev);
@@ -274,7 +279,7 @@ static bool has_name_matching_driver(const char *service_name)
 				driver_matches_service_by_name) != 0;
 }
 
-static struct aoc_service_dev *service_dev_by_name(struct aoc_prvdata *prv,
+struct aoc_service_dev *service_dev_by_name(struct aoc_prvdata *prv,
 						   const char *service_name)
 {
 	int services, i;
@@ -311,6 +316,7 @@ static struct aoc_service_dev *service_dev_by_name(struct aoc_prvdata *prv,
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(service_dev_by_name);
 
 static bool service_names_are_valid(struct aoc_prvdata *prv)
 {
@@ -1265,7 +1271,10 @@ static ssize_t force_reload_store(struct device *dev, struct device_attribute *a
 
 	/* Force release current loaded AoC if watchdog already active */
 	prvdata->force_release_aoc = true;
-	while (work_busy(&prvdata->watchdog_work) || work_busy(&prvdata->monitor_work.work));
+	/* Wait for any in-progress watchdog SSR (e.g., coredumps) to finish */
+	flush_work(&prvdata->watchdog_work);
+	/* Cancel pending monitor timer to prevent redundant SSR, or wait if running */
+	cancel_delayed_work_sync(&prvdata->monitor_work);
 	prvdata->force_release_aoc = false;
 
 	trigger_aoc_ssr(true, "Force Reload AoC");
@@ -1712,7 +1721,9 @@ static void aoc_did_become_online(struct work_struct *work)
 
 	aoc_set_dma_buf_as_ring(prvdata);
 
-	platform_specific_aoc_online();
+	ret = platform_specific_aoc_online();
+	if (ret)
+		trigger_aoc_ssr(true, "platform_specific_aoc_online failed");
 
 err:
 	mutex_unlock(&aoc_service_lock);
@@ -2042,6 +2053,7 @@ void trigger_aoc_ssr(bool ap_triggered_reset, char *reset_reason)
 	}
 }
 
+
 static void prepend_fw_builder_to_crash_string(struct aoc_prvdata *prvdata, char *crash_info,
 									size_t max_len) {
 	char *fw_builder;
@@ -2199,6 +2211,8 @@ static void aoc_watchdog(struct work_struct *work)
 
 	aoc_state = AOC_STATE_SSR;
 	mutex_unlock(&aoc_service_lock);
+
+	aoss_ssr_notify(AOSS_SSR_EARLY_PREPARE);
 
 	dev_info(prvdata->dev, "starting SSR work\n");
 	prvdata->reset_wait_time_index = 0;
@@ -2469,6 +2483,20 @@ struct aoc_prvdata *get_aoc_prvdata(void)
 	return platform_get_drvdata(aoc_platform_device);
 }
 EXPORT_SYMBOL_GPL(get_aoc_prvdata);
+
+void aoc_cancel_service_work_sync(struct aoc_service_dev *dev)
+{
+	struct aoc_prvdata *prvdata = get_aoc_prvdata();
+	int channel;
+
+	if (!dev || !prvdata)
+		return;
+
+	channel = dev->phys_index;
+	if (channel >= 0 && channel < prvdata->aoc_mbox_channels)
+		cancel_work_sync(&prvdata->mbox_channels[channel].work.service_work);
+}
+EXPORT_SYMBOL_GPL(aoc_cancel_service_work_sync);
 
 static int aoc_open(struct inode *inode, struct file *file)
 {
@@ -3161,6 +3189,7 @@ static int aoc_platform_probe(struct platform_device *pdev)
 		rc = -ENOMEM;
 		goto err_failed_prvdata_alloc;
 	}
+	prvdata->aoc_module_params = &aoc_module_params;
 	platform_set_drvdata(pdev, prvdata);
 	aoc_service_set_aoc_prvdata((void *)prvdata);
 

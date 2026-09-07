@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 # It's here to support perf_trace_counters.ko and vh_sched.ko in soc/gs.
 ddk_headers(
     name = "headers",
@@ -77,7 +82,7 @@ ddk_module(
 
 bool_flag(
     name = "enable_gs_perf_mon",
-    build_setting_default = True,
+    build_setting_default = False,
     visibility = ["//visibility:private"],
 )
 
@@ -95,12 +100,6 @@ alias(
         ":gs_perf_mon_enabled": ":gs_perf_mon_real",
         "//conditions:default": ":gs_perf_mon_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/soc/rdo:__pkg__",
-    ],
 )
 
 exports_files([

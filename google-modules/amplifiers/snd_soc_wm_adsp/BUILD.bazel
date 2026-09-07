@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "headers",
     hdrs = [
@@ -25,10 +30,6 @@ ddk_module(
     ],
     out = "snd-soc-wm-adsp.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/amplifiers:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
     ],

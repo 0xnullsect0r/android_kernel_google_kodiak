@@ -3,8 +3,13 @@
 # Cirrus Logic haptic driver.
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 load(":build_defs.bzl", "define_driver_versions", "get_versioned_sources")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 HAPTICS_COMMON_HEADERS = [
     "cl_dsp.h",
@@ -151,18 +156,5 @@ ddk_module(
         ":cs40l26-core",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-    ],
-)
-
-kernel_module_group(
-    name = "cs40l26",
-    srcs = [
-        ":cl_dsp-core",
-        ":cs40l26-core",
-        ":cs40l26-i2c",
-        ":snd-soc-cs40l26",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

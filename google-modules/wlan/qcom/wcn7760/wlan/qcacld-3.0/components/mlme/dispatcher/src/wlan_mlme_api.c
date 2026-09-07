@@ -1699,6 +1699,24 @@ enum phy_ch_width wlan_mlme_get_max_bw(void)
 }
 #endif
 
+enum phy_ch_width wlan_mlme_get_max_curr_bw(struct wlan_objmgr_pdev *pdev,
+					    qdf_freq_t curr_op_freq,
+					    enum phy_ch_width chan_bw)
+{
+	struct ch_params ch_params;
+
+	ch_params.ch_width = chan_bw;
+	wlan_reg_set_channel_params_for_pwrmode(pdev,
+						curr_op_freq,
+						0, &ch_params,
+						REG_CURRENT_PWR_MODE);
+	mlme_debug("reg bw %d chan bw %d",
+		   ch_params.ch_width, chan_bw);
+
+	return ch_params.ch_width;
+}
+
+
 QDF_STATUS wlan_mlme_get_sta_ch_width(struct wlan_objmgr_vdev *vdev,
 				      enum phy_ch_width *ch_width,
 				      enum wlan_phymode *phy_mode)
@@ -8796,6 +8814,23 @@ wlan_mlme_stats_get_periodic_display_time(struct wlan_objmgr_psoc *psoc,
 
 	*periodic_display_time =
 		mlme_obj->cfg.stats.stats_periodic_display_time;
+
+	return QDF_STATUS_SUCCESS;
+}
+
+QDF_STATUS
+wlan_mlme_stats_get_chain_signal_in_signal_row(struct wlan_objmgr_psoc *psoc,
+					       bool *val)
+{
+	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+
+	mlme_obj = mlme_get_psoc_ext_obj(psoc);
+	if (!mlme_obj) {
+		*val = cfg_default(CFG_STATS_CHAIN_SIGNAL_IN_SIGNAL_ROW);
+		return QDF_STATUS_E_INVAL;
+	}
+
+	*val = mlme_obj->cfg.stats.stats_chain_signal_in_signal_row;
 
 	return QDF_STATUS_SUCCESS;
 }

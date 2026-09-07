@@ -41,7 +41,6 @@
 #include "edgetpu-usr.h"
 #include "edgetpu-wakelock.h"
 #include "edgetpu.h"
-#include "mm-backport.h"
 
 #ifdef EDGETPU_HAS_P2P_MAILBOX
 #include "edgetpu-p2p-mailbox.h"
@@ -1110,7 +1109,7 @@ static void edgetpu_unmap_node(struct edgetpu_mapping *map)
 
 		if (map->dir == DMA_FROM_DEVICE ||
 		    map->dir == DMA_BIDIRECTIONAL)
-			set_page_dirty(page);
+			set_page_dirty_lock(page);
 
 		unpin_user_page(page);
 		num_pages++;
@@ -1243,9 +1242,17 @@ static struct page **edgetpu_pin_user_pages(struct edgetpu_device_group *group,
 
 		if (ret == num_pages)
 			break;
+
+		if (ret >= 0) {
+			etdev_warn(etdev, "try #%d pinned %u of %u pages requested", tried + 1, ret,
+				   num_pages);
+			for (i = 0; i < ret; i++)
+				unpin_user_page(pages[i]);
+			ret = 0;
+		}
 	}
 
-	if (tried > 0)
+	if (tried > 0 && (ret == num_pages))
 		etdev_info(etdev, "mapping required %d retries with LRU cache disabled", tried);
 	if (ret < 0) {
 		etdev_dbg(etdev, "pin_user_pages failed %u:%pK-%u: %d",
@@ -1255,7 +1262,6 @@ static struct page **edgetpu_pin_user_pages(struct edgetpu_device_group *group,
 			etdev_err(etdev,
 				  "system out of memory locking %u pages",
 				  num_pages);
-		num_pages = 0;
 		goto error;
 	}
 	if (ret < num_pages) {
@@ -1265,7 +1271,6 @@ static struct page **edgetpu_pin_user_pages(struct edgetpu_device_group *group,
 			  ret);
 		etdev_err(etdev, "can only lock %u of %u pages requested",
 			  (unsigned int)ret, num_pages);
-		num_pages = ret;
 		ret = -EFAULT;
 		goto error;
 	}
@@ -1274,8 +1279,6 @@ static struct page **edgetpu_pin_user_pages(struct edgetpu_device_group *group,
 	return pages;
 
 error:
-	for (i = 0; i < num_pages; i++)
-		unpin_user_page(pages[i]);
 	kvfree(pages);
 
 	return ERR_PTR(ret);

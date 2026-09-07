@@ -19,6 +19,7 @@ struct lwis_allocator_block {
 	struct lwis_allocator_block *prev;
 	struct hlist_node node;
 	size_t req_size;
+	bool in_use;
 };
 
 struct lwis_allocator_block_pool {

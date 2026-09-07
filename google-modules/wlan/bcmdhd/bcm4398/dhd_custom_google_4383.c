@@ -1,7 +1,7 @@
 /*
  * Customer HW 2 dependant file
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -44,6 +44,8 @@
 #endif /* CONFIG_WIFI_CONTROL_FUNC */
 #include <dhd_dbg.h>
 #include <dhd.h>
+#include <dhd_linux_priv.h>
+#include <dhd_linux_wq.h>
 
 #if IS_ENABLED(CONFIG_SOC_GOOGLE)
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
@@ -73,6 +75,12 @@
 #define GOOGLE_PCIE_DEVICE_ID 0xc001
 #define GOOGLE_PCIE_CH_NUM 0
 #endif /* CONFIG_PCI_EXYNOS_GS */
+
+#if IS_ENABLED(CONFIG_SOC_LGA)
+#define MSI_MASK_REG 0x3c80082c
+#define MSI_STAT_REG 0x3c800830
+#define PCI_ICDS_REG 0x3c009554
+#endif /* CONFIG_SOC_LGA */
 
 #if !IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 uint32 support_l1ss;
@@ -143,6 +151,9 @@ static uint hw_stage_val;
 static bool is_irq_on_big_core = FALSE;
 /* force to switch to small core at beginning */
 static bool is_plat_pcie_resume = TRUE;
+
+extern dhd_pub_t *g_dhd_pub;
+
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 extern int exynos_pcie_register_event(struct exynos_pcie_register_event *reg);
 extern int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg);
@@ -163,6 +174,10 @@ extern void exynos_pin_dbg_show(unsigned int pin, const char *str);
 extern void exynos_pcie_set_skip_config(int ch_num, bool val);
 #endif /* DHD_TREAT_D3ACKTO_AS_LINKDWN */
 #endif /* CONFIG_PCI_EXYNOS_GS */
+
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
+extern void google_pcie_dump_debug(int num);
+#endif /* CONFIG_SOC_LGA || CONFIG_SOC_MBU */
 
 #ifdef DHD_COREDUMP
 #define DEVICE_NAME "wlan"
@@ -366,43 +381,18 @@ typedef struct {
     char sku[MAX_HW_INFO_LEN];
 } sku_info_t;
 
-#if defined(BCM4383_CHIP_DEF)
 sku_info_t sku_table[] = {
 	{ {"G8HHN"}, {"MMW"} },
+	{ {"GLBW0"}, {"MMW"} },
+	{ {"GPQQ7"}, {"MMW"} },
 	{ {"G6GPR"}, {"ROW"} },
+	{ {"GK2MP"}, {"ROW"} },
+	{ {"GUJ0N"}, {"ROW"} },
 	{ {"G576D"}, {"JPN"} },
+	{ {"GL066"}, {"JPN"} },
+	{ {"GV9X7"}, {"JPN"} },
 	{ {"GKV4X"}, {"NA"} }
 };
-#else
-sku_info_t sku_table[] = {
-	{ {"G9S9B"}, {"MMW"} },
-	{ {"G8V0U"}, {"MMW"} },
-	{ {"GFQM1"}, {"MMW"} },
-	{ {"GB62Z"}, {"MMW"} },
-	{ {"GE2AE"}, {"MMW"} },
-	{ {"GQML3"}, {"MMW"} },
-	{ {"GKWS6"}, {"MMW"} },
-	{ {"G1MNW"}, {"MMW"} },
-	{ {"GB7N6"}, {"ROW"} },
-	{ {"GLU0G"}, {"ROW"} },
-	{ {"GNA8F"}, {"ROW"} },
-	{ {"GX7AS"}, {"ROW"} },
-	{ {"GP4BC"}, {"ROW"} },
-	{ {"GVU6C"}, {"ROW"} },
-	{ {"GPJ41"}, {"ROW"} },
-	{ {"GC3VE"}, {"ROW"} },
-	{ {"GR1YH"}, {"JPN"} },
-	{ {"GF5KQ"}, {"JPN"} },
-	{ {"GPQ72"}, {"JPN"} },
-	{ {"GB17L"}, {"JPN"} },
-	{ {"GFE4J"}, {"JPN"} },
-	{ {"G03Z5"}, {"JPN"} },
-	{ {"GE9DP"}, {"JPN"} },
-	{ {"GZPF0"}, {"JPN"} },
-	{ {"G1AZG"}, {"EU"} },
-	{ {"G9BQD"}, {"NA"} }
-};
-#endif /* BCM4383_CHIP_DEF */
 
 static int
 dhd_wlan_get_mac_addr(unsigned char *buf)
@@ -1760,6 +1750,55 @@ uint32 dhd_plat_get_rc_device_id(void)
 	return GOOGLE_PCIE_DEVICE_ID;
 }
 
+int dhd_plat_check_pcie_state(void)
+{
+#if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
+	return 1;
+#else
+	int ret = 0;
+
+	DHD_PRINT(("%s: Function In\n", __FUNCTION__));
+	ret = google_pcie_link_status(pcie_ch_num);
+	DHD_PRINT(("%s: Function Out, ret = %d\n", __FUNCTION__, ret));
+	return ret;
+#endif /* CONFIG_PCI_EXYNOS_GS */
+}
+
+void dhd_plat_check_msi(void)
+{
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	u32 __iomem  *reg_ptr;
+	u32 val;
+
+	reg_ptr = ioremap(MSI_MASK_REG, SZ_4);
+	if (!reg_ptr) {
+		DHD_ERROR(("reg_ptr is NULL"));
+		return;
+	}
+	val = ioread32(reg_ptr);
+	DHD_PRINT(("MSI Mask=%#08x\n", val));
+	iounmap(reg_ptr);
+
+	reg_ptr = ioremap(MSI_STAT_REG, SZ_4);
+	if (!reg_ptr) {
+		DHD_ERROR(("reg_ptr is NULL"));
+		return;
+	}
+	val = ioread32(reg_ptr);
+	DHD_PRINT(("MSI Status=%#08x\n", val));
+	iounmap(reg_ptr);
+
+	reg_ptr = ioremap(PCI_ICDS_REG, SZ_4);
+	if (!reg_ptr) {
+		DHD_ERROR(("reg_ptr is NULL"));
+		return;
+	}
+	val = ioread32(reg_ptr);
+	DHD_PRINT(("ICD Status=%#08x\n", val));
+	iounmap(reg_ptr);
+#endif /* CONFIG_SOC_LGA */
+}
+
 #define RXBUF_ALLOC_PAGE_SIZE
 uint16 dhd_plat_align_rxbuf_size(uint16 rxbufpost_sz)
 {
@@ -1805,6 +1844,37 @@ dhd_plat_unregister_coredump(void)
 	platform_device_unregister(&sscd_dev);
 }
 #endif /* DHD_COREDUMP */
+
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
+static void
+dhd_plat_pcie_rc_dump(void *handle, void *event_info, u8 event)
+{
+	google_pcie_dump_debug(pcie_ch_num);
+}
+
+void
+dhd_schedule_plat_pcie_rc_dump(dhd_pub_t *dhdp, void *type)
+{
+	DHD_PRINT(("%s: schedule pcie rc dump\n", __func__));
+	dhd_deferred_schedule_work(dhdp->info->dhd_deferred_wq,
+		type, DHD_WQ_WORK_PLAT_PCIE_RC_DUMP,
+		dhd_plat_pcie_rc_dump, DHD_WQ_WORK_PRIORITY_HIGH);
+}
+#endif
+
+void dhd_plat_pcie_dump_debug(void)
+{
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
+	dhd_pub_t *dhdp = (dhd_pub_t *)g_dhd_pub;
+
+	if (CAN_SLEEP()) {
+		google_pcie_dump_debug(pcie_ch_num);
+	} else {
+		pr_err("%s(): schedule pcie rc dump, as in atomic context\n", __func__);
+		dhd_schedule_plat_pcie_rc_dump(dhdp, NULL);
+	}
+#endif
+}
 
 #ifndef BCMDHD_MODULAR
 /* Required only for Built-in DHD */
@@ -1887,15 +1957,21 @@ dhd_pcie_l1ss_ctrl(int enable, int ch_num)
 		return -ENODEV;
 	}
 
-	/* TODO: enable PCIE_LINK_STATE_CLKPM */
 	if (support_l1ss & enable) {
 		aspm_state = PCIE_LINK_STATE_L1 |
+#if IS_ENABLED(CONFIG_SOC_LGA)
+				PCIE_LINK_STATE_CLKPM |
+#endif /* CONFIG_SOC_LGA */
 				PCIE_LINK_STATE_L1_1 | PCIE_LINK_STATE_L1_2;
 	}
 
 	DHD_PRINT(("%s: Set aspm link state %x (support_l1ss = %d)\n",
 		__FUNCTION__, aspm_state, support_l1ss));
+
+	pm_runtime_get_sync(&pci_dev->dev);
 	ret = pci_enable_link_state(pci_dev, aspm_state);
+	pm_runtime_put(&pci_dev->dev);
+
 	return ret;
 }
 
@@ -1906,7 +1982,11 @@ dhd_pcie_poweron(int ch_num)
 	u16 val;
 	static u8 speed;
 	struct pci_dev *pci_dev __free(pci_dev_put) = NULL;
-
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	u16 ltr = 0x1003;	/* 3145728 ns */
+	u32 ltr_reg;
+	int pos;
+#endif /* CONFIG_SOC_LGA */
 	/*
 	 * First poweron will happen at the controller's max-link-speed as
 	 * configured in device tree.  Once link is up, EP will be queried
@@ -1958,7 +2038,17 @@ dhd_pcie_poweron(int ch_num)
 			speed = fls(val) - 1;
 			DHD_INFO(("%s: Using GEN%d link speed\n", __FUNCTION__, speed));
 		}
+#if IS_ENABLED(CONFIG_SOC_LGA)
+		pos = pci_find_ext_capability(pci_dev, PCI_EXT_CAP_ID_LTR);
+		if (!pos)
+			return 0;
 
+		pci_read_config_dword(pci_dev, pos + PCI_LTR_MAX_SNOOP_LAT, &ltr_reg);
+
+		ltr_reg = (ltr << 16) | ltr;
+		pci_write_config_dword(pci_dev, pos + PCI_LTR_MAX_SNOOP_LAT, ltr_reg);
+		DHD_INFO(("%s: Default LTR value set to 3ms\n", __FUNCTION__));
+#endif /* CONFIG_SOC_LGA */
 		return 0;
 	}
 
@@ -2021,16 +2111,4 @@ dhd_pcie_l1_exit(int ch_num)
 {
 	return dhd_pcie_l1ss_ctrl(0, ch_num);
 }
-
-int dhd_plat_check_pcie_state(void)
-{
-	return google_pcie_link_status(pcie_ch_num);
-}
 #endif /* !IS_ENABLED(CONFIG_PCI_EXYNOS_GS) */
-
-#if IS_ENABLED(CONFIG_SOC_LGA)
-void dhd_plat_check_msi(void)
-{
-	return;
-}
-#endif /* IS_ENABLED(CONFIG_SOC_LGA) */

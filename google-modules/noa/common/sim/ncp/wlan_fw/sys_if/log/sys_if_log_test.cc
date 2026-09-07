@@ -1,3 +1,6 @@
+#ifndef PW_LOG_LEVEL
+#define PW_LOG_LEVEL PW_LOG_LEVEL_DEBUG
+#endif
 #include "sys_if_log.h"
 
 #include <cstdint>

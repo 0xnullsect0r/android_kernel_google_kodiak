@@ -18,12 +18,10 @@
 #
 #
 
-package(
-    default_visibility = [
-        "//:__subpackages__",
-        "@kleaf//common:__pkg__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 exports_files(glob([
     "*.fragment",
@@ -34,10 +32,7 @@ filegroup(
     srcs =
         [
             ":base.fragment",
-        ] + select({
-            "//private/google-modules/gpu/mali_kbase/config:dma_shared_buffer": [":dma_buff.fragment"],
-            "//conditions:default": [],
-        }),
+        ],
 )
 
 genrule(

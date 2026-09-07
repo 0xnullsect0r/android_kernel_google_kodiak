@@ -201,6 +201,7 @@ int lwis_buffer_free(struct lwis_client *lwis_client, struct lwis_allocated_buff
 		}
 	} else {
 		dma_buf_put(buffer->dma_buf);
+		buffer->dma_buf = NULL;
 	}
 	hash_del(&buffer->node);
 	return 0;
@@ -209,7 +210,6 @@ int lwis_buffer_free(struct lwis_client *lwis_client, struct lwis_allocated_buff
 int lwis_buffer_enroll(struct lwis_client *lwis_client, struct lwis_enrolled_buffer *buffer)
 {
 	struct lwis_buffer_enrollment_list *enrollment_list;
-	struct list_head *it_enrollment;
 	struct lwis_enrolled_buffer *old_buffer;
 	char trace_name[LWIS_MAX_NAME_STRING_LEN];
 
@@ -288,8 +288,7 @@ int lwis_buffer_enroll(struct lwis_client *lwis_client, struct lwis_enrolled_buf
 	}
 
 	// Check if there was duplicated identical enrollment.
-	list_for_each(it_enrollment, &enrollment_list->list) {
-		old_buffer = list_entry(it_enrollment, struct lwis_enrolled_buffer, list_node);
+	list_for_each_entry(old_buffer, &enrollment_list->list, list_node) {
 		if (old_buffer->info.fd == buffer->info.fd &&
 		    old_buffer->info.dma_vaddr == buffer->info.dma_vaddr) {
 			dev_err(lwis_client->lwis_dev->dev, "Duplicate vaddr %pad for fd %d",
@@ -311,40 +310,68 @@ err:
 	return -EINVAL;
 }
 
-int lwis_buffer_disenroll(struct lwis_client *lwis_client, struct lwis_enrolled_buffer *buffer)
+static void buffer_disenroll(struct lwis_client *lwis_client, struct lwis_enrolled_buffer *buffer)
 {
 	char trace_name[LWIS_MAX_NAME_STRING_LEN];
+
+	if (!buffer)
+		return;
+
+	scnprintf(trace_name, LWIS_MAX_NAME_STRING_LEN, "lwis:buf_disenroll_%s",
+		  lwis_client->lwis_dev->name);
+	LWIS_ATRACE_FUNC_BEGIN(lwis_client->lwis_dev, trace_name);
+	if (buffer->dma_buf_attachment) {
+		lwis_platform_dma_buffer_unmap(lwis_client->lwis_dev, buffer->dma_buf_attachment,
+					       buffer->info.dma_vaddr);
+		if (buffer->sg_table) {
+			dma_buf_unmap_attachment_unlocked(buffer->dma_buf_attachment,
+							  buffer->sg_table, buffer->dma_direction);
+			buffer->sg_table = NULL;
+		}
+		dma_buf_detach(buffer->dma_buf, buffer->dma_buf_attachment);
+		buffer->dma_buf_attachment = NULL;
+	}
+	if (buffer->dma_buf) {
+		dma_buf_put(buffer->dma_buf);
+		buffer->dma_buf = NULL;
+	}
+	LWIS_ATRACE_FUNC_END(lwis_client->lwis_dev, trace_name);
+}
+
+int lwis_buffer_disenroll(struct lwis_client *lwis_client, struct lwis_enrolled_buffer *buffer)
+{
 	unsigned long flags;
-	struct lwis_device *lwis_dev = lwis_client->lwis_dev;
+	struct lwis_device *lwis_dev;
+	bool already_disenrolled = false;
 
 	if (!lwis_client) {
 		pr_err("Disenroll: LWIS client is NULL\n");
 		return -ENODEV;
 	}
+
+	lwis_dev = lwis_client->lwis_dev;
 	if (!buffer) {
 		pr_err("Disenroll: buffer is NULL\n");
 		return -EINVAL;
 	}
 
-	scnprintf(trace_name, LWIS_MAX_NAME_STRING_LEN, "lwis:buf_disenroll_%s",
-		  lwis_client->lwis_dev->name);
-	LWIS_ATRACE_FUNC_BEGIN(lwis_client->lwis_dev, trace_name);
-	lwis_platform_dma_buffer_unmap(lwis_client->lwis_dev, buffer->dma_buf_attachment,
-				       buffer->info.dma_vaddr);
-	dma_buf_unmap_attachment_unlocked(buffer->dma_buf_attachment,
-					  buffer->sg_table,
-					  buffer->dma_direction);
-	dma_buf_detach(buffer->dma_buf, buffer->dma_buf_attachment);
-	dma_buf_put(buffer->dma_buf);
-	LWIS_ATRACE_FUNC_END(lwis_client->lwis_dev, trace_name);
 	spin_lock_irqsave(&lwis_dev->lock, flags);
-	/* Delete the node from the hash table */
-	list_del(&buffer->list_node);
-	if (list_empty(&buffer->enrollment_list->list)) {
-		hash_del(&buffer->enrollment_list->node);
-		kfree(buffer->enrollment_list);
+	if (buffer->enrollment_list && !list_empty(&buffer->list_node)) {
+		list_del_init(&buffer->list_node);
+		if (list_empty(&buffer->enrollment_list->list)) {
+			hash_del(&buffer->enrollment_list->node);
+			kfree(buffer->enrollment_list);
+		}
+		buffer->enrollment_list = NULL;
+	} else {
+		already_disenrolled = true;
 	}
 	spin_unlock_irqrestore(&lwis_dev->lock, flags);
+
+	if (already_disenrolled)
+		return 0;
+
+	buffer_disenroll(lwis_client, buffer);
 	return 0;
 }
 
@@ -353,7 +380,6 @@ struct lwis_enrolled_buffer *lwis_client_enrolled_buffer_find(struct lwis_client
 {
 	struct lwis_buffer_enrollment_list *enrollment_list;
 	struct lwis_enrolled_buffer *buffer;
-	struct list_head *it_enrollment;
 
 	if (!lwis_client) {
 		pr_err("%s: LWIS client is NULL\n", __func__);
@@ -364,8 +390,7 @@ struct lwis_enrolled_buffer *lwis_client_enrolled_buffer_find(struct lwis_client
 	if (!enrollment_list || list_empty(&enrollment_list->list))
 		return NULL;
 
-	list_for_each(it_enrollment, &enrollment_list->list) {
-		buffer = list_entry(it_enrollment, struct lwis_enrolled_buffer, list_node);
+	list_for_each_entry(buffer, &enrollment_list->list, list_node) {
 		if (buffer->info.fd == fd && buffer->info.dma_vaddr == dma_vaddr)
 			return buffer;
 	}
@@ -420,24 +445,36 @@ int lwis_client_enrolled_buffers_clear(struct lwis_client *lwis_client)
 	/* Temporary vars for hash table traversal */
 	struct hlist_node *n;
 	int i;
-	/* Enrollment list iterator */
-	struct list_head *it_enrollment, *it_enrollment_tmp;
-	struct lwis_enrolled_buffer *buffer;
+	struct lwis_enrolled_buffer *buffer, *buffer_tmp;
+	struct list_head buffers_to_clear;
+	struct lwis_device *lwis_dev;
+	unsigned long flags;
 
 	if (!lwis_client) {
 		pr_err("%s: LWIS client is NULL\n", __func__);
 		return -ENODEV;
 	}
 
+	lwis_dev = lwis_client->lwis_dev;
+
+	INIT_LIST_HEAD(&buffers_to_clear);
+
 	/* Iterate over the entire hash table */
+	spin_lock_irqsave(&lwis_dev->lock, flags);
 	hash_for_each_safe(lwis_client->enrolled_buffers, i, n, enrollment_list, node) {
-		list_for_each_safe(it_enrollment, it_enrollment_tmp, &enrollment_list->list) {
-			buffer = list_entry(it_enrollment, struct lwis_enrolled_buffer, list_node);
-			/* Disenroll the buffer */
-			lwis_buffer_disenroll(lwis_client, buffer);
-			/* Free the object */
-			kfree(buffer);
+		list_for_each_entry_safe(buffer, buffer_tmp, &enrollment_list->list, list_node) {
+			list_del(&buffer->list_node);
+			list_add_tail(&buffer->list_node, &buffers_to_clear);
 		}
+		hash_del(&enrollment_list->node);
+		kfree(enrollment_list);
+	}
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
+
+	list_for_each_entry_safe(buffer, buffer_tmp, &buffers_to_clear, list_node) {
+		list_del(&buffer->list_node);
+		buffer_disenroll(lwis_client, buffer);
+		kfree(buffer);
 	}
 
 	return 0;

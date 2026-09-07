@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -62,9 +67,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":cnss2_kernel_headers",
     ],
@@ -83,9 +85,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
     deps = [
         ":cnss2_kernel_headers",
@@ -107,9 +106,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
     deps = [
         ":cnss2_kernel_headers",
@@ -154,9 +150,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
     deps = [
         ":cnss2_kernel_headers",
@@ -203,9 +196,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":cnss2_cnss_nl",
         ":cnss2_cnss_plat_ipc_qmi_svc",
@@ -238,9 +228,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":wlan-platform-headers",
     ],
@@ -261,9 +248,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
     deps = [
         ":wlan-platform-headers",
@@ -286,9 +270,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
     deps = [
         ":wlan-platform-headers",
@@ -314,9 +295,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":cnss2_kernel_headers",
         ":cnss2_qmi_helpers",
@@ -341,9 +319,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":cnss2_kernel_headers",
         ":cnss2_qmi_helpers",
@@ -364,34 +339,9 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
-    ],
     deps = [
         ":cnss2_cnss_utils",
         ":cnss2_kernel_headers",
         ":wlan-platform-headers",
-    ],
-)
-
-kernel_module_group(
-    name = "cnss2",
-    srcs = [
-        ":cnss2_cnss2",
-        ":cnss2_cnss_nl",
-        ":cnss2_cnss_plat_ipc_qmi_svc",
-        ":cnss2_cnss_prealloc",
-        ":cnss2_cnss_utils",
-        ":cnss2_mhi_host",
-        ":cnss2_qmi_helpers",
-        ":cnss2_qrtr_mhi",
-        ":cnss2_qrtr_qrtr",
-        ":cnss2_wlan_firmware_service",
-        ":google_wlan_mac",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-        "//private/google-modules/wlan/qcom/wcn7760/wlan/qcacld-3.0:__pkg__",
     ],
 )

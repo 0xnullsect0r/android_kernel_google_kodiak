@@ -16,6 +16,7 @@
 #include <linux/of_graph.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/unaligned.h>
 #include <linux/version.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_probe_helper.h>
@@ -489,11 +490,11 @@ static int gs_panel_of_parse_backlight(struct gs_panel *ctx)
 static int _gs_panel_read_extinfo(struct gs_panel *ctx)
 {
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-	char buf[EXT_INFO_SIZE];
+	u8 buf[EXT_INFO_SIZE];
 	int i, ret;
 
-	/* extinfo already set, skip reading */
-	if (ctx->panel_extinfo[0] != '\0')
+	/* panel_id already set, skip reading */
+	if (ctx->panel_id != PANEL_ID_INVALID_VALUE)
 		return 0;
 
 	for (i = 0; i < EXT_INFO_SIZE; i++) {
@@ -504,7 +505,8 @@ static int _gs_panel_read_extinfo(struct gs_panel *ctx)
 			return ret;
 		}
 	}
-	bin2hex(ctx->panel_extinfo, buf, EXT_INFO_SIZE);
+	/* Convert 4 raw extended info byte-registers into little-endian 32-bit panel_id */
+	ctx->panel_id = get_unaligned_le32(buf);
 
 	return 0;
 }
@@ -1913,16 +1915,13 @@ int gs_panel_first_enable_helper(struct gs_panel *ctx)
 
 	ctx->trace_pid = current->tgid;
 	if (ctx->panel_rev_id.id == 0) {
-		u32 id;
-
-		if (kstrtou32(ctx->panel_extinfo, 16, &id)) {
+		if (ctx->panel_id == PANEL_ID_INVALID_VALUE) {
 			dev_warn(dev, "failed to get panel extinfo, default to latest\n");
 			ctx->panel_rev_id.id = PANEL_REVID_LATEST;
 		} else if (gs_panel_has_func(ctx, get_panel_rev)) {
-			/* reverse here to match the id order read from bootloader */
-			funcs->get_panel_rev(ctx, swab32(id));
+			funcs->get_panel_rev(ctx, ctx->panel_id);
 		} else {
-			gs_panel_get_panel_rev_full(ctx, swab32(id));
+			gs_panel_get_panel_rev_full(ctx, ctx->panel_id);
 		}
 		gs_panel_update_panel_rev_bitmask(ctx, ctx->panel_rev_id.id);
 	}
@@ -2222,33 +2221,17 @@ void gs_panel_detect_fault_work(struct kthread_work *work)
 	struct gs_panel *ctx = container_of(work, struct gs_panel, detect_fault_work_data.work);
 	struct device *dev = ctx->dev;
 	int bit;
-	ktime_t now;
-	s64 delta_ms;
-	u32 fault_detect_interval_ms = ctx->desc->fault_desc->detect_interval_ms;
 	bool err_fg_state = false;
 
 	mutex_lock(&ctx->mode_lock);
-	if (!gs_is_panel_active(ctx)) {
-		dev_dbg(dev, "skip fault detection (panel is not active)\n");
-		goto exit;
-	}
 
-	/* If err_fg is supported, check fault only when it's high */
+	/* Check GRAM collision only when it's high */
 	if (ctx->err_fg_irq >= 0) {
 		unsigned long flags = 0;
 
 		spin_lock_irqsave(&ctx->spinlock_err_fg, flags);
 		err_fg_state = ctx->err_fg_state;
 		spin_unlock_irqrestore(&ctx->spinlock_err_fg, flags);
-	}
-
-	/* Check elapsed interval against minimum */
-	now = ktime_get();
-	delta_ms = ktime_ms_delta(now, ctx->timestamps.last_panel_fault_check_ts);
-	if (delta_ms < fault_detect_interval_ms && ctx->ddic_read_fail_cnt == 0) {
-		dev_dbg(dev, "skip fault detection (%lldms since last check, <%ums)\n", delta_ms,
-			fault_detect_interval_ms);
-		goto exit;
 	}
 
 	bitmap_zero(ctx->panel_errors, GS_PANEL_ERR_MAX);
@@ -2264,7 +2247,7 @@ void gs_panel_detect_fault_work(struct kthread_work *work)
 	}
 
 	if (unlikely(GS_PANEL_ERR_MAX > 64)) {
-		dev_warn(ctx->dev, "panel_errors size (%u) > 64, skip mask\n", GS_PANEL_ERR_MAX);
+		dev_warn(dev, "panel_errors size (%u) > 64, skip mask\n", GS_PANEL_ERR_MAX);
 	} else {
 		DECLARE_BITMAP(mask, 64);
 
@@ -2275,19 +2258,19 @@ void gs_panel_detect_fault_work(struct kthread_work *work)
 
 	if (test_bit(GS_PANEL_ERR_GRAM_COLLISION, ctx->panel_errors)) {
 		trace_gram_collision(ctx->gs_connector->panel_index, ctx->gram_collision_count);
-		gs_fault_event_emit(ctx->dev, GS_FAULT_EVENT_TYPE_DDIC_UNDERRUN, 1);
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_DDIC_UNDERRUN, 1);
 	}
 
 	if (!bitmap_empty(ctx->panel_errors, GS_PANEL_ERR_MAX))
-		gs_fault_event_emit(ctx->dev, GS_FAULT_EVENT_TYPE_PANEL_ERROR,
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_PANEL_ERROR,
 				    ctx->panel_errors[0]);
 
 	if (!bitmap_empty(ctx->pmic_errors, GS_PMIC_ERR_MAX))
-		gs_fault_event_emit(ctx->dev, GS_FAULT_EVENT_TYPE_PMIC_ERROR,
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_PMIC_ERROR,
 				    ctx->pmic_errors[0]);
 
 	/* Update last fault check timestamp */
-	ctx->timestamps.last_panel_fault_check_ts = now;
+	ctx->timestamps.last_panel_fault_check_ts = ktime_get();
 
 exit:
 	mutex_unlock(&ctx->mode_lock);
@@ -2329,16 +2312,16 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 	}
 
 	/* Get panel_rev from bootloader */
-	if (ctx->gs_connector->panel_id != INVALID_PANEL_ID) {
-		u32 id = ctx->gs_connector->panel_id;
-
-		bin2hex(ctx->panel_extinfo, &id, EXT_INFO_SIZE);
+	if (ctx->gs_connector->panel_id != PANEL_ID_INVALID_VALUE) {
+		ctx->panel_id = ctx->gs_connector->panel_id;
 
 		if (gs_panel_has_func(ctx, get_panel_rev))
-			ctx->desc->gs_panel_func->get_panel_rev(ctx, id);
+			ctx->desc->gs_panel_func->get_panel_rev(ctx, ctx->panel_id);
 		gs_panel_update_panel_rev_bitmask(ctx, ctx->panel_rev_id.id);
-	} else
+	} else {
+		ctx->panel_id = PANEL_ID_INVALID_VALUE;
 		dev_dbg(ctx->dev, "Invalid panel id passed from bootloader");
+	}
 
 	/* Get panel_serial_number from bootloader */
 	if (!strcmp(ctx->panel_serial_number, "")) {
@@ -2387,11 +2370,18 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 					      gs_panel_refresh_ctrl_work);
 	}
 
-	if (gs_panel_has_func(ctx, detect_fault) && ctx->desc->fault_desc)
+	if (gs_panel_has_func(ctx, detect_fault) && ctx->desc->fault_desc) {
+		struct task_struct *fault_thread;
+
 		gs_panel_init_background_work(ctx, &ctx->detect_fault_work_data,
 					      "detect_fault_kthread",
 					      DETECT_FAULT_KTHREAD_SCHED_PRIORITY,
 					      gs_panel_detect_fault_work);
+
+		fault_thread = ctx->detect_fault_work_data.thread;
+		if (!IS_ERR_OR_NULL(fault_thread))
+			set_cpus_allowed_ptr(fault_thread, cpumask_of(0));
+	}
 
 	/* Vrefresh */
 	if (ctx->desc->modes) {

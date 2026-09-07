@@ -372,6 +372,7 @@
 
 		CPU_TOP_CL: power-domain-top-cluster {
 			#power-domain-cells = <0>;
+			domain-idle-states = <&CLUSTER_C4_LITE>, <&CLUSTER_C4_DEEP>;
 		};
 
 	};
@@ -424,8 +425,8 @@
 			reg = <0 0x21910C08 0 0x13F8>;
 		};
 
-		tfa_cpu_stats: tfa_cpu_stats@8b20f000 {
-			reg = <0 0x8b20f000 0 0x1000>;
+		tfa_cpu_stats: tfa_cpu_stats@8b20c000 {
+			reg = <0 0x8b20c000 0 0x4000>;
 			states = <C2_CORE0>,
 				<C2_CORE1>,
 				<C2_CORE2>,
@@ -484,6 +485,9 @@
 			dvfs-helper-domain-name = "memss";
 		};
 
+		vote_manager {
+			powerhint_min_freq = <1066000000>;
+		};
 	};
 
 	gs_perf_mon: gs_perf_mon {
@@ -889,9 +893,9 @@
 		reg-names = "dptx_regs";
 
 		clocks = <&gpcm_hsion_pll_dp_clk>, <&hsio_n_usbdp_pixel_0_clk>, <&dpu_dp0_pix_clk>,
-			<&hsio_n_usbdp_sclk0_clk>, <&hsio_n_sresetn0_clk>;
-		clock-names = "hsion_pll_dp_clk", "hsion_pix_clk0", "dpu_pix_clk0",
-			"hsion_usbdp_sclk0_clk", "hsion_sresetn0_clk";
+			 <&hsio_n_usbdp_sclk0_clk>, <&hsio_n_sresetn0_clk>;
+		clock-names = "gpcm_pll_dp_clk", "hsion_pix_clk0", "dpu_pix_clk0",
+			      "hsion_aud_clk0", "hsion_aud_clk1";
 
 		phys = <&usb_phy 2>;
 		phy-names = "dp-phy";
@@ -932,6 +936,12 @@
 		mboxes = <&dvfs_helper>,
 				<&mbfs_cpm_backend0_label>,
 				<&target_dvfs_fe>;
+
+		dsu_target {
+			vote_manager {
+				powerhint_min_freq = <691000000>;
+			};
+		};
 	};
 
 	goog_chip_info: goog_chip_info@ebd2000 {
@@ -1306,6 +1316,8 @@
 		google,decouple-ufs-en;
 		google,skip-cport-setup;
 		google,mphy-pmc-war;
+		google,rext-internal;
+		google,enable-mcq-cleanup-war;
 
 		read-boost-devfreq-names = "fabsyss", "fabhbw", "memss", "gmc", "fabstby", "dsu", "cpuacc";
 		read-boost-devfreq-maxfreqs = <400000 1066000 1056000 4224000 576000 1920000 533000>;
@@ -1537,6 +1549,7 @@
 	fwmt: fwmt {
 		compatible = "google,fwmt-gdmc";
 		gdmc-iface = <&goog_mba_gdmc_iface>;
+		mboxes = <&goog_mba_cpm_iface>;
 		memory-region = <&gdmc_metrics_dma_buffer>;
 		buffer-offset = <0x0>;
 		buffer-size = <0x2000>;

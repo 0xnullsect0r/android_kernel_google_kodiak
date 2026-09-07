@@ -1722,9 +1722,8 @@ static irqreturn_t __arm_smmu_gerror_handler(struct arm_smmu_device *smmu)
 	gerrorn = readl_relaxed(smmu->base + ARM_SMMU_GERRORN);
 
 	active = gerror ^ gerrorn;
-	if (!(active & GERROR_ERR_MASK)) {
+	if (!(active & GERROR_ERR_MASK))
 		return IRQ_NONE; /* No errors pending */
-	}
 
 	dev_warn(smmu->dev,
 		 "unexpected global error reported (0x%08x), this could be serious\n",
@@ -2199,6 +2198,7 @@ static void arm_smmu_domain_free_paging(struct iommu_domain *domain)
 		mutex_unlock(&arm_smmu_asid_lock);
 	} else {
 		struct arm_smmu_s2_cfg *cfg = &smmu_domain->s2_cfg;
+
 		if (cfg->vmid)
 			ida_free(&smmu->vmid_map, cfg->vmid);
 	}
@@ -2655,9 +2655,9 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	mutex_lock(&smmu_domain->init_mutex);
 
-	if (!smmu_domain->smmu) {
+	if (!smmu_domain->smmu)
 		ret = arm_smmu_domain_finalise(smmu_domain, master, 0);
-	} else if (smmu_domain->smmu != smmu)
+	else if (smmu_domain->smmu != smmu)
 		ret = -EINVAL;
 
 	mutex_unlock(&smmu_domain->init_mutex);

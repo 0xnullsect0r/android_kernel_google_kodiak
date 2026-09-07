@@ -205,8 +205,7 @@ int bigo_iommu_fault_handler(struct iommu_domain *domain,
 	struct bufinfo *binfo;
 	struct bigo_inst *inst;
 
-	/* Don't try to mutex_lock core->lock here since worker thread
-	 * already has the lock */
+	mutex_lock(&core->lock);
 	pr_info("mapped iova list:\n");
 	list_for_each_entry(inst, &core->instances, list) {
 		mutex_lock(&inst->lock);
@@ -214,7 +213,7 @@ int bigo_iommu_fault_handler(struct iommu_domain *domain,
 			pr_info("iova: 0x%llx size: %lu", binfo->iova, binfo->size);
 		mutex_unlock(&inst->lock);
 	}
-
+	mutex_unlock(&core->lock);
 	return NOTIFY_OK;
 }
 

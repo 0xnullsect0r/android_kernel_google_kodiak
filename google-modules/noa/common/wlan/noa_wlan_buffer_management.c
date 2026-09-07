@@ -6,6 +6,10 @@ int noa_wlan_bm_init(struct noa_wlan_bm *bm, u32 size)
 {
 	u32 i = 0;
 
+	if (bm->lockers) {
+		return 0;
+	}
+
 	bm->lockers = kzalloc(size * sizeof(struct noa_wlan_bm_tkid_item), GFP_KERNEL);
 
 	if (!bm->lockers) {
@@ -75,6 +79,8 @@ int noa_wlan_bm_register(struct noa_wlan_bm *bm, u16 tkid, u16 buf_size, u64 dpa
 
 	return -EINVAL;
 }
+EXPORT_SYMBOL_GPL(noa_wlan_bm_register);
+
 
 void noa_wlan_bm_remove(struct noa_wlan_bm *bm, u16 tkid)
 {

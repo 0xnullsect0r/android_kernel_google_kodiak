@@ -6,8 +6,12 @@ load(
     "ddk_headers",
     "ddk_module",
     "ddk_uapi_headers",
-    "kernel_module_group",
 )
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -52,10 +56,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        ":__subpackages__",
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
@@ -63,15 +63,5 @@ ddk_module(
         "//private/google-modules/perf/core/gs_perf_domain:perf_domain",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/soc/rdo/interconnect:google_icc",
-    ],
-)
-
-kernel_module_group(
-    name = "cnm",
-    srcs = [
-        ":jpu",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

@@ -637,6 +637,12 @@ TLStreamClose(IMG_HANDLE hStream)
 	}
 
 	psTmp = (PTL_STREAM)hStream;
+	if (!psTmp->psNode)
+	{
+		PVR_DPF((PVR_DBG_WARNING,
+				 "TLStreamClose failed as NULL psNode passed, nothing done."));
+		PVR_DPF_RETURN;
+	}
 
 	/* Acquire TL_GLOBAL_DATA lock for updating the reference count as this will be required
 	 * in-case this TL_STREAM node is to be deleted */

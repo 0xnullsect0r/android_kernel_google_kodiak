@@ -17,6 +17,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/notifier.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/workqueue.h>
 
 struct wcn_pwrctl_data;
 struct pmic_mfd_mbox;
@@ -75,6 +76,9 @@ struct wcn_pwrctl_data {
 
 	/* Find My Device (FMD) state */
 	bool fmd_enabled;
+
+	/* Async Power On */
+	struct work_struct power_on_work;
 };
 
 /* Helper function for platform drivers to write PMIC registers */

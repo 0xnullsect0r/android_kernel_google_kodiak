@@ -3,7 +3,7 @@
  *
  * Dependencies: bcmeth.h
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -335,10 +335,18 @@ typedef union bcm_event_msg_u {
 #define WLC_E_SSID_MITIGATION		217	/* SSID mitigation event */
 #define WLC_E_REQUEST_CLM		218	/* Request CLM reload */
 
-
-#define WLC_E_SCHED_PM			221	/* Sched PM Event */
-
-#define WLC_E_LAST			222	/* highest val + 1 for range checking */
+/* New events should be added below */
+#define	WLC_E_SET2_BUCKET_START			 400	/* Offset to allow brcm events */
+#define	WLC_E_D11FRAME				 401	/* Send frame Rx */
+#define	WLC_E_D11FRAME_RX			 402	/* Send frame Rx with event data header */
+#define WLC_E_D11FRAME_COMPLETE			 403	/* Send frame Tx complete */
+#define WLC_E_D11FRAME_OFF_CHAN_COMPLETE	 404	/* Send frame off channel complete */
+#define WLC_E_D11FRAME_OFF_CHAN_DWELL_COMPLETE	 405	/* Send frame off channel dwell complete */
+#define WLC_E_SCHED_PM				 406	/* Scheduled PM Event */
+#define WLC_E_LEAKY_AP_DETECT			 407	/* Leaky AP Detection Event */
+/* Add here */
+#define WLC_E_SET2_BUCKET_END			 408
+#define WLC_E_LAST		WLC_E_SET2_BUCKET_END + 1 /* highest val + 1 for range checking */
 
 /* define an API for getting the string name of an event */
 extern const char *bcmevent_get_name(uint event_type);

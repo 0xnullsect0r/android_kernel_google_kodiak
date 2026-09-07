@@ -138,6 +138,7 @@ static void get_modem_data_from_dts(struct mtk_google_pcie *mtk_google_pcie)
 	if (rc)
 		LOG_ERR("aoc_sram_size not found in dts!\n");
 
+	mtk_google_pcie->aoc_sram_size = ALIGN(mtk_google_pcie->aoc_sram_size, PAGE_SIZE);
 	LOG_INFO("AoC SRAM data: addr=%#llx, size=%#x\n", mtk_google_pcie->aoc_sram_addr,
 		 mtk_google_pcie->aoc_sram_size);
 	of_node_put(radio_data_np);

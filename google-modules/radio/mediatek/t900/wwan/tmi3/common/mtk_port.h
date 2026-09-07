@@ -518,9 +518,7 @@ void mtk_port_trb_init(struct mtk_port *port, struct trb *trb, enum mtk_trb_cmd_
 		       int (*trb_complete)(struct sk_buff *skb));
 int mtk_port_send_flowctrl_msg(struct mtk_port *port, int msg_id);
 rwlock_t *mtk_port_get_port_mngr_lock(const char *dev_str);
-#if IS_ENABLED(CONFIG_GOOGLE_CLDMA_RX_TLP_REORDER_MITIGATION)
 int mtk_port_rx_pre_check(struct sk_buff *skb, void *priv);
-#endif
 
 #if IS_ENABLED(CONFIG_GOOGLE_MD2AP_WAKEUP_MONITOR)
 struct mtk_port *mtk_port_search_by_id(struct mtk_port_mngr *port_mngr, int rx_ch);

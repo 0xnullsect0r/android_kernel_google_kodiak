@@ -814,6 +814,9 @@ static void exynos_panel_handoff(struct exynos_panel *ctx)
 		exynos_panel_set_power(ctx, true);
 		/* We don't do panel reset while booting, so call post power here */
 		exynos_panel_post_power_on(ctx);
+		/* Manually update the DRM panel state to fix mismatch during handoff */
+		ctx->panel.enabled = true;
+		ctx->panel.prepared = true;
 	} else {
 		ctx->panel_state = PANEL_STATE_UNINITIALIZED;
 		gpiod_direction_output(ctx->reset_gpio, 0);

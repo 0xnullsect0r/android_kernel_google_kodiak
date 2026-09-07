@@ -35,6 +35,10 @@
 #include <dt-bindings/pci/pci.h>
 #include <misc/sbbm.h>
 
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
+#include <misc/logbuffer.h>
+#endif
+
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "modem_ctrl.h"

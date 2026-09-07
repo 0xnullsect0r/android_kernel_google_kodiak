@@ -25,6 +25,9 @@
 #define PANEL_SLSI_DDIC_ID_LEN 5
 #define PROJECT_CODE_MAX 5
 
+/* The threshold of tracing panel settings if unchanged. */
+#define PANEL_SETTINGS_TRACE_TH_MS 2000
+
 #define panel_rev_return_case(REV_NAME) \
 	{                               \
 	case PANEL_REVID_##REV_NAME:    \
@@ -217,7 +220,7 @@ void gs_panel_model_init(struct gs_panel *ctx, const char *project, u8 extra_inf
 	u8 vendor_info;
 	u8 panel_rev;
 
-	if (ctx->panel_extinfo[0] == '\0' || ctx->panel_rev_id.id == 0 || !project)
+	if (ctx->panel_id == PANEL_ID_INVALID_VALUE || ctx->panel_rev_id.id == 0 || !project)
 		return;
 
 	if (strlen(project) > PROJECT_CODE_MAX) {
@@ -226,7 +229,7 @@ void gs_panel_model_init(struct gs_panel *ctx, const char *project, u8 extra_inf
 		return;
 	}
 
-	vendor_info = hex_to_bin(ctx->panel_extinfo[1]) & 0x0f;
+	vendor_info = (ctx->panel_id >> 8) & 0x0f;
 	panel_rev = __builtin_ctz(ctx->panel_rev_bitmask);
 
 	/*
@@ -618,32 +621,54 @@ bool gs_panel_refresh_ctrl_lite_helper(struct gs_panel *ctx, const struct gs_pan
 }
 EXPORT_SYMBOL_GPL(gs_panel_refresh_ctrl_lite_helper);
 
+static bool _gs_panel_should_trace_settings(struct gs_panel *ctx, ktime_t now)
+{
+	return (ctx->panel_settings_changed ||
+	        ktime_ms_delta(now, ctx->timestamps.last_panel_settings_trace_ts)
+			>= PANEL_SETTINGS_TRACE_TH_MS);
+}
+
 void gs_panel_trace_settings_full_helper(struct gs_panel *ctx)
 {
-	const struct gs_panel_mode *pmode = ctx->current_mode;
-	const struct gs_panel_status *hw_status = &ctx->hw_status;
-	const unsigned long *feat = hw_status->feat;
-	const u32 idle_vrefresh = hw_status->idle_vrefresh;
+	ktime_t now = ktime_get();
 
-	trace_panel_settings_full(
-		ctx->gs_connector->panel_index, test_bit(FEAT_HBM, feat), hw_status->irc_mode,
-		test_bit(FEAT_PWM_HIGH, feat), test_bit(FEAT_FRAME_AUTO, feat),
-		test_bit(FEAT_FRAME_MANUAL_FI, feat), test_bit(FEAT_EARLY_EXIT, feat),
-		idle_vrefresh ? idle_vrefresh : hw_status->vrefresh,
-		drm_mode_vrefresh(&pmode->mode), gs_drm_mode_te_freq(&pmode->mode));
+	if (_gs_panel_should_trace_settings(ctx, now)) {
+		const struct gs_panel_mode *pmode = ctx->current_mode;
+		const struct gs_panel_status *hw_status = &ctx->hw_status;
+		const unsigned long *feat = hw_status->feat;
+		const u32 idle_vrefresh = hw_status->idle_vrefresh;
+
+		trace_panel_settings_full(
+			ctx->gs_connector->panel_index, test_bit(FEAT_HBM, feat),
+			hw_status->irc_mode, test_bit(FEAT_PWM_HIGH, feat),
+			test_bit(FEAT_FRAME_AUTO, feat), test_bit(FEAT_FRAME_MANUAL_FI, feat),
+			test_bit(FEAT_EARLY_EXIT, feat),
+			idle_vrefresh ? idle_vrefresh : hw_status->vrefresh,
+			drm_mode_vrefresh(&pmode->mode), gs_drm_mode_te_freq(&pmode->mode));
+
+		ctx->timestamps.last_panel_settings_trace_ts = now;
+		ctx->panel_settings_changed = false;
+	}
 }
 EXPORT_SYMBOL_GPL(gs_panel_trace_settings_full_helper);
 
 void gs_panel_trace_settings_lite_helper(struct gs_panel *ctx)
 {
-	const struct gs_panel_mode *pmode = ctx->current_mode;
-	const bool is_vrr_mode = gs_is_vrr_mode(pmode);
-	const u32 idle_vrefresh = ctx->sw_status.idle_vrefresh;
-	const u32 vrefresh = is_vrr_mode ? idle_vrefresh : drm_mode_vrefresh(&pmode->mode);
+	ktime_t now = ktime_get();
 
-	trace_panel_settings_lite(
-		ctx->gs_connector->panel_index,
-		is_vrr_mode, idle_vrefresh ? idle_vrefresh : vrefresh,
-		drm_mode_vrefresh(&pmode->mode), gs_drm_mode_te_freq(&pmode->mode));
+	if (_gs_panel_should_trace_settings(ctx, now)) {
+		const struct gs_panel_mode *pmode = ctx->current_mode;
+		const bool is_vrr_mode = gs_is_vrr_mode(pmode);
+		const u32 idle_vrefresh = ctx->sw_status.idle_vrefresh;
+		const u32 vrefresh = is_vrr_mode ? idle_vrefresh : drm_mode_vrefresh(&pmode->mode);
+
+		trace_panel_settings_lite(
+			ctx->gs_connector->panel_index,
+			is_vrr_mode, idle_vrefresh ? idle_vrefresh : vrefresh,
+			drm_mode_vrefresh(&pmode->mode), gs_drm_mode_te_freq(&pmode->mode));
+
+		ctx->timestamps.last_panel_settings_trace_ts = now;
+		ctx->panel_settings_changed = false;
+	}
 }
 EXPORT_SYMBOL_GPL(gs_panel_trace_settings_lite_helper);

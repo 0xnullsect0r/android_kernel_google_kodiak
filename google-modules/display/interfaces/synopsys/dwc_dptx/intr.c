@@ -12,7 +12,6 @@
 #include "clock_mng.h"
 #include "video_bridge.h"
 #include "api/api.h"
-#include "phy/phy_n621.h"
 #include "regmaps/ctrl_fields.h"
 #include "intr.h"
 
@@ -2428,6 +2427,22 @@ static bool dp_fec;
 module_param(dp_fec, bool, 0664);
 MODULE_PARM_DESC(dp_fec, "Enable/disable DP FEC");
 
+static bool dp_ssc = true;
+module_param(dp_ssc, bool, 0664);
+MODULE_PARM_DESC(dp_ssc, "Enable/disable DP SSC");
+
+static bool dp_link_test_mode;
+module_param(dp_link_test_mode, bool, 0664);
+MODULE_PARM_DESC(dp_link_test_mode, "Enable/disable DP link test mode");
+
+static bool dp_link_test_force_cr;
+module_param(dp_link_test_force_cr, bool, 0664);
+MODULE_PARM_DESC(dp_link_test_force_cr, "Force DP link training CR to pass");
+
+static bool dp_link_test_force_cheq;
+module_param(dp_link_test_force_cheq, bool, 0664);
+MODULE_PARM_DESC(dp_link_test_force_cheq, "Force DP link training CHEQ to pass");
+
 int handle_hotplug_core(struct dptx *dptx)
 {
 	u8 byte;
@@ -2503,6 +2518,14 @@ int handle_hotplug_core(struct dptx *dptx)
 	/* Initialize fec_en */
 	dptx->fec_en = dp_fec;
 
+	/* Initialize ssc_en */
+	dptx->ssc_en = dp_ssc;
+
+	/* Initialize link_test_mode */
+	dptx->link_test_mode = dp_link_test_mode;
+	dptx->link_test_force_cr = dp_link_test_force_cr;
+	dptx->link_test_force_cheq = dp_link_test_force_cheq;
+
 	/*
 	 * When the host is limited in software to HBR and the sink supports
 	 * only max 2 lanes, it leads to best-case link of HBR + 2 lanes.
@@ -2545,11 +2568,10 @@ int handle_hotplug_core(struct dptx *dptx)
 
 	dptx_write_regfield(dptx, ctrl_fields->field_default_fast_link_train_en, 0);
 
-	if (dptx->rx_caps[MAX_DOWNSPREAD] & NO_AUX_TRANSACTION_LINK_TRAINING) {
-		retval = dptx_fast_link_training(dptx);
-	} else {
-		retval = dptx_link_training(dptx);
-	}
+	if (dptx->rx_caps[MAX_DOWNSPREAD] & NO_AUX_TRANSACTION_LINK_TRAINING)
+		dptx_info(dptx, "Sink supports fast link training\n");
+
+	retval = dptx_link_training(dptx);
 
 	if (retval)
 		goto done;

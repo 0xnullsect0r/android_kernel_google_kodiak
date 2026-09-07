@@ -67,8 +67,9 @@ properties:
   mbox-non-waking:
     description:
       List of references to the mailboxes which shall be used to handle
-      non waking signals. Each list entry has a single argument which specifies
-      the offset between base register address and corresponding mask register.
+      non waking signals. Each list entry has two arguments which specifies
+      the offset between base register address and corresponding mask register,
+      as well as a register bitmask.
       The number of arguments has to be set as "#non_waking-cells" property in
       the memory resource describing the mailbox.
 

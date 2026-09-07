@@ -17,6 +17,8 @@
 				       PDO_FIXED_DUAL_ROLE)
 			     PDO_FIXED(9000, 3000, 0)
 			     PDO_PPS_APDO(5000, 21000, 3000)>;
+		charging-adapter-pdp-milliwatt = <45000>;
+
 		capabilities {
 			caps0 {
 				sink-pdos = <PDO_FIXED(5000, 3000,

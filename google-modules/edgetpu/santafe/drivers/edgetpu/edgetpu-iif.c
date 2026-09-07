@@ -9,8 +9,10 @@
 #include <linux/errno.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/spinlock.h>
 #include <trace/events/edgetpu.h>
 
+#include <gcip/gcip-breakpoint.h>
 #include <gcip/gcip-memory.h>
 
 #include <iif/iif-fence.h>
@@ -26,6 +28,11 @@
 /* Currently sized to fit within 16K of command queue */
 #define QUEUE_SIZE 128
 
+/* Retry interval in microseconds for IIF unblock notification */
+#define ETIIF_RETRY_DELAY_US (200)
+
+#define to_etiif_poll_cb(cb) container_of(cb, struct edgetpu_iif_poll_cb, cb)
+
 /* IIF Unblock Propagation */
 
 /* Unblocked IIF to be propagated to the firmware. */
@@ -39,52 +46,56 @@ struct edgetpu_iif_unblocked {
  *
  * This function will add the fence to @etdev->etiif->iif_unblocked_list.
  */
-static void edgetpu_iif_unblocked(struct iif_fence *fence, void *data)
+static void edgetpu_iif_unblocked(struct iif_fence *fence, struct iif_fence_poll_cb *cb)
 {
-	struct edgetpu_dev *etdev = data;
-	struct edgetpu_iif *etiif = etdev->etiif;
+	struct edgetpu_iif_poll_cb *etiif_cb = to_etiif_poll_cb(cb);
+	struct edgetpu_iif *etiif = etiif_cb->etiif;
+	struct edgetpu_dev *etdev = etiif->etdev;
 	struct edgetpu_iif_unblocked *unblocked;
+	int ret;
 
 	trace_edgetpu_iif_unblocked_start(fence);
 
-	if (fence->signal_error)
+	if (cb->status.error)
 		etdev_warn(etdev, "IIF has been unblocked with an error, id=%d, error=%d",
-			   fence->id, fence->signal_error);
+			   fence->id, cb->status.error);
 
 	if (fence->propagate) {
-		unblocked = kzalloc(sizeof(*unblocked), GFP_KERNEL);
+		/*
+		 * Fast path: Try sending the IIF unblock notification directly if TPU is powered
+		 * on.
+		 */
+		ret = edgetpu_iif_send_unblock_notification(etiif, fence->id);
+		if (likely(!ret))
+			return;
+
+		/*
+		 * If the work queue is full (ret == -EBUSY), fallback to the slow path below.
+		 * Otherwise, print a warning and drop the unblock notification.
+		 */
+		if (unlikely(ret != -EBUSY)) {
+			etdev_warn(etdev, "Failed to send unblock notification, ret=%d", ret);
+			return;
+		}
+
+		/* Slow path fallback: queue an event to be processed by @etiif->unblocked_work. */
+		unblocked = kzalloc(sizeof(*unblocked), GFP_ATOMIC);
 		if (!unblocked)
 			return;
 
 		unblocked->fence_id = fence->id;
 
-		spin_lock(&etiif->unblocked_lock);
+		scoped_guard(spinlock_irqsave, &etiif->unblocked_lock)
+			list_add_tail(&unblocked->node, &etiif->unblocked_list);
 
-		/*
-		 * Propagates the fence unblock to the firmware through a deferred work instead of
-		 * doing that here directly to avoid any potential deadlock.
-		 *
-		 * For example, when driver sends a VII command to the firmware, it will hold the
-		 * mailbox lock and submit waiters/signalers to inter-IP fences if needed which
-		 * requires to hold @etiif->iif_mgr->ops_sema. By the way, this `iif_unblocked()`
-		 * callback will be invoked with holding @etiif->iif_mgr->ops_sema. Therefore, if
-		 * the driver send a VII command here to the firmware to propagate the fence
-		 * unblock, a deadlock can happen.
-		 */
-		list_add_tail(&unblocked->node, &etiif->unblocked_list);
-
-		spin_unlock(&etiif->unblocked_lock);
 		/*
 		 * The unblocked work consumes all fences in unblocked_list, no need to check
 		 * whether a pending work exists in queue.
 		 */
-		schedule_work(&etiif->unblocked_work);
+		schedule_delayed_work(&etiif->unblocked_work,
+				      usecs_to_jiffies(ETIIF_RETRY_DELAY_US));
 	}
 }
-
-static const struct iif_manager_ops iif_mgr_ops = {
-	.fence_unblocked = edgetpu_iif_unblocked,
-};
 
 /*
  * Work function which consumes @etiif->unblocked_list and propagates the fence unblock to the
@@ -92,16 +103,43 @@ static const struct iif_manager_ops iif_mgr_ops = {
  */
 static void edgetpu_iif_unblocked_work_func(struct work_struct *work)
 {
-	struct edgetpu_iif *etiif = container_of(work, struct edgetpu_iif, unblocked_work);
+	struct edgetpu_iif *etiif =
+		container_of(to_delayed_work(work), struct edgetpu_iif, unblocked_work);
 	struct edgetpu_iif_unblocked *cur, *nxt;
 	LIST_HEAD(iif_unblocked_list);
+	int ret;
 
-	spin_lock(&etiif->unblocked_lock);
-	list_replace_init(&etiif->unblocked_list, &iif_unblocked_list);
-	spin_unlock(&etiif->unblocked_lock);
+	GCIP_BREAKPOINT("%s::%s", __func__, "before_replace_init");
+
+	scoped_guard(spinlock_irqsave, &etiif->unblocked_lock)
+		list_replace_init(&etiif->unblocked_list, &iif_unblocked_list);
 
 	list_for_each_entry_safe(cur, nxt, &iif_unblocked_list, node) {
-		edgetpu_iif_send_unblock_notification(etiif, cur->fence_id);
+		list_del(&cur->node);
+
+		ret = edgetpu_iif_send_unblock_notification(etiif, cur->fence_id);
+		if (ret && ret != -EBUSY)
+			goto free_cur;
+
+		/*
+		 * When the queue is full, retrying is done with rescheduling the work with some
+		 * delay over looping on retrying to ensure that if firmware becomes unresponsive,
+		 * this work does not impact the rest of the system. The trade-off is potentially
+		 * higher latency should the queue become full without firmware hanging. This is
+		 * acceptable as the queue is not expected to fill as long as firmware is actively
+		 * running its scheduler thread.
+		 */
+		if (ret == -EBUSY) {
+			/* Queue is full. Push @cur and remaining back, and reschedule. */
+			scoped_guard(spinlock_irqsave, &etiif->unblocked_lock) {
+				list_add(&cur->node, &iif_unblocked_list);
+				list_splice(&iif_unblocked_list, &etiif->unblocked_list);
+			}
+			schedule_delayed_work(&etiif->unblocked_work,
+					      usecs_to_jiffies(ETIIF_RETRY_DELAY_US));
+			return;
+		}
+free_cur:
 		kfree(cur);
 	}
 }
@@ -111,7 +149,7 @@ static void edgetpu_init_iif_unblocked_work(struct edgetpu_iif *etiif)
 {
 	INIT_LIST_HEAD(&etiif->unblocked_list);
 	spin_lock_init(&etiif->unblocked_lock);
-	INIT_WORK(&etiif->unblocked_work, &edgetpu_iif_unblocked_work_func);
+	INIT_DELAYED_WORK(&etiif->unblocked_work, edgetpu_iif_unblocked_work_func);
 }
 
 /* Cancels the work propagating the IIF unblock to the firmware. */
@@ -119,7 +157,7 @@ static void edgetpu_cancel_iif_unblocked_work(struct edgetpu_iif *etiif)
 {
 	struct edgetpu_iif_unblocked *cur, *nxt;
 
-	cancel_work_sync(&etiif->unblocked_work);
+	cancel_delayed_work_sync(&etiif->unblocked_work);
 
 	/*
 	 * As the work is canceled and it will never be scheduled, we don't need to hold
@@ -186,22 +224,6 @@ static void edgetpu_put_iif_mgr(struct edgetpu_iif *etiif)
 	etiif->iif_dev = NULL;
 }
 
-static int edgetpu_register_iif_ops(struct edgetpu_iif *etiif)
-{
-	if (!etiif->iif_mgr)
-		return 0;
-
-	return iif_manager_register_ops(etiif->iif_mgr, IIF_IP_TPU, &iif_mgr_ops, etiif->etdev);
-}
-
-static void edgetpu_unregister_iif_ops(struct edgetpu_iif *etiif)
-{
-	if (!etiif->iif_mgr)
-		return;
-
-	iif_manager_unregister_ops(etiif->iif_mgr, IIF_IP_TPU);
-}
-
 /* IIF Mailbox Ops */
 
 static u32 edgetpu_iif_get_cmd_queue_tail(struct gcip_mailbox *mailbox)
@@ -221,17 +243,86 @@ static void edgetpu_iif_inc_cmd_queue_tail(struct gcip_mailbox *mailbox, u32 inc
 static int edgetpu_iif_acquire_cmd_queue_lock(struct gcip_mailbox *mailbox, bool try, bool *atomic)
 {
 	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+	unsigned long flags;
+	int ret;
 
-	*atomic = false;
-	mutex_lock(&etiif->cmd_queue_lock);
-	return 1;
+	*atomic = true;
+
+	if (try) {
+		ret = spin_trylock_irqsave(&etiif->cmd_queue_lock, flags);
+	} else {
+		spin_lock_irqsave(&etiif->cmd_queue_lock, flags);
+		ret = 1;
+	}
+
+	if (ret)
+		etiif->cmd_queue_lock_flags = flags;
+
+	return ret;
 }
 
 static void edgetpu_iif_release_cmd_queue_lock(struct gcip_mailbox *mailbox)
 {
 	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
 
-	mutex_unlock(&etiif->cmd_queue_lock);
+	spin_unlock_irqrestore(&etiif->cmd_queue_lock, etiif->cmd_queue_lock_flags);
+}
+
+static inline u32 edgetpu_iif_get_resp_queue_size(struct gcip_mailbox *mailbox)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+
+	return etiif->mbx_hardware->resp_queue_size;
+}
+
+static inline u32 edgetpu_iif_get_resp_queue_head(struct gcip_mailbox *mailbox)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+
+	return etiif->mbx_hardware->resp_queue_head;
+}
+
+static inline u32 edgetpu_iif_get_resp_queue_tail(struct gcip_mailbox *mailbox)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+
+	return EDGETPU_MAILBOX_RESP_QUEUE_READ_SYNC(etiif->mbx_hardware, tail);
+}
+
+static inline void edgetpu_iif_inc_resp_queue_head(struct gcip_mailbox *mailbox, u32 inc)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+
+	edgetpu_mailbox_inc_resp_queue_head(etiif->mbx_hardware, inc);
+}
+
+static inline int edgetpu_iif_acquire_resp_queue_lock(struct gcip_mailbox *mailbox, bool try,
+						      bool *atomic)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+	unsigned long flags;
+	int ret;
+
+	*atomic = true;
+
+	if (try) {
+		ret = spin_trylock_irqsave(&etiif->resp_queue_lock, flags);
+	} else {
+		spin_lock_irqsave(&etiif->resp_queue_lock, flags);
+		ret = 1;
+	}
+
+	if (ret)
+		etiif->resp_queue_lock_flags = flags;
+
+	return ret;
+}
+
+static inline void edgetpu_iif_release_resp_queue_lock(struct gcip_mailbox *mailbox)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+
+	spin_unlock_irqrestore(&etiif->resp_queue_lock, etiif->resp_queue_lock_flags);
 }
 
 static int edgetpu_iif_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
@@ -246,33 +337,34 @@ static int edgetpu_iif_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
 	spin_lock_irqsave(&etiif->flush_lock, flags);
 	is_mbox_flushing = etiif->is_flushing;
 	spin_unlock_irqrestore(&etiif->flush_lock, flags);
-	is_queue_full = EDGETPU_MAILBOX_CMD_QUEUE_READ(etiif->mbx_hardware, head) ==
-			(tail ^ mailbox->queue_wrap_bit);
 
 	/*
-	 * Wait until firmware consumes one or more commands.
-	 *
 	 * This function relies on the software watchdog to handle "timeout" scenarios where no
-	 * commands are being consumed. If firmware becomes unresponsive, it will be stopped and
-	 * the mailbox will be flushed.
-	 *
-	 * Waiting is done with usleep_range over udelay to ensure that if firmware becomes
-	 * unresponsive, this thread's waiting does not impact the rest of the system. The
-	 * trade-off is potentially higher latency should the queue become full without firmware
-	 * hanging. This is acceptable as the queue is not expected to fill as long as firmware is
-	 * actively running its scheduler thread.
+	 * commands are being consumed. If firmware becomes unresponsive, it will be stopped and the
+	 * mailbox will be flushed.
 	 */
-	while (is_queue_full && !is_mbox_flushing) {
+	if (is_mbox_flushing)
+		return -ESHUTDOWN;
+
+	is_queue_full = EDGETPU_MAILBOX_CMD_QUEUE_READ(etiif->mbx_hardware, head) ==
+			(tail ^ mailbox->queue_wrap_bit);
+	if (is_queue_full) {
 		etdev_warn_ratelimited(etiif->etdev, "IIF queue full");
-		usleep_range(50, 200);
-		spin_lock_irqsave(&etiif->flush_lock, flags);
-		is_mbox_flushing = etiif->is_flushing;
-		spin_unlock_irqrestore(&etiif->flush_lock, flags);
-		is_queue_full = EDGETPU_MAILBOX_CMD_QUEUE_READ(etiif->mbx_hardware, head) ==
-				(tail ^ mailbox->queue_wrap_bit);
+		return -EBUSY;
 	}
 
-	return is_mbox_flushing ? -ESHUTDOWN : 0;
+	return 0;
+}
+
+static int edgetpu_iif_handle_reversed_command(struct gcip_mailbox *mailbox,
+					       const void *reversed_cmd)
+{
+	struct edgetpu_iif *etiif = gcip_mailbox_get_data(mailbox);
+	const struct edgetpu_vii_litebuf_command *cmd = reversed_cmd;
+
+	iif_manager_fence_unblocked(etiif->iif_mgr, cmd->signal_fence_command.fence_id);
+
+	return 0;
 }
 
 static int edgetpu_iif_after_enqueue_cmd(struct gcip_mailbox *mailbox, void *cmd)
@@ -287,16 +379,75 @@ static int edgetpu_iif_after_enqueue_cmd(struct gcip_mailbox *mailbox, void *cmd
 	return 0;
 }
 
-const struct gcip_mailbox_ops iif_mailbox_ops = {
+static const struct gcip_mailbox_ops iif_mailbox_ops = {
 	.get_tx_queue_tail = edgetpu_iif_get_cmd_queue_tail,
 	.inc_tx_queue_tail = edgetpu_iif_inc_cmd_queue_tail,
 	.acquire_tx_queue_lock = edgetpu_iif_acquire_cmd_queue_lock,
 	.release_tx_queue_lock = edgetpu_iif_release_cmd_queue_lock,
+	.get_rx_queue_size = edgetpu_iif_get_resp_queue_size,
+	.get_rx_queue_head = edgetpu_iif_get_resp_queue_head,
+	.get_rx_queue_tail = edgetpu_iif_get_resp_queue_tail,
+	.inc_rx_queue_head = edgetpu_iif_inc_resp_queue_head,
+	.acquire_rx_queue_lock = edgetpu_iif_acquire_resp_queue_lock,
+	.release_rx_queue_lock = edgetpu_iif_release_resp_queue_lock,
 	.wait_for_tx_queue_not_full = edgetpu_iif_wait_for_cmd_queue_not_full,
+	.handle_reversed_command = edgetpu_iif_handle_reversed_command,
 	.after_enqueue_cmd = edgetpu_iif_after_enqueue_cmd,
 };
 
 /* edgetpu-iif Interface */
+
+static void edgetpu_iif_handle_irq(struct edgetpu_mailbox *mailbox)
+{
+	struct edgetpu_iif *etiif = mailbox->internal.etiif;
+
+	gcip_mailbox_consume_responses_work(etiif->mbx_protocol);
+}
+
+static int edgetpu_iif_alloc_queue(struct edgetpu_iif *etiif, enum gcip_mailbox_queue_type type)
+{
+	struct edgetpu_dev *etdev = etiif->etdev;
+	struct gcip_memory *mem;
+	u32 size;
+	int ret;
+
+	switch (type) {
+	case GCIP_MAILBOX_CMD_QUEUE:
+		size = QUEUE_SIZE * VII_CMD_SIZE_BYTES;
+		mem = &etiif->cmd_queue_mem;
+		break;
+	case GCIP_MAILBOX_RESP_QUEUE:
+		size = QUEUE_SIZE * VII_RESP_SIZE_BYTES;
+		mem = &etiif->resp_queue_mem;
+		break;
+	}
+
+	ret = edgetpu_iremap_alloc(etdev, size, mem);
+	if (ret)
+		return ret;
+
+	ret = edgetpu_mailbox_set_queue(etiif->mbx_hardware, type, mem->dma_addr, QUEUE_SIZE);
+	if (ret) {
+		edgetpu_iremap_free(etdev, mem);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void edgetpu_iif_free_queue(struct edgetpu_iif *etiif, enum gcip_mailbox_queue_type type)
+{
+	struct edgetpu_dev *etdev = etiif->etdev;
+
+	switch (type) {
+	case GCIP_MAILBOX_CMD_QUEUE:
+		edgetpu_iremap_free(etdev, &etiif->cmd_queue_mem);
+		break;
+	case GCIP_MAILBOX_RESP_QUEUE:
+		edgetpu_iremap_free(etdev, &etiif->resp_queue_mem);
+		break;
+	}
+}
 
 int edgetpu_iif_init(struct edgetpu_dev *etdev, struct edgetpu_iif *etiif)
 {
@@ -316,16 +467,8 @@ int edgetpu_iif_init(struct edgetpu_dev *etdev, struct edgetpu_iif *etiif)
 		goto err_release_mbx;
 	}
 
-	ret = edgetpu_register_iif_ops(etiif);
-	if (ret) {
-		etdev_err(etdev, "Failed to register IIF ops, disable IIF (ret=%d)", ret);
-		goto err_put_iif_mgr;
-	}
-
 	return ret;
 
-err_put_iif_mgr:
-	edgetpu_put_iif_mgr(etiif);
 err_release_mbx:
 	edgetpu_iif_release_mailbox(etiif);
 
@@ -335,7 +478,6 @@ err_release_mbx:
 void edgetpu_iif_release(struct edgetpu_iif *etiif)
 {
 	edgetpu_iif_release_mailbox(etiif);
-	edgetpu_unregister_iif_ops(etiif);
 	edgetpu_put_iif_mgr(etiif);
 	edgetpu_cancel_iif_unblocked_work(etiif);
 }
@@ -345,12 +487,11 @@ int edgetpu_iif_init_mailbox(struct edgetpu_dev *etdev, struct edgetpu_iif *etii
 	struct edgetpu_mailbox *mbx_hardware;
 	struct gcip_mailbox_args args = {
 		.dev = etdev->dev,
-		.mode = GCIP_MAILBOX_MODE_TX_CMD | GCIP_MAILBOX_MODE_SEQ_EXTERNAL,
+		.mode = GCIP_MAILBOX_MODE_TX_CMD | GCIP_MAILBOX_MODE_RX_CMD |
+			GCIP_MAILBOX_MODE_SEQ_EXTERNAL,
 		.queue_wrap_bit = CIRC_QUEUE_WRAP_BIT,
 		.tx_elem_size = sizeof(struct edgetpu_vii_litebuf_command),
-		/* No responses are to be sent for IIF signal commands. */
-		.rx_queue = NULL,
-		.rx_elem_size = 0,
+		.rx_elem_size = sizeof(struct edgetpu_vii_litebuf_command),
 		.timeout = 0,
 		.ops = &iif_mailbox_ops,
 		.data = etiif,
@@ -380,30 +521,37 @@ int edgetpu_iif_init_mailbox(struct edgetpu_dev *etdev, struct edgetpu_iif *etii
 		goto err_free_mailbox;
 	}
 
-	ret = edgetpu_iremap_alloc(etdev, QUEUE_SIZE * VII_CMD_SIZE_BYTES, &etiif->cmd_queue_mem);
+	ret = edgetpu_iif_alloc_queue(etiif, GCIP_MAILBOX_CMD_QUEUE);
 	if (ret) {
-		etdev_err(etdev, "Failed to allocate IIF mailbox queue (%d)", ret);
+		etdev_err(etdev, "Failed to allocate IIF mailbox command queue (%d)", ret);
 		goto err_free_mailbox;
 	}
-	ret = edgetpu_mailbox_set_queue(mbx_hardware, GCIP_MAILBOX_CMD_QUEUE,
-					etiif->cmd_queue_mem.dma_addr, QUEUE_SIZE);
+
+	ret = edgetpu_iif_alloc_queue(etiif, GCIP_MAILBOX_RESP_QUEUE);
 	if (ret) {
-		etdev_err(etdev, "Failed to set IIF mailbox queue (%d)", ret);
+		etdev_err(etdev, "Failed to allocate IIF mailbox response queue (%d)", ret);
 		goto err_free_cmd_queue;
 	}
-	edgetpu_mailbox_set_queue_as_unused(mbx_hardware, GCIP_MAILBOX_RESP_QUEUE);
-	mutex_init(&etiif->cmd_queue_lock);
+
+	spin_lock_init(&etiif->cmd_queue_lock);
+	spin_lock_init(&etiif->resp_queue_lock);
 	args.tx_queue = etiif->cmd_queue_mem.virt_addr;
+	args.rx_queue = etiif->resp_queue_mem.virt_addr;
 
 	ret = gcip_mailbox_init(etiif->mbx_protocol, &args);
 	if (ret)
-		goto err_free_cmd_queue;
+		goto err_free_resp_queue;
+
+	edgetpu_mailbox_set_irq_handler(mbx_hardware, edgetpu_iif_handle_irq);
+	edgetpu_mailbox_init_doorbells(mbx_hardware);
 	edgetpu_mailbox_enable(mbx_hardware);
 
 	return ret;
 
+err_free_resp_queue:
+	edgetpu_iif_free_queue(etiif, GCIP_MAILBOX_RESP_QUEUE);
 err_free_cmd_queue:
-	edgetpu_iremap_free(etdev, &etiif->cmd_queue_mem);
+	edgetpu_iif_free_queue(etiif, GCIP_MAILBOX_CMD_QUEUE);
 err_free_mailbox:
 	etiif->mbx_hardware = NULL;
 	edgetpu_mailbox_release(mbx_hardware);
@@ -435,9 +583,11 @@ void edgetpu_iif_release_mailbox(struct edgetpu_iif *etiif)
 
 	flush_pending_iif_commands(etiif);
 
+	edgetpu_mailbox_set_irq_handler(etiif->mbx_hardware, NULL);
 	gcip_mailbox_release(etiif->mbx_protocol);
 	etiif->mbx_protocol = NULL;
-	edgetpu_iremap_free(etiif->etdev, &etiif->cmd_queue_mem);
+	edgetpu_iif_free_queue(etiif, GCIP_MAILBOX_RESP_QUEUE);
+	edgetpu_iif_free_queue(etiif, GCIP_MAILBOX_CMD_QUEUE);
 	mbx_hardware = etiif->mbx_hardware;
 	etiif->mbx_hardware = NULL;
 	edgetpu_mailbox_release(mbx_hardware);
@@ -445,16 +595,10 @@ void edgetpu_iif_release_mailbox(struct edgetpu_iif *etiif)
 
 void edgetpu_iif_reinit_mailbox(struct edgetpu_iif *etiif)
 {
-	unsigned long flags;
-
 	if (!etiif->mbx_protocol)
 		return;
 
 	flush_pending_iif_commands(etiif);
-	spin_lock_irqsave(&etiif->flush_lock, flags);
-	etiif->is_flushing = false;
-	spin_unlock_irqrestore(&etiif->flush_lock, flags);
-
 	edgetpu_mailbox_disable_doorbells(etiif->mbx_hardware);
 	edgetpu_mailbox_clear_doorbells(etiif->mbx_hardware);
 	/*
@@ -463,12 +607,17 @@ void edgetpu_iif_reinit_mailbox(struct edgetpu_iif *etiif)
 	 */
 	edgetpu_mailbox_set_queue(etiif->mbx_hardware, GCIP_MAILBOX_CMD_QUEUE,
 				  etiif->cmd_queue_mem.dma_addr, QUEUE_SIZE);
-	edgetpu_mailbox_set_queue_as_unused(etiif->mbx_hardware, GCIP_MAILBOX_RESP_QUEUE);
+	edgetpu_mailbox_set_queue(etiif->mbx_hardware, GCIP_MAILBOX_RESP_QUEUE,
+				  etiif->resp_queue_mem.dma_addr, QUEUE_SIZE);
+	edgetpu_mailbox_set_irq_handler(etiif->mbx_hardware, edgetpu_iif_handle_irq);
 	edgetpu_mailbox_init_doorbells(etiif->mbx_hardware);
 	edgetpu_mailbox_enable(etiif->mbx_hardware);
+
+	scoped_guard(spinlock_irqsave, &etiif->flush_lock)
+		etiif->is_flushing = false;
 }
 
-void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_id)
+int edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_id)
 {
 	struct edgetpu_dev *etdev = etiif->etdev;
 	struct edgetpu_vii_litebuf_command cmd;
@@ -479,7 +628,7 @@ void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_
 		etdev_err_ratelimited(
 			etdev, "Platform does not support TPU IIF signaling from AP (fence_id=%d)",
 			fence_id);
-		return;
+		return -ENODEV;
 	}
 
 	spin_lock_irqsave(&etiif->flush_lock, flags);
@@ -488,7 +637,7 @@ void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_
 		etdev_warn(etdev,
 			   "Unable to send unblock, IIF mailbox is being flushed (fence_id=%d)",
 			   fence_id);
-		return;
+		return -ESHUTDOWN;
 	}
 	etiif->pending_signals++;
 	spin_unlock_irqrestore(&etiif->flush_lock, flags);
@@ -505,7 +654,8 @@ void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_
 	ret = edgetpu_pm_get_if_powered(etdev, true);
 	if (ret) {
 		etdev_warn(etdev,
-			   "Unable to send IIF unblock notification due to the block being off");
+			   "Unable to send IIF id=%d unblock notification due to the block being off",
+			   fence_id);
 		goto out_dec_pending_signals;
 	}
 
@@ -513,14 +663,71 @@ void edgetpu_iif_send_unblock_notification(struct edgetpu_iif *etiif, int fence_
 	cmd.type = EDGETPU_VII_LITEBUF_SIGNAL_FENCE_COMMAND;
 
 	ret = gcip_mailbox_send_cmd_no_rsp(etiif->mbx_protocol, &cmd);
-	if (ret)
+	if (ret && ret != -EBUSY)
 		etdev_warn(etiif->etdev, "Failed to send IIF signal command, id=%d, error=%d",
 			   fence_id, ret);
 
-	edgetpu_pm_put(etdev);
+	edgetpu_pm_put_async(etdev);
 
 out_dec_pending_signals:
 	spin_lock_irqsave(&etiif->flush_lock, flags);
 	etiif->pending_signals--;
 	spin_unlock_irqrestore(&etiif->flush_lock, flags);
+
+	return ret;
+}
+
+int edgetpu_iif_submit_waiter_and_signaler(struct edgetpu_iif *etiif,
+					   struct gcip_fence_array *in_fence_array,
+					   struct gcip_fence_array *out_fence_array,
+					   struct edgetpu_iif_poll_cb *poll_cb_array)
+{
+	struct iif_fence *fence;
+	int i, ret;
+
+	ret = gcip_fence_array_submit_waiter_and_signaler(in_fence_array, out_fence_array, NULL,
+							  NULL, IIF_IP_TPU);
+	if (ret)
+		return ret;
+
+	if (!in_fence_array)
+		return 0;
+
+	for (i = 0; i < in_fence_array->size; i++) {
+		if (in_fence_array->fences[i]->type == GCIP_INTER_IP_FENCE) {
+			fence = in_fence_array->fences[i]->fence.iif;
+			poll_cb_array[i].etiif = etiif;
+			/*
+			 * If the fence is already unblocked/retired when submitted, the callback
+			 * won't be added and the function will return an error. We can ignore that
+			 * because the firmware will check the fence status on command submission.
+			 */
+			iif_fence_add_poll_callback(fence, &poll_cb_array[i].cb,
+						    edgetpu_iif_unblocked);
+		}
+	}
+
+	return 0;
+}
+
+void edgetpu_iif_waiter_and_signaler_completed_async(struct edgetpu_iif *etiif,
+						     struct gcip_fence_array *in_fence_array,
+						     struct gcip_fence_array *out_fence_array,
+						     struct edgetpu_iif_poll_cb *poll_cb_array)
+{
+	struct iif_fence *fence;
+	int i;
+
+	if (in_fence_array) {
+		for (i = 0; i < in_fence_array->size; i++) {
+			if (in_fence_array->fences[i]->type == GCIP_INTER_IP_FENCE) {
+				fence = in_fence_array->fences[i]->fence.iif;
+				/* It is safe to be called even when the callback wasn't added. */
+				iif_fence_remove_poll_callback(fence, &poll_cb_array[i].cb);
+			}
+		}
+	}
+
+	gcip_fence_array_waiter_and_signaler_completed_async(in_fence_array, out_fence_array, NULL,
+							     NULL, IIF_IP_TPU);
 }

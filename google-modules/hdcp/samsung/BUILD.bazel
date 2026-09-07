@@ -3,7 +3,12 @@
 # BUILD.bazel for the drm device driver.  This driver provides support for the
 # Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -34,23 +39,10 @@ ddk_module(
         "-Werror",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/display/samsung:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-        "//private/google-modules/trusty",
+        "//private/google-modules/trusty:trusty-ipc",
         "//private/google-modules/trusty:trusty_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "hdcp.samsung",
-    srcs = [
-        ":exynos-hdcp2",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

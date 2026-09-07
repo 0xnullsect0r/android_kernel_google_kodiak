@@ -6,6 +6,9 @@
 #ifndef _GOOG_MBA_CPM_IFACE_H_
 #define _GOOG_MBA_CPM_IFACE_H_
 
+#include <linux/types.h>
+
+struct device;
 struct cpm_iface_client;
 
 /*

@@ -2,6 +2,11 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "google-mem-qos.kconfig",
     srcs = [
@@ -78,11 +83,6 @@ alias(
         ":google-mem-qos_enabled": ":google-mem-qos_real",
         "//conditions:default": ":google-mem-qos_stub",
     }),
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/edgetpu:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-    ],
 )
 
 ddk_module(
@@ -98,9 +98,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":google-mem-qos",
         "//common:all_headers_aarch64",
