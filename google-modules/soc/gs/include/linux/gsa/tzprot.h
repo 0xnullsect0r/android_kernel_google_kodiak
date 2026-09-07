@@ -34,4 +34,18 @@ int trusty_protect_ip(struct device *dev, uint32_t prot_id, bool enable);
 int trusty_protect_ip_bulk(struct device *dev, uint32_t dev_enable_mask,
 	uint32_t dev_disable_mask);
 
+
+/**
+ * trusty_get_histogram() - get histogram for channel(s) in panel
+ * @dev: pointer to TZPROT &struct device
+ * @hist_id: DPU histogram ID
+ * @channel_mask: mask of histogram channels which will be accessed
+ * @luma_arr: array where luma results are saved in ascending channel order
+ * @arr_size: luma_arr size, must be >= number of requested channels
+ *
+ * Return: 0 on success, otherwise a negative error code
+ */
+int trusty_get_histogram(struct device *dev, uint8_t hist_id, uint8_t channel_mask,
+	uint16_t *luma_arr, uint8_t arr_size);
+
 #endif /* __LINUX_TZPROT_H */

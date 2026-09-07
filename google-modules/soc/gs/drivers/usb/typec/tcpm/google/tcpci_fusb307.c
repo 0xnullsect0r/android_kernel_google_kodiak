@@ -20,8 +20,8 @@
 #include <linux/usb/role.h>
 #include <linux/usb/tcpm.h>
 #include <linux/usb/typec_mux.h>
-#include <gvotable.h>
-#include <logbuffer.h>
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 
 #include "tcpci_otg_helper.h"
 #include "google_tcpci_shim.h"

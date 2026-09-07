@@ -1068,13 +1068,15 @@ static int gsa_probe(struct platform_device *pdev)
 	err = devm_of_platform_populate(dev);
 	if (err < 0) {
 		dev_err(dev, "populate children failed (%d)\n", err);
-		return err;
+		goto err_destroy_mbox;
 	}
 
 	/* alloc bounce buffer */
 	state->bb_va = dmam_alloc_coherent(dev, GSA_PAGE_SIZE, &state->bb_da, GFP_KERNEL);
-	if (!state->bb_va)
-		return -ENOMEM;
+	if (!state->bb_va) {
+		err = -ENOMEM;
+		goto err_destroy_mbox;
+	}
 	state->bb_sz = GSA_PAGE_SIZE;
 
 	/* Initialize TZ serice link to HWMGR */
@@ -1111,6 +1113,10 @@ static int gsa_probe(struct platform_device *pdev)
 	devm_pm_runtime_enable(&pdev->dev);
 #endif
 	return 0;
+
+err_destroy_mbox:
+	gsa_mbox_destroy(state->mb);
+	return err;
 }
 
 static void gsa_remove(struct platform_device *pdev)

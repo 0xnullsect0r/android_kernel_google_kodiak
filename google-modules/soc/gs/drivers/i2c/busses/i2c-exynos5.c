@@ -954,6 +954,8 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 		if (i2c->msg_ptr < i2c->msg->len) {
 			dev_err(i2c->dev, "polling trailing read fifo timeout.\n");
 			i2c->trans_done = -EIO;
+		} else {
+			xfer_timeout = false;
 		}
 		i2c->has_trailing_bytes = false;
 	}

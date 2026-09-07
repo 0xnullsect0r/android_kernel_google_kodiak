@@ -117,6 +117,12 @@ bool dbg_snapshot_get_warm_status(void)
 }
 EXPORT_SYMBOL_GPL(dbg_snapshot_get_warm_status);
 
+void dbg_snapshot_set_powerkey_status(bool val)
+{
+	dss_desc.long_press_power = val;
+}
+EXPORT_SYMBOL_GPL(dbg_snapshot_set_powerkey_status);
+
 void dbg_snapshot_scratch_reg(unsigned int val)
 {
 	dbg_snapshot_set_val_offset(val, DSS_OFFSET_SCRATCH);

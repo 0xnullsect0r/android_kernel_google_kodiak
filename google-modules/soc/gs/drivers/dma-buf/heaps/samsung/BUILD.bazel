@@ -2,13 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/dma-buf/heaps:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -48,10 +45,17 @@ ddk_module(
     conditional_srcs = {
         "CONFIG_DMABUF_HEAPS_GOOGLE_GCMA": {
             True: [
-                "gcma_heap.c",
+                "gcma_heap_core.c",
+                "gcma_heap_nonsecure.c",
+                "gcma_heap_trusty.c",
                 "gcma_heap_sysfs.c",
                 "gcma_arbitrator.c",
                 "gcma_arbitrator_sysfs.c",
+            ],
+        },
+        "CONFIG_GSA_IPC": {
+            True: [
+                "gcma_heap_gsa.c",
             ],
         },
         "CONFIG_DMABUF_HEAPS_SAMSUNG_CARVEOUT": {

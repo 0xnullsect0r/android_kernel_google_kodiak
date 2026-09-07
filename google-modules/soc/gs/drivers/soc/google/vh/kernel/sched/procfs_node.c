@@ -33,7 +33,11 @@ unsigned int __read_mostly vendor_sched_util_post_init_scale = DEF_UTIL_POST_INI
 bool __read_mostly vendor_sched_npi_packing = true; //non prefer idle packing
 bool __read_mostly vendor_sched_reduce_prefer_idle = true;
 bool __read_mostly vendor_sched_auto_prefer_idle = false;
+bool __read_mostly vendor_sched_auto_latency_sensitive_nice = false;
+bool __read_mostly vendor_sched_auto_latency_sensitive_affinity = false;
+bool __read_mostly vendor_sched_ptick_auto_spread = false;
 unsigned int __read_mostly vendor_sched_adpf_rampup_multiplier = 1;
+unsigned int __read_mostly vendor_sched_overloaded_nr_running_threshold = 2;
 struct cpumask cpu_skip_mask_rt;
 struct cpumask skip_prefer_prev_mask;
 unsigned int __read_mostly vendor_sched_priority_task_boost_value = 0;
@@ -97,9 +101,6 @@ enum vendor_procfs_type {
 	GROUPED_CONTROL,
 	SCHED_QOS_CONTROL,
 };
-
-#define VENDOR_CMDLINE_LEN 256
-#define VENDOR_SCHED_NETLINK_DELAY_MS 50
 
 #define PROC_OPS_RW(__name) \
 		static int __name##_proc_open(\
@@ -664,6 +665,9 @@ static int update_vendor_tunables(const char *buf, int count, int type)
 					goto fail;
 				updated_tunables = sched_memory_capacity;
 				break;
+			case SCHED_NR_RUNNING_THRESHOLD:
+				updated_tunables = sched_should_spread_nr_running_threshold;
+				break;
 			default:
 				goto fail;
 		}
@@ -1021,12 +1025,8 @@ static int update_prefer_fit(const char *buf, bool val)
 
 static int update_adpf(const char *buf, bool val)
 {
-	struct vendor_task_struct *vp;
-	struct rq_flags rf;
-	struct rq *rq;
 	struct task_struct *p;
 	pid_t pid;
-	bool old_adpf;
 
 	if (kstrtoint(buf, 0, &pid) || pid <= 0)
 		return -EINVAL;
@@ -1046,20 +1046,7 @@ static int update_adpf(const char *buf, bool val)
 		return -EACCES;
 	}
 
-	vp = get_vendor_task_struct(p);
-	rq = task_rq_lock(p, &rf);
-
-	old_adpf = !!(vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_ADPF_BIT));
-
-	if (val)
-		set_bit(SCHED_QOS_ADPF_BIT, &vp->sched_qos_user_defined_flag);
-	else
-		clear_bit(SCHED_QOS_ADPF_BIT, &vp->sched_qos_user_defined_flag);
-
-	update_adpf_counter(p, old_adpf);
-
-
-	task_rq_unlock(rq, p, &rf);
+	set_adpf(p, val);
 
 	put_task_struct(p);
 	rcu_read_unlock();
@@ -1530,148 +1517,6 @@ static int update_sched_qos_sensitive_extreme(const char *buf, int count)
 	return update_sched_qos_profiles(buf, SCHED_QOS_SENSITIVE_EXTREME);
 }
 
-enum {
-	VENDOR_SCHED_ATTR_UNSPEC,
-	VENDOR_SCHED_ATTR_TGID,
-	VENDOR_SCHED_ATTR_UID,
-	VENDOR_SCHED_ATTR_CMDLINE,
-	VENDOR_SCHED_ATTR_OLD_GROUP,
-	VENDOR_SCHED_ATTR_NEW_GROUP,
-
-	__VENDOR_SCHED_ATTR_MAX,
-};
-#define VENDOR_SCHED_ATTR_MAX (__VENDOR_SCHED_ATTR_MAX - 1)
-
-enum {
-	VENDOR_SCHED_CMD_UNSPEC,
-	VENDOR_SCHED_CMD_GROUP_MIGRATION,
-	__VENDOR_SCHED_CMD_MAX,
-};
-#define VENDOR_SCHED_CMD_MAX (__VENDOR_SCHED_CMD_MAX - 1)
-
-static const struct nla_policy vendor_sched_genl_policy[VENDOR_SCHED_ATTR_MAX + 1] = {
-	[VENDOR_SCHED_ATTR_TGID] = { .type = NLA_U32 },
-	[VENDOR_SCHED_ATTR_UID] = { .type = NLA_U32 },
-	[VENDOR_SCHED_ATTR_CMDLINE] = { .type = NLA_NUL_STRING },
-	[VENDOR_SCHED_ATTR_OLD_GROUP] = { .type = NLA_U32 },
-	[VENDOR_SCHED_ATTR_NEW_GROUP] = { .type = NLA_U32 },
-};
-
-enum vendor_sched_multicast_groups {
-	VENDOR_SCHED_MCGRP_GROUP_MIGRATION,
-};
-
-static const struct genl_multicast_group vendor_sched_mcgrps[] = {
-	[VENDOR_SCHED_MCGRP_GROUP_MIGRATION] = { .name = "group_migration", },
-};
-
-static struct genl_family vendor_sched_gnl_family = {
-	.name = "VENDOR_SCHED",
-	.version = 1,
-	.maxattr = VENDOR_SCHED_ATTR_MAX,
-	.policy = vendor_sched_genl_policy,
-	.module = THIS_MODULE,
-	.mcgrps = vendor_sched_mcgrps,
-	.n_mcgrps = ARRAY_SIZE(vendor_sched_mcgrps),
-};
-
-struct group_migration_work {
-	struct delayed_work dwork;
-	struct task_struct *task;
-	int old_group;
-	int new_group;
-};
-
-static void netlink_notification_work_handler(struct work_struct *work)
-{
-	struct group_migration_work *gm_work = container_of(to_delayed_work(work),
-		struct group_migration_work, dwork);
-	struct task_struct *p = gm_work->task;
-	char cmdline[VENDOR_CMDLINE_LEN];
-	struct sk_buff *skb;
-	void *msg_head;
-	const struct cred *cred;
-	uid_t uid;
-	int ret, len;
-
-	if (unlikely(p->flags & PF_EXITING))
-		goto out_free;
-
-	/* Safe to sleep and block here! */
-	len = get_cmdline(p, cmdline, sizeof(cmdline) - 1);
-	cmdline[len] = '\0';
-
-	rcu_read_lock();
-	cred = __task_cred(p);
-	if (unlikely(!cred)) {
-		rcu_read_unlock();
-		goto out_free;
-	}
-	uid = cred->uid.val;
-	rcu_read_unlock();
-
-	skb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!skb)
-		goto out_free;
-
-	msg_head = genlmsg_put(skb, 0, 0, &vendor_sched_gnl_family, 0,
-			       VENDOR_SCHED_CMD_GROUP_MIGRATION);
-	if (!msg_head) {
-		nlmsg_free(skb);
-		goto out_free;
-	}
-
-	if (nla_put_u32(skb, VENDOR_SCHED_ATTR_TGID, p->tgid))
-		goto nla_put_failure;
-
-	if (nla_put_u32(skb, VENDOR_SCHED_ATTR_UID, uid))
-		goto nla_put_failure;
-
-	if (nla_put_string(skb, VENDOR_SCHED_ATTR_CMDLINE, cmdline))
-		goto nla_put_failure;
-
-	if (nla_put_u32(skb, VENDOR_SCHED_ATTR_OLD_GROUP, gm_work->old_group))
-		goto nla_put_failure;
-
-	if (nla_put_u32(skb, VENDOR_SCHED_ATTR_NEW_GROUP, gm_work->new_group))
-		goto nla_put_failure;
-
-	genlmsg_end(skb, msg_head);
-
-	ret = genlmsg_multicast(&vendor_sched_gnl_family, skb, 0,
-			       VENDOR_SCHED_MCGRP_GROUP_MIGRATION, GFP_KERNEL);
-	if (ret < 0 && ret != -ESRCH)
-		pr_warn("failed to send group migration notification: %d\n", ret);
-
-	goto out_free;
-
-nla_put_failure:
-	genlmsg_cancel(skb, msg_head);
-	nlmsg_free(skb);
-out_free:
-	put_task_struct(p);
-	kfree(gm_work);
-}
-
-static void queue_netlink_notification(struct task_struct *p, int old, int new)
-{
-	struct group_migration_work *gm_work;
-
-	gm_work = kmalloc(sizeof(*gm_work), GFP_ATOMIC);
-	if (!gm_work)
-		return;
-
-	get_task_struct(p);
-	gm_work->task = p;
-	gm_work->old_group = old;
-	gm_work->new_group = new;
-
-	INIT_DELAYED_WORK(&gm_work->dwork, netlink_notification_work_handler);
-	/* delay to wait cmdline and setuid to be ready */
-	queue_delayed_work(system_highpri_wq, &gm_work->dwork,
-			   msecs_to_jiffies(VENDOR_SCHED_NETLINK_DELAY_MS));
-}
-
 static inline void migrate_task_prio(struct task_struct *p, unsigned int old, unsigned int new)
 {
 	struct vendor_task_struct *vp = get_vendor_task_struct(p);
@@ -1733,7 +1578,7 @@ static inline void update_vendor_group_attribute(struct task_struct *p, int new)
 		raw_spin_unlock_irqrestore(&vp->lock, irqflags);
 		task_rq_unlock(rq, p, &rf);
 		if (should_notify)
-			queue_netlink_notification(p, old, new);
+			queue_delayed_notification(p, VENDOR_SCHED_CMD_GROUP_MIGRATION, old, new);
 		return;
 	}
 
@@ -1776,7 +1621,7 @@ static inline void update_vendor_group_attribute(struct task_struct *p, int new)
 	send_trace_sched_group_tracker(p, false);
 
 	if (should_notify)
-		queue_netlink_notification(p, old, new);
+		queue_delayed_notification(p, VENDOR_SCHED_CMD_GROUP_MIGRATION, old, new);
 }
 
 static int update_vendor_group(const char *buf, enum vendor_group_attribute vta,
@@ -1965,7 +1810,7 @@ static int dump_task_show(struct seq_file *m, void *v)
 	const char *grp_name = "unknown";
 	unsigned int rampup_multiplier;
 
-	seq_puts(m, "pid comm group uclamp_min uclamp_max uclamp_eff_min uclamp_eff_max ");
+	seq_puts(m, "pid tgid comm group uclamp_min uclamp_max uclamp_eff_min uclamp_eff_max ");
 	seq_puts(m, "adpf_adj real_cap_avg sched_qos_user_defined_flag rampup_multiplier ");
 	seq_puts(m, "effect_rampup_multiplier tag_nice\n");
 
@@ -1987,8 +1832,8 @@ static int dump_task_show(struct seq_file *m, void *v)
 		tag_nice = vp->tag_nice;
 		put_task_struct(t);
 
-		seq_printf(m, "%u %s %s %u %u %u %u 0x%X %llu 0x%lx %u %u %d\n",
-			   t->pid, t->comm, grp_name, uclamp_min, uclamp_max, uclamp_eff_min,
+		seq_printf(m, "%u %u %s %s %u %u %u %u 0x%X %llu 0x%lx %u %u %d\n",
+			   t->pid, t->tgid, t->comm, grp_name, uclamp_min, uclamp_max, uclamp_eff_min,
 			   uclamp_eff_max, adpf_adj, real_cap_avg, vp->sched_qos_user_defined_flag,
 			   rampup_multiplier, get_rampup_multiplier(t), tag_nice);
 	}
@@ -1999,6 +1844,59 @@ static int dump_task_show(struct seq_file *m, void *v)
 }
 
 PROC_OPS_RO(dump_task);
+
+struct dump_process_entry {
+	struct list_head list;
+	struct task_struct *task;
+};
+
+static int dump_process_show(struct seq_file *m, void *v)
+{
+	struct task_struct *p;
+	struct dump_process_entry *entry, *tmp;
+	LIST_HEAD(snapshot_list);
+	char cmdline[VENDOR_CMDLINE_LEN] = {0};
+
+	seq_puts(m, "tgid uid process\n");
+
+	rcu_read_lock();
+	for_each_process(p) {
+		if (tryget_task_struct(p)) {
+			entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
+			if (!entry) {
+				put_task_struct(p);
+				break;
+			}
+			entry->task = p;
+			list_add_tail(&entry->list, &snapshot_list);
+		}
+	}
+	rcu_read_unlock();
+
+	list_for_each_entry_safe(entry, tmp, &snapshot_list, list) {
+		struct task_struct *task = entry->task;
+		const struct cred *cred;
+		uid_t uid = 0;
+
+		cred = get_task_cred(task);
+		if (cred) {
+			uid = cred->uid.val;
+			put_cred(cred);
+		}
+
+		if (uid) {
+			get_cmdline(task, cmdline, sizeof(cmdline) - 1);
+			seq_printf(m, "%u %u %s\n", task->tgid, uid, cmdline);
+		}
+
+		put_task_struct(task);
+		kfree(entry);
+	}
+
+	return 0;
+}
+
+PROC_OPS_RO(dump_process);
 
 static int pmu_stats_show(struct seq_file *m, void *v)
 {
@@ -2368,6 +2266,38 @@ static ssize_t per_task_memory_aware_enable_store(struct file *filp,
 }
 PROC_OPS_RW(per_task_memory_aware_enable);
 
+static int enable_spread_nr_running_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", static_key_enabled(&enable_spread_nr_running) ? 1 : 0);
+	return 0;
+}
+static ssize_t enable_spread_nr_running_store(struct file *filp,
+					  const char __user *ubuf,
+					  size_t count, loff_t *pos)
+{
+	int enable = 0;
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	if (kstrtoint(buf, 10, &enable))
+		return -EINVAL;
+
+	if (enable)
+		static_branch_enable(&enable_spread_nr_running);
+	else
+		static_branch_disable(&enable_spread_nr_running);
+
+	return count;
+}
+PROC_OPS_RW(enable_spread_nr_running);
+
 static int eas_fork_exec_enable_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%d\n", static_key_enabled(&eas_fork_exec_enable) ? 1 : 0);
@@ -2429,6 +2359,35 @@ static ssize_t memory_capacity_store(struct file *filp,
 	return update_vendor_tunables(buf, count, SCHED_MEMORY_CAPACITY);
 }
 PROC_OPS_RW(memory_capacity);
+
+static int should_spread_nr_running_threshold_show(struct seq_file *m, void *v)
+{
+	int i;
+
+	for (i = 0; i < pixel_cpu_num; i++)
+		seq_printf(m, "%u ", sched_should_spread_nr_running_threshold[i]);
+
+	seq_puts(m, "\n");
+
+	return 0;
+}
+static ssize_t should_spread_nr_running_threshold_store(struct file *filp,
+				  const char __user *ubuf,
+				  size_t count, loff_t *pos)
+{
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	return update_vendor_tunables(buf, count, SCHED_NR_RUNNING_THRESHOLD);
+}
+PROC_OPS_RW(should_spread_nr_running_threshold);
 
 static int update_freq_on_idle_enable_show(struct seq_file *m, void *v)
 {
@@ -2555,6 +2514,128 @@ static ssize_t auto_prefer_idle_store(struct file *filp, const char __user *ubuf
 }
 
 PROC_OPS_RW(auto_prefer_idle);
+
+static int auto_latency_sensitive_nice_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%s\n", vendor_sched_auto_latency_sensitive_nice ? "true" : "false");
+
+	return 0;
+}
+
+static ssize_t auto_latency_sensitive_nice_store(struct file *filp, const char __user *ubuf,
+						 size_t count, loff_t *pos)
+{
+	bool enable;
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	if (kstrtobool(buf, &enable))
+		return -EINVAL;
+
+	vendor_sched_auto_latency_sensitive_nice = enable;
+
+	return count;
+}
+
+PROC_OPS_RW(auto_latency_sensitive_nice);
+
+static int auto_latency_sensitive_affinity_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%s\n", vendor_sched_auto_latency_sensitive_affinity ? "true" : "false");
+
+	return 0;
+}
+
+static ssize_t auto_latency_sensitive_affinity_store(struct file *filp, const char __user *ubuf,
+						     size_t count, loff_t *pos)
+{
+	bool enable;
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	if (kstrtobool(buf, &enable))
+		return -EINVAL;
+
+	vendor_sched_auto_latency_sensitive_affinity = enable;
+
+	return count;
+}
+
+PROC_OPS_RW(auto_latency_sensitive_affinity);
+
+static int ptick_auto_spread_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%s\n", vendor_sched_ptick_auto_spread ? "true" : "false");
+
+	return 0;
+}
+
+static ssize_t ptick_auto_spread_store(struct file *filp, const char __user *ubuf,
+				       size_t count, loff_t *pos)
+{
+	bool enable;
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	if (kstrtobool(buf, &enable))
+		return -EINVAL;
+
+	vendor_sched_ptick_auto_spread = enable;
+
+	return count;
+}
+
+PROC_OPS_RW(ptick_auto_spread);
+
+static int overloaded_nr_running_threshold_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%u\n", vendor_sched_overloaded_nr_running_threshold);
+	return 0;
+}
+static ssize_t overloaded_nr_running_threshold_store(struct file *filp,
+						     const char __user *ubuf,
+						     size_t count, loff_t *pos)
+{
+	unsigned int val;
+	char buf[MAX_PROC_SIZE];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	buf[count] = '\0';
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	vendor_sched_overloaded_nr_running_threshold = val;
+
+	return count;
+}
+PROC_OPS_RW(overloaded_nr_running_threshold);
 
 static int skip_prefer_prev_mask_show(struct seq_file *m, void *v)
 {
@@ -3945,7 +4026,12 @@ static struct pentry entries[] = {
 	PROC_ENTRY(npi_packing),
 	PROC_ENTRY(reduce_prefer_idle),
 	PROC_ENTRY(auto_prefer_idle),
+	PROC_ENTRY(auto_latency_sensitive_nice),
+	PROC_ENTRY(auto_latency_sensitive_affinity),
+	PROC_ENTRY(ptick_auto_spread),
+	PROC_ENTRY(overloaded_nr_running_threshold),
 	PROC_ENTRY(dump_task),
+	PROC_ENTRY(dump_process),
 	PROC_ENTRY(pmu_stats),
 	// pmu limit attribute
 	PROC_ENTRY(pmu_poll_time),
@@ -4013,6 +4099,9 @@ static struct pentry entries[] = {
 	// task placement retry
 	PROC_ENTRY(task_placement_retry_count),
 	PROC_ENTRY(task_placement_retry_delay_us),
+	// threshold of rq running task number
+	PROC_ENTRY(should_spread_nr_running_threshold),
+	PROC_ENTRY(enable_spread_nr_running),
 };
 
 
@@ -4088,9 +4177,6 @@ int create_procfs_node(void)
 	}
 
 	initialize_vendor_group_property();
-
-	if (genl_register_family(&vendor_sched_gnl_family) != 0)
-		pr_warn("failed to register vendor sched genl family\n");
 
 	return 0;
 

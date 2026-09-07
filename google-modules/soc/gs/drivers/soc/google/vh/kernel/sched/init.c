@@ -14,7 +14,7 @@
 #include <linux/suspend.h>
 #include <trace/hooks/binder.h>
 #include "drivers/android/binder/rust_binder.h"
-#include "drivers/android/binder/rust_binder_hooks.h"
+#include <trace/hooks/rust_binder.h>
 #include <trace/hooks/cgroup.h>
 #include <trace/hooks/dtask.h>
 #include <trace/hooks/sched.h>
@@ -22,14 +22,13 @@
 #include <trace/hooks/topology.h>
 #include <trace/hooks/cpufreq.h>
 #include <trace/hooks/futex.h>
+#include <trace/hooks/wqlockup.h>
 #include <perf/core/gs_domain_idle.h>
 #include <soc/google/cal-if.h>
 
 #include "pixel_em.h"
 #include "sched_priv.h"
-
-extern void vh_alter_futex_plist_add_pixel_mod(void *data, struct plist_node *q_list,
-						struct plist_head *hb_chain, bool *already_on_hb);
+#include "wq.h"
 
 extern struct cpufreq_governor sched_pixel_gov;
 extern bool wait_for_init;
@@ -112,7 +111,12 @@ static void vh_prio_restore(void *data, int nice)
 static enum hrtimer_restart ptick(struct hrtimer *timer)
 {
 	struct rq *rq = cpu_rq(smp_processor_id());
+	struct vendor_rq_struct *vrq = get_vendor_rq_struct(rq);
 	struct rq_flags rf;
+
+	/* The timer must be pinned to this_cpu, hotplug can mess it up though.*/
+	if (vrq->ptick_timer != timer)
+		return HRTIMER_NORESTART;
 
 	rq_lock(rq, &rf);
 	/* Update stats first */
@@ -209,6 +213,8 @@ static int init_pixel_cpu(void)
 			cur_capacity = arch_scale_cpu_capacity(i);
 			pixel_cluster_num++;
 		}
+
+		sched_should_spread_nr_running_threshold[i] = cur_capacity / DEF_NR_RUNNING_UTIL;
 	}
 
 	pixel_cpu_to_cluster  = kcalloc(pixel_cpu_num, sizeof(int), GFP_KERNEL);
@@ -281,6 +287,8 @@ static void rvh_get_nohz_timer_target_pixel_mod(void *data, int *cpu, bool *done
 		 * cluster (cluster 0).
 		 */
 		*cpu = pixel_cluster_start_cpu[0] + pixel_cluster_cpu_num[0] - 1;
+		if (!cpumask_test_cpu(*cpu, cpu_online_mask))
+			*cpu = cpumask_first(cpu_online_mask);
 		*done = true;
 	}
 }
@@ -320,13 +328,13 @@ static int vh_sched_init(void)
 
 	ret = init_pixel_cpu();
 	if (ret) {
-		pr_err("[vh_sched_init] pixel cpu init failed\n");
+		pr_err("[%s] pixel cpu init failed\n", __func__);
 		return ret;
 	}
 
 	ret = pmu_poll_init();
 	if (ret) {
-		pr_err("[vh_sched_init] pmu poll init failed\n");
+		pr_err("[%s] pmu poll init failed\n", __func__);
 		return ret;
 	}
 
@@ -338,7 +346,13 @@ static int vh_sched_init(void)
 
 	ret = create_procfs_node();
 	if (ret) {
-		pr_err("[vh_sched_init] creating procfs nodes failed\n");
+		pr_err("[%s] creating procfs nodes failed\n", __func__);
+		return ret;
+	}
+
+	ret = vh_sched_netlink_init();
+	if (ret) {
+		pr_err("[%s] registering generic netlink failed\n", __func__);
 		return ret;
 	}
 
@@ -363,6 +377,8 @@ static int vh_sched_init(void)
 
 	REGISTER_TRACE_VH(dup_task_struct, vh_dup_task_struct_pixel_mod);
 	REGISTER_TRACE_VH(exit_check, vh_exit_check_pixel_mod);
+	REGISTER_TRACE_VH(free_task, vh_free_task_pixel_mod);
+	REGISTER_TRACE_VH(lock_task_fork, vh_lock_task_fork_pixel_mod);
 
 	/*
 	 * Heavy handed, but necessary. We want to initialize our private data
@@ -374,7 +390,7 @@ static int vh_sched_init(void)
 	 */
 	ret = stop_machine(init_vendor_task_data, NULL, cpumask_of(raw_smp_processor_id()));
 	if (ret)
-		pr_err("[vh_sched_init] stop_machine failed\n");
+		pr_err("[%s] stop_machine failed\n", __func__);
 
 	REGISTER_TRACE_RVH(enqueue_task, rvh_enqueue_task_pixel_mod);
 	REGISTER_TRACE_RVH(dequeue_task, rvh_dequeue_task_pixel_mod);
@@ -432,7 +448,7 @@ static int vh_sched_init(void)
 
 	ret = cpufreq_register_governor(&sched_pixel_gov);
 	if (ret)
-		pr_err("[vh_sched_init] cpufreq governor register failed\n");
+		pr_err("[%s] cpufreq governor register failed\n", __func__);
 
 	REGISTER_TRACE_VH(dump_throttled_rt_tasks, vh_dump_throttled_rt_tasks_mod);
 
@@ -442,11 +458,13 @@ static int vh_sched_init(void)
 #endif /* IS_ENABLED(CONFIG_RVH_SCHED_LIB) */
 
 	REGISTER_TRACE_VH(binder_set_priority, vh_binder_set_priority_pixel_mod);
-	REGISTER_TRACE_VH(binder_wait_for_work, vh_binder_wait_for_work_pixel_mod);
+	REGISTER_TRACE_VH(binder_looper_state_registered, vh_binder_looper_state_registered_pixel_mod);
+	REGISTER_TRACE_VH(binder_looper_exited, vh_binder_looper_exited_pixel_mod);
 	REGISTER_TRACE_VH(binder_restore_priority, vh_binder_restore_priority_pixel_mod);
 	REGISTER_TRACE_VH(binder_proc_transaction_finish, vh_binder_proc_transaction_finish);
 	REGISTER_TRACE_VH(rust_binder_set_priority, vh_rust_binder_set_priority_pixel_mod);
 	REGISTER_TRACE_VH(rust_binder_restore_priority, vh_rust_binder_restore_priority_pixel_mod);
+	REGISTER_TRACE_VH(rust_binder_looper_entry, vh_rust_binder_looper_entry_mod);
 
 	REGISTER_TRACE_VH(use_amu_fie, android_vh_use_amu_fie_pixel_mod);
 	REGISTER_TRACE_RVH(set_user_nice_locked, rvh_set_user_nice_locked_pixel_mod);
@@ -461,6 +479,7 @@ static int vh_sched_init(void)
 
 	REGISTER_TRACE_RVH(util_fits_cpu, rvh_util_fits_cpu_pixel_mod);
 	REGISTER_TRACE_RVH(set_task_comm, rvh_set_task_comm_pixel_mod);
+	REGISTER_TRACE_RVH(alloc_workqueue, rvh_alloc_workqueue_handler);
 	REGISTER_TRACE_VH(resume_end, vh_sched_resume_end);
 	REGISTER_TRACE_RVH(try_to_wake_up_success, rvh_try_to_wake_up_success_pixel_mod);
 	REGISTER_TRACE_RVH(build_perf_domains, android_rvh_build_perf_domains_pixel_mod);

@@ -62,3 +62,12 @@ config GSA_IPC
 	  This module implements GSA IPC infrastructure that allows the user space apps
 	  to communicate with GSA core using Trusty IPC compatible IPC protocol. Both
 	  simple message exchange and memory sharing is supported.
+
+config GSA_WAKELOCK
+	bool "Hold wakelock during mailbox transactions"
+	depends on GSA
+	default n
+	help
+	  Enabling this option will hold a wakelock during GSA mailbox
+	  transactions to prevent the system from suspending while a
+	  transaction is in progress.

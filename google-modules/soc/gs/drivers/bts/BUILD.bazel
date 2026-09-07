@@ -4,12 +4,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -36,18 +34,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/edgetpu/janeiro/drivers/edgetpu:__subpackages__",
-        "//private/google-modules/edgetpu/rio/drivers/edgetpu:__subpackages__",
-        "//private/google-modules/gpu/mali_kbase:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/radio/samsung/s5300:__subpackages__",
-        "//private/google-modules/radio/samsung/s5400:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/video/gchips:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",

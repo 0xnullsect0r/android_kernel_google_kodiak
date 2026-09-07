@@ -12,7 +12,7 @@
 #include <linux/power_supply.h>
 #include <linux/usb/tcpm.h>
 #include <linux/usb/typec.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 #include "bc_max77759.h"
 #include "max77759_helper.h"

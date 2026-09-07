@@ -2,12 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -34,20 +32,10 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio/samsung/s5300:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/wlan/bcmdhd/bcm4389:__subpackages__",
-        "//private/google-modules/wlan/bcmdhd/bcm4398:__subpackages__",
-        "//private/google-modules/wlan/qcom/wcn6740/cnss2:__subpackages__",
-        "//private/google-modules/wlan/syna/dhd43752p:__subpackages__",
-    ],
     deps = [
         ":pcie-exynos-gs201-rc-cal",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/iommu:exynos-pcie-iommu",
         "//private/google-modules/soc/gs/drivers/iommu:exynos-pcie-iommu-exp_headers",
@@ -95,8 +83,7 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )

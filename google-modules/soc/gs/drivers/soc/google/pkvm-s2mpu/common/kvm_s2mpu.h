@@ -400,6 +400,8 @@ static_assert(SMPT_GRAN <= PAGE_SIZE);
  */
 #define S2MPU_DENY_ALL				BIT(1)
 
+#define S2MPU_HAS_TZ_SIBLING			BIT(2)
+
 /*
  * Iterate over S2MPU gigabyte regions. Skip those that cannot be modified
  * (the MMIO registers are read only, with reset value MPT_PROT_NONE).

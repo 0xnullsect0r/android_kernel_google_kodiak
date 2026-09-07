@@ -36,6 +36,8 @@
 #include <linux/slab.h>
 #include <linux/timekeeping.h>
 #include <linux/uaccess.h>
+#include <linux/usb.h>
+#include <linux/usb/role.h>
 #include <linux/vmalloc.h>
 //#include <linux/wakelock.h>
 #include <linux/workqueue.h>
@@ -88,12 +90,14 @@ struct eusb_repeater_tune_param {
 
 struct eusb_repeater_data {
 	struct device			*dev;
-	struct extcon_dev		*edev;
 	struct i2c_client		*client;
 	struct mutex			mutex;
 	struct mutex			i2c_mutex;
 	struct eusb_repeater_plat_data	*pdata;
+	struct usb_role_switch		*role_sw;
 	unsigned int comm_err_count;	/* i2c comm error count */
+
+	enum usb_role curr_role;
 
 	/* Tune Parma list */
 	struct eusb_repeater_tune_param *tune_param;

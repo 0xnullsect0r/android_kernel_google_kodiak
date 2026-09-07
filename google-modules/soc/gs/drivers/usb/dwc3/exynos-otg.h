@@ -14,7 +14,7 @@
 #include <linux/power_supply.h>
 #include <linux/usb/role.h>
 
-#include <gvotable.h>
+#include <misc/gvotable.h>
 #include <soc/google/exynos_pm_qos.h>
 
 /**

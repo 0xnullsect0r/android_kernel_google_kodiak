@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-load("//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -129,20 +127,6 @@ ddk_module(
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/soc/google:exynos-pmu-if",
-    ],
-)
-
-kernel_module_group(
-    name = "phy",
-    srcs = [
-        ":eusb_repeater",
-        ":phy-exynos-mipi",
-        ":phy-exynos-mipi-dsim",
-        ":phy-exynos-usbdrd-eusb-super",
-        ":phy-exynos-usbdrd-super",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )
 

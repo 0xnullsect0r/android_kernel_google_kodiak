@@ -8,7 +8,7 @@
 #include <kunit/test.h>
 #include <kunit/device.h>
 #include <kunit/visibility.h>
-#include <gvotable.h>
+#include <misc/gvotable.h>
 
 #include <linux/usb/google-role-sw.h>
 

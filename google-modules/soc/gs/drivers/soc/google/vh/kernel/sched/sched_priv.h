@@ -11,6 +11,7 @@
 #define DEF_UTIL_THRESHOLD  1280
 #define DEF_UTIL_POST_INIT_SCALE  512
 #define DEF_THERMAL_CAP_MARGIN  1536
+#define DEF_NR_RUNNING_UTIL  50
 #define C1_EXIT_LATENCY     1
 #define THREAD_PRIORITY_TOP_APP_BOOST 110
 #define THREAD_PRIORITY_BACKGROUND    130
@@ -70,6 +71,7 @@
 #define SCHED_QOS_PREFER_FIT_BIT	6
 #define SCHED_QOS_BOOST_PRIO_BIT	7
 #define SCHED_QOS_TAG_NICE_BIT		8
+#define SCHED_QOS_AUTO_ADPF_BIT		9
 
 #if IS_ENABLED(CONFIG_PIXEL_EM_VOLTAGE_SCALING)
 #define VOLTAGE_SCALING_THRESHOLD	10
@@ -93,8 +95,10 @@ extern unsigned int sched_auto_fits_capacity[CONFIG_VH_SCHED_MAX_CPU_NR];
 extern unsigned int sched_dvfs_headroom[CONFIG_VH_SCHED_MAX_CPU_NR];
 extern unsigned int sched_per_cpu_iowait_boost_max_value[CONFIG_VH_SCHED_MAX_CPU_NR];
 extern unsigned int sched_memory_capacity[CONFIG_VH_SCHED_MAX_CPU_NR];
+extern unsigned int sched_should_spread_nr_running_threshold[CONFIG_VH_SCHED_MAX_CPU_NR];
 extern unsigned int sched_per_task_iowait_boost_max_value;
 extern unsigned int vendor_sched_adpf_rampup_multiplier;
+extern unsigned int vendor_sched_overloaded_nr_running_threshold;
 extern int vendor_sched_task_placement_retry_count;
 extern int vendor_sched_task_placement_retry_delay_us;
 
@@ -128,6 +132,7 @@ DECLARE_STATIC_KEY_FALSE(response_time_ms_fix_enable);
 DECLARE_STATIC_KEY_FALSE(per_task_memory_aware_enable);
 DECLARE_STATIC_KEY_FALSE(eas_fork_exec_enable);
 DECLARE_STATIC_KEY_FALSE(enable_ptick);
+DECLARE_STATIC_KEY_FALSE(enable_spread_nr_running);
 
 unsigned long approximate_util_avg(unsigned long util, u64 delta);
 u64 approximate_runtime(unsigned long util);
@@ -339,6 +344,7 @@ enum VENDOR_TUNABLE_TYPE {
 	SCHED_THERMAL_CAP_MARGIN,
 	SCHED_MAX_UCLAMP_ST,
 	SCHED_MEMORY_CAPACITY,
+	SCHED_NR_RUNNING_THRESHOLD,
 };
 
 enum cpu_util_type {
@@ -356,6 +362,9 @@ ANDROID_VENDOR_CHECK_SIZE_ALIGN(u64 android_vendor_data1[4], struct vendor_task_
 
 extern bool vendor_sched_reduce_prefer_idle;
 extern bool vendor_sched_auto_prefer_idle;
+extern bool vendor_sched_auto_latency_sensitive_nice;
+extern bool vendor_sched_auto_latency_sensitive_affinity;
+extern bool vendor_sched_ptick_auto_spread;
 extern struct vendor_group_property vg[VG_MAX];
 
 DECLARE_STATIC_KEY_FALSE(uclamp_min_filter_enable);
@@ -722,17 +731,90 @@ static inline void set_vendor_boost(struct task_struct *p, bool boost)
 	get_vendor_task_struct(p)->vendor_boost = boost;
 }
 
-static inline bool get_adpf(struct task_struct *p, bool inherited)
+static inline bool is_highpri_workqueue(struct task_struct *p)
+{
+	return (p->flags & PF_WQ_WORKER) && task_nice(p) == MIN_NICE;
+}
+
+static inline bool __is_adpf(struct task_struct *p)
 {
 	struct vendor_task_struct *vp = get_vendor_task_struct(p);
+	bool is_adpf;
+
+	is_adpf = vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_ADPF_BIT);
+	is_adpf |= vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_AUTO_ADPF_BIT);
+
+	return is_adpf;
+}
+
+static inline bool get_adpf(struct task_struct *p, bool inherited)
+{
+	/*
+	 * task pi_lock is not guaranteed to be held and we must be careful what we access
+	 * during these checks.
+	 */
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
 	struct vendor_inheritance_struct *vi = get_vendor_inheritance_struct(p);
+	bool is_adpf;
+
+	is_adpf = __is_adpf(p) || is_highpri_workqueue(p);
 
 	if (inherited)
-		return (vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_ADPF_BIT) || vi->adpf) &&
-		       vg[vp->group].qos_adpf_enable;
+		is_adpf |= vi->adpf;
+
+	return is_adpf && vg[vp->group].qos_adpf_enable;
+}
+
+static inline void update_adpf_counter(struct task_struct *p, bool old_adpf);
+
+static inline void __set_auto_adpf_locked(struct task_struct *p, bool val)
+{
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
+	bool old_adpf;
+
+	old_adpf = __is_adpf(p);
+
+	if (val)
+		set_bit(SCHED_QOS_AUTO_ADPF_BIT, &vp->sched_qos_user_defined_flag);
 	else
-		return vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_ADPF_BIT) &&
-		       vg[vp->group].qos_adpf_enable;
+		clear_bit(SCHED_QOS_AUTO_ADPF_BIT, &vp->sched_qos_user_defined_flag);
+
+	update_adpf_counter(p, old_adpf);
+}
+
+static inline void set_auto_adpf(struct task_struct *p, bool val)
+{
+	struct rq_flags rf;
+	struct rq *rq;
+
+	rq = task_rq_lock(p, &rf);
+	__set_auto_adpf_locked(p, val);
+	task_rq_unlock(rq, p, &rf);
+}
+
+static inline void __set_adpf_locked(struct task_struct *p, bool val)
+{
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
+	bool old_adpf;
+
+	old_adpf = __is_adpf(p);
+
+	if (val)
+		set_bit(SCHED_QOS_ADPF_BIT, &vp->sched_qos_user_defined_flag);
+	else
+		clear_bit(SCHED_QOS_ADPF_BIT, &vp->sched_qos_user_defined_flag);
+
+	update_adpf_counter(p, old_adpf);
+}
+
+static inline void set_adpf(struct task_struct *p, bool val)
+{
+	struct rq_flags rf;
+	struct rq *rq;
+
+	rq = task_rq_lock(p, &rf);
+	__set_adpf_locked(p, val);
+	task_rq_unlock(rq, p, &rf);
 }
 
 static inline bool is_binder_task(struct task_struct *p)
@@ -769,6 +851,45 @@ static inline bool should_auto_prefer_idle(struct task_struct *p, int group)
 	}
 
 	return false;
+}
+
+static inline bool should_auto_latency_sensitive(struct task_struct *p,
+						 const struct cpumask *affinity,
+						 const long *nice)
+{
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
+
+	if (vp->group == VG_TOPAPP) {
+		if (vendor_sched_auto_latency_sensitive_nice) {
+			if (vp->orig_prio < DEFAULT_PRIO)
+				return true;
+
+			if (nice && NICE_TO_PRIO(*nice) < DEFAULT_PRIO)
+				return true;
+		}
+
+		if (vendor_sched_auto_latency_sensitive_affinity) {
+			struct cpumask mask = {};
+
+			mask.bits[0] = (1 << pixel_cluster_start_cpu[1]) - 1;
+
+			if (!affinity)
+				affinity = p->cpus_ptr;
+
+			if (!cpumask_intersects(affinity, &mask))
+				return true;
+		}
+	}
+
+	return false;
+}
+
+static inline bool should_ptick_auto_spread(struct task_struct *p, int group)
+{
+	if (!vendor_sched_ptick_auto_spread)
+		return false;
+
+	return should_auto_prefer_idle(p, group);
 }
 
 static inline bool get_prefer_idle(struct task_struct *p)
@@ -856,7 +977,7 @@ static inline unsigned int get_rampup_multiplier(struct task_struct *p)
 	if (!vg[vp->group].qos_rampup_multiplier_enable)
 		return vg[vp->group].rampup_multiplier;
 
-	if (get_adpf(p, true))
+	if (get_adpf(p, true) && !is_highpri_workqueue(p))
 		return rampup_qos_user_defined
 			? max(vp->rampup_multiplier, vendor_sched_adpf_rampup_multiplier)
 			: vendor_sched_adpf_rampup_multiplier;
@@ -872,8 +993,15 @@ static inline void _update_prefer_high_cap(struct task_struct *p, bool req)
 	struct vendor_inheritance_struct *vi = get_vendor_inheritance_struct(p);
 
 	vp->prefer_high_cap = req ||
-		vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_PREFER_HIGH_CAP_BIT) ||
+		(vp->sched_qos_user_defined_flag & BIT(SCHED_QOS_PREFER_HIGH_CAP_BIT)) ||
 		vi->prefer_high_cap || vg[vp->group].prefer_high_cap;
+}
+
+static inline void _reset_prefer_high_cap(struct task_struct *p)
+{
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
+
+	vp->prefer_high_cap = false;
 }
 
 static inline bool get_prefer_high_cap(struct task_struct *p)
@@ -956,13 +1084,10 @@ static inline bool check_cred(struct task_struct *p)
 static inline bool check_cap(struct task_struct *p, int cap)
 {
 	const struct cred *cred;
-	bool ret = true;
+	bool ret;
 
 	cred = get_task_cred(p);
-	if (!uid_eq(cred->euid, GLOBAL_ROOT_UID) &&
-	    !ns_capable(cred->user_ns, cap)) {
-		ret = false;
-	}
+	ret = uid_eq(cred->euid, GLOBAL_ROOT_UID) || cap_raised(cred->cap_effective, cap);
 	put_cred(cred);
 	return ret;
 }
@@ -1485,6 +1610,7 @@ void vh_sched_setscheduler_uclamp_pixel_mod(void *data, struct task_struct *tsk,
 void vh_dup_task_struct_pixel_mod(void *data, struct task_struct *tsk,
 				  struct task_struct *orig);
 void vh_exit_check_pixel_mod(void *data, struct task_struct *tsk);
+void vh_free_task_pixel_mod(void *data, struct task_struct *tsk);
 void rvh_select_task_rq_fair_pixel_mod(void *data, struct task_struct *p, int prev_cpu,
 				       int sd_flag, int wake_flags, int *target_cpu);
 void init_vendor_group_data(void);
@@ -1504,11 +1630,12 @@ void rvh_dequeue_task_fair_pixel_mod(void *data, struct rq *rq, struct task_stru
 				     int flags);
 void vh_binder_set_priority_pixel_mod(void *data, struct binder_transaction *t,
 				      struct task_struct *task);
-void vh_binder_wait_for_work_pixel_mod(void *data, bool do_proc_work,
-				       struct binder_thread *thread,
-				       struct binder_proc *proc);
 void vh_binder_restore_priority_pixel_mod(void *data, struct binder_transaction *t,
 					  struct task_struct *task);
+void vh_binder_looper_state_registered_pixel_mod(void *data, struct binder_thread *thread,
+				       struct binder_proc *proc);
+void vh_binder_looper_exited_pixel_mod(void *data, struct binder_thread *thread,
+				       struct binder_proc *proc);
 void vh_binder_proc_transaction_finish(void *data, struct binder_proc *proc,
 				       struct binder_transaction *t,
 				       struct task_struct *binder_th_task,
@@ -1517,12 +1644,15 @@ void vh_rust_binder_set_priority_pixel_mod(void *data,
 					   rust_binder_transaction t,
 					   struct task_struct *task);
 void vh_rust_binder_restore_priority_pixel_mod(void *data, struct task_struct *task);
+void vh_rust_binder_looper_entry_mod(void *data, rust_binder_thread thread,
+				     unsigned int looper_flags);
 void rvh_rtmutex_prepare_setprio_pixel_mod(void *data, struct task_struct *p,
 					   struct task_struct *pi_task);
 void vh_dump_throttled_rt_tasks_mod(void *data, int cpu, u64 clock, ktime_t rt_period,
 				    u64 rt_runtime, s64 rt_period_timer_expires);
 void vh_alter_futex_plist_add_pixel_mod(void *data, struct plist_node *q_list,
 				     struct plist_head *hb_chain, bool *already_on_hb);
+void vh_lock_task_fork_pixel_mod(void *data, struct task_struct *p);
 #if IS_ENABLED(CONFIG_RVH_SCHED_LIB)
 void rvh_sched_setaffinity_mod(void *data, struct task_struct *task,
 			       const struct cpumask *in_mask, int *res);
@@ -1600,3 +1730,21 @@ void reset_uclamp_stats(void);
 int pmu_poll_enable(void);
 void pmu_poll_disable(void);
 int set_prefer_idle_task_name(void);
+
+#define VENDOR_SCHED_NETLINK_DELAY_MS 10
+#define VENDOR_CMDLINE_LEN 256
+
+/* Generic Netlink subsystem interface */
+int vh_sched_netlink_init(void);
+enum vendor_sched_cmd {
+	VENDOR_SCHED_CMD_UNSPEC,
+	VENDOR_SCHED_CMD_GROUP_MIGRATION,
+	VENDOR_SCHED_CMD_TASK_FORK,    /* Thread Fork Notification Command */
+	VENDOR_SCHED_CMD_TASK_EXIT,    /* Thread Exit Notification Command */
+	VENDOR_SCHED_CMD_TASK_RENAME,  /* Thread Rename Notification Command */
+	__VENDOR_SCHED_CMD_MAX,
+};
+#define VENDOR_SCHED_CMD_MAX (__VENDOR_SCHED_CMD_MAX - 1)
+
+void send_netlink_notification(struct task_struct *p, struct work_struct *work, enum vendor_sched_cmd cmd);
+void queue_delayed_notification(struct task_struct *p, enum vendor_sched_cmd cmd, int old_group, int new_group);

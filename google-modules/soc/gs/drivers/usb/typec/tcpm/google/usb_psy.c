@@ -11,8 +11,8 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/power_supply.h>
-#include <gvotable.h>
-#include <logbuffer.h>
+#include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 #include <uapi/linux/sched/types.h>
 
 #include "max77759_helper.h"

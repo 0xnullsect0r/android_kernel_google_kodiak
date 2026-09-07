@@ -300,6 +300,9 @@ static int __find_lowest_rq(struct task_struct *sched_ctx, struct task_struct *e
 	if (unlikely(!lowest_mask))
 		return -1;
 
+	if (!exec_ctx)
+		exec_ctx = sched_ctx;
+
 	if (exec_ctx && exec_ctx->nr_cpus_allowed == 1) {
 		return cpumask_first(exec_ctx->cpus_ptr);
 	}
@@ -406,6 +409,8 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 	this_cpu = smp_processor_id();
 	this_cpu_rq = cpu_rq(this_cpu);
 
+	_update_prefer_high_cap(p, sync && this_cpu >= pixel_cluster_start_cpu[1]);
+
 	/*
 	 * Respect the sync flag as long as the task can run on this CPU.
 	 */
@@ -419,8 +424,6 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 			goto out_unlock;
 		}
 	}
-
-	_update_prefer_high_cap(p, sync && this_cpu >= pixel_cluster_start_cpu[1]);
 
 retry:
 	target = find_lowest_rq(p, p, &backup_mask);
@@ -456,7 +459,7 @@ retry:
 			exit_lat = idle_state->exit_latency;
 		rcu_read_unlock();
 
-		if (atomic_read(&vrq->num_adpf_tasks) > 1 ||
+		if (atomic_read(&vrq->num_adpf_tasks) >= 1 ||
 		    (target >= pixel_cluster_start_cpu[pixel_cluster_num - 1] &&
 		     exit_lat > C1_EXIT_LATENCY)) {
 			retry_count -= 1;
@@ -475,7 +478,7 @@ out_unlock:
 out:
 	trace_sched_select_task_rq_rt(p, task_util(p), prev_cpu, target, *new_cpu, sync_wakeup);
 
-	_update_prefer_high_cap(p, false);
+	_reset_prefer_high_cap(p);
 
 	return;
 }

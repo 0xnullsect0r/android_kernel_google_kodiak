@@ -18,7 +18,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/usb/role.h>
 #include <linux/usb/typec_mux.h>
-#include <gvotable.h>
+#include <misc/gvotable.h>
 
 #include "google_tcpci_shim.h"
 #include "usb_psy.h"
@@ -105,6 +105,7 @@ struct max77759_plat {
 	struct gpio_desc *in_switch_gpio;
 	struct gpio_desc *sbu_mux_en_gpio;
 	struct gpio_desc *sbu_mux_sel_gpio;
+	struct gpio_desc *vbus_dis_gpio;
 	/* 0:active_low 1:active_high */
 	bool in_switch_gpio_active_high;
 	bool first_toggle;
@@ -188,6 +189,7 @@ struct max77759_plat {
 	struct kthread_delayed_work reset_ovp_work;
 	struct kthread_delayed_work check_missing_rp_work;
 	struct kthread_delayed_work bcl_usb_votable_work;
+	struct kthread_delayed_work vbus_dis_work;
 	u8 bcl_usb_vote;
 
 	/* Notifier for data role */

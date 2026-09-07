@@ -73,6 +73,7 @@ DEFINE_STATIC_KEY_FALSE(eas_fork_exec_enable);
 DEFINE_STATIC_KEY_FALSE(update_freq_on_idle_enable);
 
 DEFINE_STATIC_KEY_FALSE(enable_ptick);
+DEFINE_STATIC_KEY_FALSE(enable_spread_nr_running);
 
 DEFINE_STATIC_KEY_FALSE(dsulat_fast_switch_enable);
 DEFINE_STATIC_KEY_FALSE(memlat_fast_switch_enable);
@@ -404,7 +405,7 @@ void rvh_enqueue_task_pixel_mod(void *data, struct rq *rq, struct task_struct *p
 	}
 
 	raw_spin_lock_irqsave(&vp->lock, irqflags);
-	if (vp->queued_to_list == LIST_NOT_QUEUED) {
+	if (!(p->flags & PF_EXITING) && vp->queued_to_list == LIST_NOT_QUEUED) {
 		group = get_vendor_group(p);
 		add_to_vendor_group_list(&vph->node, group);
 		vp->queued_to_list = LIST_QUEUED;
@@ -615,21 +616,17 @@ void vh_binder_restore_priority_pixel_mod(void *data, struct binder_transaction 
 	set_performance_inheritance(p, NULL, VI_BINDER);
 }
 
-void vh_binder_wait_for_work_pixel_mod(void *data, bool do_proc_work,
-	struct binder_thread *thread, struct binder_proc *proc)
-{
-	struct vendor_task_struct *vp = get_vendor_task_struct(thread->task);
-
-	vp->is_binder_task = true;
-}
-
 void vh_binder_proc_transaction_finish(void *data, struct binder_proc *proc,
 		struct binder_transaction *t, struct task_struct *binder_th_task,
 		bool pending_async, bool sync)
 {
-	if (binder_th_task && proc->default_priority.prio < NICE_TO_PRIO(0) &&
-		proc->default_priority.prio >= NICE_TO_PRIO(-20))
-		proc->default_priority.prio = NICE_TO_PRIO(0);
+	if (binder_th_task) {
+		struct vendor_task_struct *vp = get_vendor_task_struct(binder_th_task);
+
+		if (vp->is_binder_task && proc->default_priority.prio < NICE_TO_PRIO(0) &&
+		    proc->default_priority.prio >= NICE_TO_PRIO(-20))
+			proc->default_priority.prio = NICE_TO_PRIO(0);
+	}
 }
 
 void vh_rust_binder_set_priority_pixel_mod(void *data,
@@ -658,6 +655,41 @@ void vh_rust_binder_restore_priority_pixel_mod(void *data, struct task_struct *t
 	set_performance_inheritance(task, NULL, VI_BINDER);
 }
 
+static inline void set_binder_task_state(struct task_struct *task, bool is_binder)
+{
+	struct vendor_task_struct *vp = get_vendor_task_struct(task);
+
+	vp->is_binder_task = is_binder;
+}
+
+void vh_binder_looper_state_registered_pixel_mod(void *data, struct binder_thread *thread,
+						 struct binder_proc *proc)
+{
+	set_binder_task_state(thread->task, true);
+}
+
+void vh_binder_looper_exited_pixel_mod(void *data, struct binder_thread *thread,
+				       struct binder_proc *proc)
+{
+	set_binder_task_state(thread->task, false);
+}
+
+void vh_rust_binder_looper_entry_mod(void *data, rust_binder_thread thread,
+				     unsigned int looper_flags)
+{
+	struct task_struct *task;
+
+	rcu_read_lock();
+	task = rust_binder_thread_task(thread);
+	if (task) {
+		if (looper_flags & RB_LOOPER_EXITED)
+			set_binder_task_state(task, false);
+		else if (looper_flags & (RB_LOOPER_REGISTERED | RB_LOOPER_ENTERED))
+			set_binder_task_state(task, true);
+	}
+	rcu_read_unlock();
+}
+
 void rvh_rtmutex_prepare_setprio_pixel_mod(void *data, struct task_struct *p,
 	struct task_struct *pi_task)
 {
@@ -666,9 +698,19 @@ void rvh_rtmutex_prepare_setprio_pixel_mod(void *data, struct task_struct *p,
 
 void rvh_try_to_wake_up_success_pixel_mod(void *data, struct task_struct *p)
 {
+	struct vendor_task_struct *vp;
+
+	if (!trace_sched_wakeup_task_attr_enabled())
+		return;
+
+	vp = get_vendor_task_struct(p);
 	trace_sched_wakeup_task_attr(p, p->cpus_ptr, task_util_est(p),
 				     uclamp_eff_value_pixel_mod(p, UCLAMP_MIN),
-				     p->se.vruntime);
+				     p->se.vruntime,
+				     vp->sched_qos_user_defined_flag,
+				     vp->rampup_multiplier,
+				     get_rampup_multiplier(p),
+				     vp->tag_nice);
 }
 
 void set_cluster_enabled_cb(int cluster, int enabled)

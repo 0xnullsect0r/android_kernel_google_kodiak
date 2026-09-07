@@ -4,12 +4,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -49,14 +47,39 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/soc/rdo/drivers/soc/google/debug:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/soc/google:kernel-top",
     ],
+)
+
+ddk_module(
+    name = "power_keydebug",
+    out = "power_keydebug.ko",
+    conditional_srcs = {
+        "CONFIG_INPUT_POWER_KEYDEBUG": {
+            True: [
+                "power_keydebug.c",
+            ],
+        },
+    },
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        "//common:all_headers_aarch64",
+        "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google:kernel-top",
+    ] + select({
+        "//private/devices/google/common:soc_is_malibu": [
+            "//private/google-modules/soc/rdo:rdo_soc_headers",
+            "//private/google-modules/soc/rdo/drivers/soc/google/cdd:gcdd",
+        ],
+        "//private/devices/google/common:soc_is_laguna": [
+            "//private/google-modules/soc/rdo:rdo_soc_headers",
+            "//private/google-modules/soc/rdo/drivers/soc/google/cdd:gcdd",
+        ],
+        "//conditions:default": [
+            "//private/google-modules/soc/gs/drivers/soc/google/debug:dss",
+        ],
+    }),
 )

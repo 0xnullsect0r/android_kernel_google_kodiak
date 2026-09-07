@@ -23,7 +23,7 @@
 #include <linux/usb/typec.h>
 #include <linux/usb/typec_dp.h>
 #include <linux/usb/typec_mux.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 #include <trace/hooks/typec.h>
 
 #include "bc_max77759.h"
@@ -76,6 +76,7 @@
 #define MAX77759_DISABLE_TOGGLE_VOTE			1
 
 #define MAX77759_RP_MISSING_TIMEOUT_MS                 2000
+#define VBUS_DISCHARGE_TIMEOUT_MS			1000
 
 #define AICL_CHECK_MS				       10000
 
@@ -685,8 +686,9 @@ EXPORT_SYMBOL_GPL(register_data_active_callback);
 
 void register_orientation_callback(void (*callback)(void *orientation_payload), void *data)
 {
-	orientation_callback = callback;
 	orientation_payload = data;
+	smp_wmb();
+	orientation_callback = callback;
 }
 EXPORT_SYMBOL_GPL(register_orientation_callback);
 
@@ -1476,6 +1478,13 @@ static void bcl_usb_vote_work(struct kthread_work *work)
 	}
 }
 
+static void max77759_disable_vbus_dis(struct max77759_plat *chip, const char *caller)
+{
+	LOG(LOG_LVL_DEBUG, chip->log, "%s: Disabling vbus_dis gpio", caller);
+	kthread_cancel_delayed_work_sync(&chip->vbus_dis_work);
+	gpiod_set_value_cansleep(chip->vbus_dis_gpio, 0);
+}
+
 static void check_missing_rp_work(struct kthread_work *work)
 {
 	struct max77759_plat *chip  =
@@ -1511,6 +1520,7 @@ static void check_missing_rp_work(struct kthread_work *work)
 	    !chip->compliance_warnings->missing_rp) {
 		LOG(LOG_LVL_DEBUG, chip->log,
 		    "%s: Missing or incorrect Rp partner detected. Enable WAR", __func__);
+		max77759_disable_vbus_dis(chip, __func__);
 		/* Assume DCP for missing Rp non-compliant power source */
 		val.intval = POWER_SUPPLY_USB_TYPE_DCP;
 		max77759_set_vbus(chip->tcpci, chip->tcpci->data, false, true);
@@ -1551,6 +1561,76 @@ static void check_missing_rp(struct max77759_plat *chip, bool vbus_present,
 		kthread_cancel_delayed_work_sync(&chip->check_missing_rp_work);
 		if (!(pwr_status & TCPC_POWER_STATUS_VBUS_PRES))
 			disconnect_missing_rp_partner(chip);
+	}
+}
+
+static u32 max77759_get_snk_disc_thresh_mv(struct max77759_plat *chip)
+{
+	u16 snk_disc_raw;
+	u32 snk_disc;
+	int ret;
+
+	ret = max77759_read16(chip->data.regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH, &snk_disc_raw);
+	if (ret < 0) {
+		logbuffer_logk(chip->log, LOGLEVEL_WARNING,
+			       "TCPC_VBUS_SINK_DISCONNECT_THRESH read error ret=%d", ret);
+		return 0;
+	}
+
+	snk_disc = (snk_disc_raw & TCPC_VBUS_SINK_DISCONNECT_THRESH_MAX) *
+		   TCPC_VBUS_SINK_DISCONNECT_THRESH_LSB_MV;
+
+	return snk_disc;
+}
+
+static void vbus_dis_work(struct kthread_work *work)
+{
+	struct max77759_plat *chip =
+		container_of(container_of(work, struct kthread_delayed_work, work),
+			     struct max77759_plat, vbus_dis_work);
+	enum typec_cc_status cc1, cc2;
+	int live_vbus;
+	u32 snk_disc;
+	u8 pwr_ctrl;
+	int ret;
+
+	max77759_get_cc(chip, &cc1, &cc2);
+	if (!cc_open_or_toggling(cc1, cc2)) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: CC is not open/toggling", __func__);
+		return;
+	}
+
+	ret = max77759_read8(chip->tcpci->regmap, TCPC_POWER_CTRL, &pwr_ctrl);
+	if (ret < 0) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: TCPC_POWER_CTRL read error", __func__);
+		return;
+	}
+
+	/*
+	 * Checking auto discharge enable confirms tcpm is not in apply_rc
+	 * state (e.g. during Power Role Swap) and likely to be in an attached state.
+	 * This prevents triggering the VBUS discharge workaround during PR swap,
+	 * which could interfere with the role swap transition.
+	 */
+	if (!(pwr_ctrl & TCPC_POWER_CTRL_AUTO_DISCHARGE)) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: auto discharge not enabled", __func__);
+		return;
+	}
+
+	snk_disc = max77759_get_snk_disc_thresh_mv(chip);
+	if (!snk_disc)
+		return;
+
+	live_vbus = max77759_get_vbus_voltage_mv(chip->dev);
+	if (live_vbus > snk_disc) {
+		LOG(LOG_LVL_DEBUG, chip->log,
+		    "Stray VBUS charge detected after disconnect (live %dmV > thresh %umV)",
+		    live_vbus, snk_disc);
+		if (!IS_ERR_OR_NULL(chip->vbus_dis_gpio) &&
+		    !gpiod_get_value_cansleep(chip->vbus_dis_gpio)) {
+			LOG(LOG_LVL_DEBUG, chip->log, "Enabling vbus_dis gpio");
+			gpiod_set_value_cansleep(chip->vbus_dis_gpio, 1);
+		}
 	}
 }
 
@@ -2081,6 +2161,7 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 	bool contaminant_cc_update_handled = false, invoke_tcpm_for_cc_update = false,
 		port_clean = false;
 	unsigned int pwr_status;
+	unsigned long delay = msecs_to_jiffies(VBUS_DISCHARGE_TIMEOUT_MS);
 
 	pm_wakeup_event(chip->dev, PD_ACTIVITY_TIMEOUT_MS);
 	LOG(LOG_LVL_DEBUG, log, "TCPC_ALERT status: %#x", status);
@@ -2170,6 +2251,7 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 	if (status & TCPC_ALERT_VBUS_DISCNCT) {
 		LOG(LOG_LVL_DEBUG, log, "TCPC_ALERT_VBUS_DISCNCT, %umv",
 		    max77759_get_vbus_voltage_mv(chip->client));
+		max77759_disable_vbus_dis(chip, __func__);
 		chip->vbus_present = 0;
 		LOG(LOG_LVL_DEBUG, chip->log,
 		    "[%s]: vbus_present %d", __func__, chip->vbus_present);
@@ -2252,6 +2334,17 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 			 * function calls.
 			 */
 			max77759_manual_vbus_handling_on_cc_change(chip, new_cc1, new_cc2);
+			if (port_is_sink(chip->cc1, chip->cc2) && chip->attached &&
+			    cc_open_or_toggling(new_cc1, new_cc2)) {
+				LOG(LOG_LVL_DEBUG, chip->log,
+				    "CC disconnected in sink mode. Scheduling vbus_dis_work");
+				kthread_mod_delayed_work(chip->wq,
+							 &chip->vbus_dis_work,
+							 delay);
+			} else if (!cc_open_or_toggling(new_cc1, new_cc2)) {
+				max77759_disable_vbus_dis(chip, __func__);
+			}
+
 			max77759_cache_cc(chip, new_cc1, new_cc2);
 			/* Check for missing-rp non compliant power source */
 			if (!regmap_read(tcpci->regmap, TCPC_POWER_STATUS, &pwr_status)) {
@@ -2760,7 +2853,8 @@ static int max77759_set_vbus_voltage_max_mv(struct device *dev,
 static void max77759_dump_vbus_regs(struct google_shim_tcpci *tcpci, struct max77759_plat *chip)
 {
 	u8 pwr_ctrl, pwr_status, extended_status;
-	u16 live_vbus, snk_disc_raw, snk_disc;
+	u16 live_vbus;
+	u32 snk_disc;
 	bool vsafe0v;
 	int ret;
 
@@ -2782,14 +2876,8 @@ static void max77759_dump_vbus_regs(struct google_shim_tcpci *tcpci, struct max7
 			       "[%s]: Unable to fetch extended status, ret=%d\n", __func__, ret);
 		extended_status = 0;
 	}
-	ret = max77759_read16(tcpci->regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH, &snk_disc_raw);
-	if (ret < 0) {
-		logbuffer_logk(chip->log, LOGLEVEL_WARNING,
-			       "[%s]: Unable to fetch snk_disc value, ret=%d\n", __func__, ret);
-		snk_disc_raw = 0;
-	}
-	snk_disc = (snk_disc_raw & TCPC_VBUS_SINK_DISCONNECT_THRESH_MAX) *
-		   TCPC_VBUS_SINK_DISCONNECT_THRESH_LSB_MV;
+
+	snk_disc = max77759_get_snk_disc_thresh_mv(chip);
 	live_vbus = max77759_get_vbus_voltage_mv(chip->client);
 	vsafe0v = extended_status & TCPC_EXTENDED_STATUS_VSAFE0V;
 
@@ -3681,6 +3769,14 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	if (IS_ERR(chip->sbu_mux_sel_gpio)) {
 		dev_err(dev, "sbu-mux-sel-gpio not found");
 	}
+
+	chip->vbus_dis_gpio = devm_gpiod_get_optional(dev, "vbus-dis", GPIOD_OUT_LOW);
+	if (IS_ERR(chip->vbus_dis_gpio)) {
+		ret = PTR_ERR(chip->vbus_dis_gpio);
+		dev_err(dev, "Failed to get vbus-dis-gpio, ret=%d\n", ret);
+		goto typec_mux_put;
+	}
+
 	if (of_property_read_bool(dn, "bcl-usb-voting")) {
 		chip->bcl_usb_votable = gvotable_election_get_handle(BCL_USB_VOTABLE);
 		if (IS_ERR_OR_NULL(chip->bcl_usb_votable))
@@ -3917,6 +4013,7 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	kthread_init_delayed_work(&chip->vsafe0v_work, vsafe0v_debounce_work);
 	kthread_init_delayed_work(&chip->max77759_io_error_work, max77759_io_error_work);
 	kthread_init_delayed_work(&chip->check_missing_rp_work, check_missing_rp_work);
+	kthread_init_delayed_work(&chip->vbus_dis_work, vbus_dis_work);
 	kthread_init_delayed_work(&chip->ext_bst_ovp_clear_work, ext_bst_ovp_clear_work);
 
 	/*
@@ -4074,6 +4171,7 @@ static void max77759_cancel_work(struct max77759_plat *plat)
 	kthread_cancel_delayed_work_sync(&plat->max77759_io_error_work);
 	kthread_cancel_delayed_work_sync(&plat->check_missing_rp_work);
 	kthread_cancel_delayed_work_sync(&plat->reset_ovp_work);
+	max77759_disable_vbus_dis(plat, __func__);
 }
 
 void max77759_unregister(struct max77759_plat *plat)
@@ -4123,6 +4221,7 @@ void max77759_shutdown(struct max77759_plat *plat)
 
 	dev_info(plat->dev, "disabling Type-C upon shutdown\n");
 	kthread_cancel_delayed_work_sync(&plat->check_missing_rp_work);
+	max77759_disable_vbus_dis(plat, __func__);
 	kthread_cancel_delayed_work_sync(&plat->icl_work);
 	if (!IS_ERR_OR_NULL(plat->bcl_usb_wq))
 		kthread_cancel_delayed_work_sync(&plat->bcl_usb_votable_work);

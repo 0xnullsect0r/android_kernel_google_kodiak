@@ -54,7 +54,7 @@
 
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/consumer.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 
 /* Debug logging */

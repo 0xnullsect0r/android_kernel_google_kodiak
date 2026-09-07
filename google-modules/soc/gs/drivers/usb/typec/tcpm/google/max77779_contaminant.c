@@ -10,7 +10,7 @@
 #include <linux/module.h>
 #include <linux/usb/tcpm.h>
 #include <linux/usb/typec.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 #include "max77759_helper.h"
 #include "max77779_contaminant.h"

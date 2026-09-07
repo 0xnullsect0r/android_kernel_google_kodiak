@@ -20,7 +20,7 @@
 #include "pcie-exynos-common.h"
 #include "pcie-exynos-rc.h"
 #include <dt-bindings/pci/pci.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 #if IS_ENABLED(CONFIG_EXYNOS_OTP)
 #include <linux/exynos_otp.h>

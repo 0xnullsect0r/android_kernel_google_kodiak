@@ -8,7 +8,7 @@
  */
 #ifndef __USB_PSY__
 #define __USB_PSY__
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 #include <linux/device.h>
 #include <linux/power_supply.h>
 

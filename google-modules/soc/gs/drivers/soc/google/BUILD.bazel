@@ -2,12 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -36,11 +34,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
@@ -63,16 +56,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/gpu/mali_kbase:__subpackages__",
-        "//private/google-modules/nfc:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/power/reset:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
     ],
     deps = [
         ":exynos-pd_el3",
@@ -120,11 +103,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/gpu/mali_kbase:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
     ],
     deps = [
         ":exynos-cpupm",
@@ -184,11 +162,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",
@@ -273,15 +246,6 @@ ddk_module(
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/bluetooth/broadcom:__subpackages__",
-        "//private/google-modules/bluetooth/qcom:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
     deps = [
         ":exynos-pmu-if",
         "//common:all_headers_aarch64",
@@ -310,12 +274,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/radio/samsung/s5300:__subpackages__",
-        "//private/google-modules/radio/samsung/s5400:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",
@@ -367,19 +325,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/display/samsung:__subpackages__",
-        "//private/google-modules/edgetpu:__subpackages__",
-        "//private/google-modules/gpu/mali_kbase:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/lwis:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/radio/samsung/s5300:__subpackages__",
-        "//private/google-modules/radio/samsung/s5400:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/video/gchips:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",
@@ -485,11 +430,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/soc/rdo/drivers/soc/google/debug:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",
@@ -597,10 +537,16 @@ ddk_module(
     deps = [
         ":perf_trace_counters_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/perf/core/gs_perf_mon",
-        "//private/google-modules/perf/core/gs_perf_mon:headers",
         "//private/google-modules/soc/gs:headers",
-    ],
+    ] + select({
+        "//private/devices/google/common:soc_is_laguna_or_later": [
+            "//private/google-modules/perf/core/gs_perf_mon",
+            "//private/google-modules/perf/core/gs_perf_mon:headers",
+        ],
+        "//conditions:default": [
+            "//private/google-modules/soc/gs/drivers/performance/gs_perf_mon",
+        ],
+    }),
 )
 
 ddk_module(
@@ -619,11 +565,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "DYNAMIC_DEBUG_MODULE",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/soc/rdo/drivers/input:__subpackages__",
     ],
     deps = [
         "//common:all_headers_aarch64",

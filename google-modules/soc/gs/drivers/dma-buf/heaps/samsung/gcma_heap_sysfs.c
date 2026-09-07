@@ -174,22 +174,21 @@ static ssize_t force_empty_store(struct kobject *kobj,
 {
 	struct gcma_heap_stat *stat = to_gcma_heap_stat(kobj);
 	struct gcma_heap *gcma_heap = stat->heap;
-	struct page *page;
+	const struct gcma_heap_ops *ops = gcma_heap->ops;
 	unsigned int req_pages;
-	unsigned long req_size;
 	char *name = stat->name;
 
 	if (kstrtouint(buf, 0, &req_pages))
 		return -EINVAL;
 
-	req_size = req_pages * PAGE_SIZE;
+	if (ops->force_empty) {
+		ssize_t ret = ops->force_empty(gcma_heap, req_pages);
 
-	page = gcma_alloc(gcma_heap, req_size);
-	pr_info("%s req_pages %d force_empty %s\n", name, req_pages,
-		page ? "succeeded" : "failed");
-	if (page)
-		gcma_free(gcma_heap, page);
-	return page ? len : -ENOMEM;
+		return (ret >= 0) ? len : ret;
+	}
+
+	pr_info("%s force_empty not supported\n", name);
+	return len;
 }
 GCMA_HEAP_ATTR_WO(force_empty);
 

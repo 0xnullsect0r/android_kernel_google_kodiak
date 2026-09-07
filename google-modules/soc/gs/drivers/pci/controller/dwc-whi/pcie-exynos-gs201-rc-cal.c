@@ -16,7 +16,7 @@
 #include <linux/delay.h>
 #include <linux/exynos-pci-noti.h>
 #include <linux/regmap.h>
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 #include "pcie-designware.h"
 #include "pcie-exynos-common.h"
 #include "pcie-exynos-rc.h"

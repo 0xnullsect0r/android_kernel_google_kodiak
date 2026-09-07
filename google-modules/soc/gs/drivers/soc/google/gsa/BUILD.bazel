@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "gsa.kconfig",
@@ -46,19 +51,10 @@ ddk_module(
         "-Wno-missing-prototypes",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc:__subpackages__",
-        "//private/google-modules/edgetpu:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-        "//private/google-modules/soc/rdo:__subpackages__",
-        "//private/google-modules/trusty:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
-        "//private/google-modules/trusty",
+        "//private/google-modules/trusty:trusty-ipc",
         "//private/google-modules/trusty:trusty_headers",
     ],
 )
@@ -105,10 +101,6 @@ ddk_module(
         "-Wno-missing-prototypes",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:__subpackages__",
-    ],
     deps = [
         ":gsa_ko",
         "//common:all_headers_aarch64",
@@ -134,26 +126,11 @@ ddk_module(
         "-Wno-missing-prototypes",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/display:__subpackages__",
-    ],
     deps = [
         ":gsa_ko",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/trusty:trusty_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "gsa",
-    srcs = [
-        ":gsa_gsc",
-        ":gsa_ko",
-        ":tzprot",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )
 
@@ -173,12 +150,7 @@ ddk_module(
     copts = [
         "-Wno-missing-prototypes",
     ],
-    defconfig = "kunit_defconfig",
-    kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":gsa_gsc",
         ":gsa_ko",

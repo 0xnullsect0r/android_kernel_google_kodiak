@@ -29,6 +29,10 @@
 #include "sched.h"
 #include <kernel/sched/sched.h>
 
+#define CREATE_TRACE_POINTS
+#include "perf_metrics_events.h"
+
+
 struct irq_storm_data {
 	atomic64_t storm_count;
 	s64 max_storm_count;
@@ -241,14 +245,11 @@ static void hook_softirq_end(void *data, unsigned int vec_nr)
 						vec_nr, cpu_num);
 		atomic64_inc(&(long_irq_stat.long_softirq_count));
 		atomic64_inc(&(long_irq_stat.long_softirq_count_arr[cpu_num]));
-		if (trace_clock_set_rate_enabled()) {
-			char trace_name[32] = {0};
-			scnprintf(trace_name, sizeof(trace_name), "long_softirq_count_cpu%d",
-							cpu_num);
-			trace_clock_set_rate(trace_name,
+
+		if (trace_long_softirq_enabled()) {
+			trace_long_softirq(vec_nr, (unsigned int)irq_usec,
 				(unsigned int)
-				atomic64_read(&long_irq_stat.long_softirq_count_arr[cpu_num]),
-				cpu_num);
+				atomic64_read(&long_irq_stat.long_softirq_count_arr[cpu_num]));
 		}
 	}
 	do {
@@ -328,16 +329,11 @@ static void hook_irq_end(void *data, int irq, struct irqaction *action, int ret)
 			WARN(1, "Got a long running hardirq: IRQ %d in cpu: %d\n", irq, cpu_num);
 		atomic64_inc(&(long_irq_stat.long_irq_count));
 		atomic64_inc(&(long_irq_stat.long_irq_count_arr[cpu_num]));
-		if (trace_clock_set_rate_enabled()) {
-			char trace_name[32] = {0};
-			scnprintf(trace_name, sizeof(trace_name), "long_irq_count_cpu%d",
-							cpu_num);
-			trace_clock_set_rate(trace_name,
+
+		if (trace_long_irq_enabled()) {
+			trace_long_irq(irq, (unsigned int)irq_usec,
 				(unsigned int)
-				atomic64_read(&long_irq_stat.long_irq_count_arr[cpu_num]),
-				cpu_num);
-			scnprintf(trace_name, sizeof(trace_name), "irq_%d_last_dur", irq);
-			trace_clock_set_rate(trace_name, (unsigned int)irq_usec, cpu_num);
+				atomic64_read(&long_irq_stat.long_irq_count_arr[cpu_num]));
 		}
 	}
 	do {
@@ -970,4 +966,3 @@ int perf_metrics_init(struct kobject *metrics_kobj)
 	pr_info("perf_metrics driver initialized! :D\n");
 	return ret;
 }
-

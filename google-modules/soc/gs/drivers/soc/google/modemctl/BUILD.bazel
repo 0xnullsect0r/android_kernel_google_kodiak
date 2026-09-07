@@ -2,15 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc/alsa:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/radio/samsung/s5400:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_module(
     name = "google_modemctl",
@@ -23,14 +18,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/aoc/alsa:__subpackages__",
-        "//private/google-modules/power/mitigation:__subpackages__",
-        "//private/google-modules/radio/samsung/s5300:__subpackages__",
-        "//private/google-modules/radio/samsung/s5400:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",

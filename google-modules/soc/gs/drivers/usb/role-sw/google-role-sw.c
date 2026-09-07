@@ -10,7 +10,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <kunit/visibility.h>
-#include <gvotable.h>
+#include <misc/gvotable.h>
 
 #include <linux/usb/google-role-sw.h>
 

@@ -24,6 +24,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 #include "ufs-pixel-fips_sha256.h"

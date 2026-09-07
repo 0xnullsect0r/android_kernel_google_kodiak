@@ -4,12 +4,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -37,7 +35,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -58,7 +55,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -79,7 +75,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -101,8 +96,8 @@ ddk_module(
     deps = [
         ":max77759_helper",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -127,11 +122,6 @@ ddk_module(
     },
     includes = ["."],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/bms:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
     deps = [
         ":bc_max77759",
         ":google_tcpci_shim",
@@ -139,8 +129,8 @@ ddk_module(
         ":max777x9_contaminant",
         ":usb_psy",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -161,7 +151,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -184,8 +173,8 @@ ddk_module(
         ":max77759_helper",
         ":usb_psy",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -209,8 +198,8 @@ ddk_module(
         ":max77759_helper",
         ":max77779_contaminant",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -232,8 +221,8 @@ ddk_module(
     deps = [
         ":max77759_helper",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -255,8 +244,8 @@ ddk_module(
     deps = [
         ":max77759_helper",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -278,8 +267,8 @@ ddk_module(
     deps = [
         ":tcpci_max77759",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -301,8 +290,8 @@ ddk_module(
     deps = [
         ":tcpci_max77759",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -323,7 +312,6 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -344,8 +332,8 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:gvotable",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
     ],
 )

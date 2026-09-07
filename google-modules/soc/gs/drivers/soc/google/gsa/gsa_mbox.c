@@ -15,6 +15,7 @@
 #include <linux/mailbox_controller.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_wakeup.h>
 
 #include "gsa_mbox.h"
 
@@ -155,11 +156,19 @@ struct gsa_mbox *gsa_mbox_init(struct platform_device *pdev)
 	if (!mb)
 		return ERR_PTR(-ENOMEM);
 
+#if IS_ENABLED(CONFIG_GSA_WAKELOCK)
+	err = device_init_wakeup(dev, true);
+	if (err) {
+		dev_err(dev, "failed to initialize GSA wakeup: %d\n", err);
+		goto err_free_mb;
+	}
+#endif
+
 	mb->send_mbox_msg = mbox_send_message;
 
 	err = gsa_link_s2mpu(dev, mb);
 	if (err)
-		return ERR_PTR(err);
+		goto err_unregister_ws;
 
 	mb->dev = dev;
 	mutex_init(&mb->share_reg_lock);
@@ -182,34 +191,46 @@ struct gsa_mbox *gsa_mbox_init(struct platform_device *pdev)
 			PTR_ERR(mb->msg_slot.channel));
 		mb->msg_slot.channel = NULL;
 		err = -EIO;
-		goto msg_slot_err;
+		goto err_destroy_mutex;
 	}
 
 	/* Init doorbell irq mbox slot  */
 	err = mbox_doorbell_irq_slot_init(mb);
 	if (err < 0)
-		goto doorbell_slot_err;
+		goto err_free_msg_chan;
 
 	return mb;
 
-doorbell_slot_err:
+err_free_msg_chan:
 	mbox_free_channel(mb->msg_slot.channel);
-msg_slot_err:
+err_destroy_mutex:
+	mutex_destroy(&mb->share_reg_lock);
+#if IS_ENABLED(CONFIG_GSA_PKVM)
+	devm_release_action(dev, gsa_unlink_s2mpu, mb);
+#endif
+err_unregister_ws:
+#if IS_ENABLED(CONFIG_GSA_WAKELOCK)
+	device_init_wakeup(dev, false);
+err_free_mb:
+#endif
+	devm_kfree(dev, mb);
 	return ERR_PTR(err);
 }
 
+void gsa_mbox_destroy(struct gsa_mbox *mb)
+{
+	mbox_free_channel(mb->msg_slot.channel);
 #if IS_ENABLED(CONFIG_GSA_IPC)
-void gsa_mbox_destroy(struct gsa_mbox *mb)
-{
-	mbox_free_channel(mb->msg_slot.channel);
 	mbox_free_channel(mb->doorbell_irq_slot.channel);
+#endif
+#if IS_ENABLED(CONFIG_GSA_WAKELOCK)
+	device_init_wakeup(mb->dev, false);
+#endif
+#if IS_ENABLED(CONFIG_GSA_PKVM)
+	devm_release_action(mb->dev, gsa_unlink_s2mpu, mb);
+#endif
+	mutex_destroy(&mb->share_reg_lock);
 }
-#else /* CONFIG_GSA_IPC */
-void gsa_mbox_destroy(struct gsa_mbox *mb)
-{
-	mbox_free_channel(mb->msg_slot.channel);
-}
-#endif /* CONFIG_GSA_IPC */
 
 VISIBLE_IF_KUNIT void mbox_tx_prepare(struct mbox_client *cl, void *mssg)
 {
@@ -276,6 +297,19 @@ static int exec_mbox_cmd_sync_locked(struct gsa_mbox *mb,
 	for (i = 0; i < req->argc; i++)
 		message[MBOX_SR_SEND_ARGV_IDX + i] = req->args[i];
 
+#if IS_ENABLED(CONFIG_GSA_WAKELOCK)
+	/* Prevent system suspend during mailbox exchange.
+	 * This is needed to avoid the possibility of the system trying to
+	 * reach a low power-state and getting blocked because the GSA is
+	 * asserting a pending IRQ source from the mailbox.
+	 *
+	 * We must not acquire the wakelock for the suspend hint itself,
+	 * otherwise we will abort the suspend we are currently starting.
+	 */
+	if (req->cmd != GSA_MB_CMD_AP_SUSPEND_HINT)
+		pm_stay_awake(mb->dev);
+#endif
+
 	/* Prep the return buffer */
 	reinit_completion(&slot->mbox_cmd_completion);
 
@@ -285,6 +319,11 @@ static int exec_mbox_cmd_sync_locked(struct gsa_mbox *mb,
 	/* wait for response */
 	/* Maybe this should use a timeout? */
 	wait_for_completion(&slot->mbox_cmd_completion);
+
+#if IS_ENABLED(CONFIG_GSA_WAKELOCK)
+	if (req->cmd != GSA_MB_CMD_AP_SUSPEND_HINT)
+		pm_relax(mb->dev);
+#endif
 
 	/* Data received via mbox_rx_callback */
 

@@ -5,6 +5,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "pixel_trim_local_headers",
     hdrs = glob([
@@ -36,10 +41,6 @@ ddk_module(
     includes = ["include"],
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
     deps = [
         ":pixel_trim_headers",
         ":pixel_trim_local_headers",

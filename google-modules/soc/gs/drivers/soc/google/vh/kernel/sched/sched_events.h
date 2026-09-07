@@ -382,8 +382,8 @@ TRACE_EVENT(sched_find_energy_efficient_cpu,
 		__entry->best_energy_cpu   = best_energy_cpu;
 		),
 
-	TP_printk("pid=%d comm=%s prefer_idle=%d prefer_fit=%d task_importance=%lu " \
-		  "idle_fit=0x%lx idle_unfit=0x%lx unimportant_fit=0x%lx unimportant_unfit=0x%lx "\
+	TP_printk("pid=%d comm=%s prefer_idle=%d prefer_fit=%d task_importance=%lu "
+		  "idle_fit=0x%lx idle_unfit=0x%lx unimportant_fit=0x%lx unimportant_unfit=0x%lx "
 		  "packing=0x%lx max_spare_cap=0x%lx idle_unpreferred=0x%lx best_energy_cpu=%d",
 		  __entry->pid, __entry->comm, __entry->prefer_idle, __entry->prefer_fit,
 		  __entry->task_importance, __entry->idle_fit, __entry->idle_unfit,
@@ -394,9 +394,14 @@ TRACE_EVENT(sched_find_energy_efficient_cpu,
 TRACE_EVENT(sched_wakeup_task_attr,
 
 	TP_PROTO(struct task_struct *tsk, const cpumask_t *cpu_affinity,
-		 unsigned long task_util, int uclamp_min, u64 vruntime),
+		 unsigned long task_util, int uclamp_min, u64 vruntime,
+		 unsigned long sched_qos_user_defined_flag,
+		 unsigned int rampup_multiplier,
+		 unsigned int effect_rampup_multiplier, int tag_nice),
 
-	TP_ARGS(tsk, cpu_affinity, task_util, uclamp_min, vruntime),
+	TP_ARGS(tsk, cpu_affinity, task_util, uclamp_min, vruntime,
+		sched_qos_user_defined_flag, rampup_multiplier,
+		effect_rampup_multiplier, tag_nice),
 
 	TP_STRUCT__entry(
 		__field(pid_t,		pid)
@@ -404,6 +409,10 @@ TRACE_EVENT(sched_wakeup_task_attr,
 		__field(unsigned long,	task_util)
 		__field(unsigned long,	uclamp_min)
 		__field(u64,	        vruntime)
+		__field(unsigned long,	sched_qos_user_defined_flag)
+		__field(unsigned int,	rampup_multiplier)
+		__field(unsigned int,	effect_rampup_multiplier)
+		__field(int,		tag_nice)
 		),
 
 	TP_fast_assign(
@@ -412,11 +421,19 @@ TRACE_EVENT(sched_wakeup_task_attr,
 		__entry->task_util       = task_util;
 		__entry->uclamp_min      = uclamp_min;
 		__entry->vruntime        = vruntime;
+		__entry->sched_qos_user_defined_flag = sched_qos_user_defined_flag;
+		__entry->rampup_multiplier           = rampup_multiplier;
+		__entry->effect_rampup_multiplier    = effect_rampup_multiplier;
+		__entry->tag_nice                    = tag_nice;
 		),
 
-	TP_printk("pid=%d cpu_affinity=0x%lx, task_util=%lu, uclamp.min=%lu vruntime=%Lu [ns]",
+	TP_printk("pid=%d cpu_affinity=0x%lx, task_util=%lu, uclamp.min=%lu vruntime=%llu [ns] "
+		  "sched_qos_user_defined_flag=0x%lx, rampup_multiplier=%u, "
+		  "effect_rampup_multiplier=%u, tag_nice=%d",
 		  __entry->pid,  __entry->cpu_affinity, __entry->task_util, __entry->uclamp_min,
-		  (unsigned long long)__entry->vruntime)
+		  (unsigned long long)__entry->vruntime, __entry->sched_qos_user_defined_flag,
+		  __entry->rampup_multiplier, __entry->effect_rampup_multiplier,
+		  __entry->tag_nice)
 );
 
 TRACE_EVENT(sched_select_task_rq_fair,
@@ -458,7 +475,7 @@ TRACE_EVENT(sched_select_task_rq_fair,
 		__entry->target_cpu      = target_cpu;
 		),
 
-	TP_printk("pid=%d comm=%s task_util=%lu sync_wakeup=%d adpf=%d prefer_prev=%d " \
+	TP_printk("pid=%d comm=%s task_util=%lu sync_wakeup=%d adpf=%d prefer_prev=%d "
 		  "prefer_high_cap=%d group=%d uclamp.min=%lu uclamp.max=%lu prev_cpu=%d target_cpu=%d",
 		  __entry->pid, __entry->comm, __entry->task_util, __entry->sync_wakeup,
 		  __entry->adpf, __entry->prefer_prev, __entry->prefer_high_cap,
@@ -512,9 +529,9 @@ TRACE_EVENT(sched_cpu_util_cfs,
 		__entry->grp_overutilized   = grp_overutilized;
 	),
 
-	TP_printk("cpu=%d cpu_idle=%d exit_lat=%u nr_running=%d active=%d cpu_importance=%lu " \
-		  "capacity_orig=%lu cpu_util=%lu capacity=%lu wake_util=%lu " \
-		  "group_capacity=%lu wake_group_util=%lu spare_cap=%ld task_fits=%d " \
+	TP_printk("cpu=%d cpu_idle=%d exit_lat=%u nr_running=%d active=%d cpu_importance=%lu "
+		  "capacity_orig=%lu cpu_util=%lu capacity=%lu wake_util=%lu "
+		  "group_capacity=%lu wake_group_util=%lu spare_cap=%ld task_fits=%d "
 		  "grp_overutilized=%d",
 		__entry->cpu, __entry->idle_cpu,  __entry->exit_lat, __entry->nr_running,
 		__entry->active, __entry->cpu_importance, __entry->capacity_orig, __entry->cpu_util,
@@ -628,7 +645,7 @@ TRACE_EVENT(sched_cpu_util_rt,
 		__entry->is_idle	    = is_idle;
 	),
 
-	TP_printk("cpu=%d capacity_orig=%lu capacity=%lu util=%lu exit_lat=%lu cpu_importance=%lu "\
+	TP_printk("cpu=%d capacity_orig=%lu capacity=%lu util=%lu exit_lat=%lu cpu_importance=%lu "
 		  "task_fits=%d task_fits_original=%d is_idle=%d",
 		__entry->cpu, __entry->capacity_orig, __entry->capacity, __entry->util,
 		__entry->exit_lat, __entry->cpu_importance, __entry->task_fits,
@@ -670,7 +687,7 @@ TRACE_EVENT(sched_find_least_loaded_cpu,
 		__entry->backup_mask             = backup_mask;
 		),
 
-	TP_printk("pid=%d comm=%s group=%d uclamp_min=%lu uclamp_max=%lu prefer_high_cap=%d " \
+	TP_printk("pid=%d comm=%s group=%d uclamp_min=%lu uclamp_max=%lu prefer_high_cap=%d "
 		"prev_cpu=%d best_cpu=%d lowest_mask=0x%lx backup_mask=0x%lx",
 		__entry->pid, __entry->comm, __entry->group, __entry->uclamp_min,
 		__entry->uclamp_max, __entry->prefer_high_cap, __entry->prev_cpu, __entry->best_cpu,
@@ -762,7 +779,7 @@ TRACE_EVENT(per_task_pmu_stats,
 		__entry->mem_access_delta = mem_access_delta;
 		),
 
-	TP_printk("pid=%d comm=%s cpu=%d cycle_delta=%lld stall_delta=%lld inst_delta=%lld " \
+	TP_printk("pid=%d comm=%s cpu=%d cycle_delta=%lld stall_delta=%lld inst_delta=%lld "
 		  "mem_access_delta=%lld",
 		  __entry->pid,  __entry->comm, __entry->cpu, __entry->cycle_delta,
 		  __entry->stall_delta, __entry->inst_delta, __entry->mem_access_delta)

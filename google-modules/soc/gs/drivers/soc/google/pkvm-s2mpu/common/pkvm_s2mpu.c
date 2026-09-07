@@ -24,6 +24,10 @@
 static bool print_caches;
 module_param(print_caches, bool, 0);
 
+/* Use SMC to notify TZ to shadow NS configuration of certain S2MPU instances */
+static bool smc_s2;
+module_param(smc_s2, bool, 0);
+
 /* Declare EL2 module init function as it is needed by pkvm_load_el2_module. */
 int __kvm_nvhe_s2mpu_hyp_init(const struct pkvm_module_ops *ops);
 /* Token of S2MPU driver, token is the load address of the module and a unique ID for it. */
@@ -363,7 +367,7 @@ static int s2mpu_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct resource *res;
 	struct s2mpu_data *data;
-	bool has_sync, deny_all;
+	bool has_sync, deny_all, has_tz_sibling;
 	int ret, nr_devs = 0;
 	u8 flags = 0;
 	struct pkvm_iommu *hyp_dev;
@@ -390,6 +394,8 @@ static int s2mpu_probe(struct platform_device *pdev)
 	has_sync = !!of_get_property(np, "built-in-sync", NULL);
 	data->has_pd = !!of_get_property(np, "power-domains", NULL);
 	deny_all = !!of_get_property(np, "deny-all", NULL);
+	has_tz_sibling = !!of_get_property(np, "has-tz-sibling", NULL);
+
 	/*
 	 * Try to parse IRQ information. This is optional as it only affects
 	 * runtime fault reporting, and therefore errors do not fail the whole
@@ -401,6 +407,8 @@ static int s2mpu_probe(struct platform_device *pdev)
 		flags |= S2MPU_HAS_SYNC;
 	if (deny_all)
 		flags |= S2MPU_DENY_ALL;
+	if (has_tz_sibling && smc_s2)
+		flags |= S2MPU_HAS_TZ_SIBLING;
 
 	/* If a device have a dma-cons property link it as a consumer. */
 	WARN_ON(pkvm_s2mpu_of_link_with_cons(dev));

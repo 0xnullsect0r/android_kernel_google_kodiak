@@ -709,6 +709,11 @@ static int dbg_snapshot_restart_handler(struct notifier_block *nb,
 	} else if (dss_desc.in_reboot) {
 		dev_emerg(dss_desc.dev, "normal reboot starting\n");
 		dbg_snapshot_report_reason(DSS_SIGN_NORMAL_REBOOT);
+	} else if (dss_desc.long_press_power) {
+		dev_emerg(dss_desc.dev, "Power key been hold for 18s : Do restart\n");
+		dbg_snapshot_report_reason(DSS_SIGN_REBOOT_LONGKEY_POWER_WARM);
+		dbg_snapshot_set_reboot_mode(REBOOT_WARM);
+		dbg_snapshot_dump_task_info();
 	} else {
 		dev_emerg(dss_desc.dev, "emergency restart\n");
 		dbg_snapshot_report_reason(DSS_SIGN_EMERGENCY_REBOOT);

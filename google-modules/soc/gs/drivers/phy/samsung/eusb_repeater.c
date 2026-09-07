@@ -11,7 +11,6 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/extcon.h>
 #include <soc/google/eusb_repeater.h>
 
 #include "eusb_repeater.h"
@@ -871,8 +870,7 @@ void eusb_repeater_update_usb_state(bool on)
 	if (on)
 		tud->start_time = ktime_get();
 	tud->ready = false;
-	tud->eusb_data_enabled = (extcon_get_state(tud->edev, EXTCON_USB) > 0 ||
-				  extcon_get_state(tud->edev, EXTCON_USB_HOST) > 0);
+	tud->eusb_data_enabled = (tud->curr_role != USB_ROLE_NONE);
 	mutex_unlock(&tud->mutex);
 
 	if (on && tud->eusb_pm_status && !tud->eusb_data_enabled)
@@ -1008,6 +1006,41 @@ static void eusb_repeater_debugfs_remove(struct eusb_repeater_data *tud)
 	return;
 }
 
+static int eusb_repeater_role_switch_set(struct usb_role_switch *sw, enum usb_role role)
+{
+	struct eusb_repeater_data *tud = usb_role_switch_get_drvdata(sw);
+
+	mutex_lock(&tud->mutex);
+
+	switch (role) {
+	case USB_ROLE_DEVICE:
+	case USB_ROLE_HOST:
+		tud->curr_role = role;
+		break;
+	case USB_ROLE_NONE:
+	default:
+		tud->curr_role = USB_ROLE_NONE;
+	}
+
+	mutex_unlock(&tud->mutex);
+
+	return 0;
+}
+
+static int eusb_repeater_setup_role_switch(struct eusb_repeater_data *tud)
+{
+	struct usb_role_switch_desc eusb_role_switch = {0};
+
+	eusb_role_switch.fwnode = dev_fwnode(tud->dev);
+	eusb_role_switch.set = eusb_repeater_role_switch_set;
+	eusb_role_switch.driver_data = tud;
+	tud->role_sw = usb_role_switch_register(tud->dev, &eusb_role_switch);
+	if (IS_ERR_OR_NULL(tud->role_sw))
+		return PTR_ERR_OR_ZERO(tud->role_sw);
+
+	return 0;
+}
+
 static int eusb_repeater_probe(struct i2c_client *client)
 {
 	struct device_node *of_node = client->dev.of_node;
@@ -1023,12 +1056,13 @@ static int eusb_repeater_probe(struct i2c_client *client)
 	}
 	tud->dev = &client->dev;
 
-	tud->edev = extcon_get_edev_by_phandle(tud->dev, 0);
-	if (IS_ERR_OR_NULL(tud->edev)) {
-		dev_err(&client->dev, "%s: couldn't get extcon\n", __func__);
+	ret = eusb_repeater_setup_role_switch(tud);
+	if (ret) {
+		dev_err(&client->dev, "failed to setup role switch, err:%d\n", ret);
 		ret = -EPROBE_DEFER;
 		goto err_repeater_func;
 	}
+	tud->curr_role = USB_ROLE_NONE;
 
 	if (of_node) {
 		pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
@@ -1094,6 +1128,7 @@ err_pinctrl:
 err_parse_dt:
 	devm_kfree(&client->dev, pdata);
 err_repeater_func:
+	usb_role_switch_unregister(tud->role_sw);
 	kfree(tud);
 err_repeater_nomem:
 	dev_err(&client->dev, "%s: err = %d\n", __func__, ret);
@@ -1113,6 +1148,8 @@ static void eusb_repeater_shutdown(struct i2c_client *client)
 static void eusb_repeater_remove(struct i2c_client *client)
 {
 	struct eusb_repeater_data *tud = i2c_get_clientdata(client);
+
+	usb_role_switch_unregister(tud->role_sw);
 	mutex_destroy(&tud->i2c_mutex);
 }
 

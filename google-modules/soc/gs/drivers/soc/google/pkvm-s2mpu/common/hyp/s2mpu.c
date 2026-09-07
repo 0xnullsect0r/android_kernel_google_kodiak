@@ -34,6 +34,22 @@
 #define SYNC_TIMEOUT			5
 #define SYNC_TIMEOUT_MULTIPLIER		3
 
+/* x2 - flags, x3 - reserved */
+#define SMC_S2MPU_TZ_REGISTER			(0x820020F0U)
+/* x2 - gb, x3 - pa of the table */
+#define SMC_S2MPU_TZ_UPDATE_MPT_ADDR		(0x820020F1U)
+/* x2 - start b, x3 - end b */
+#define SMC_S2MPU_TZ_UPDATE_IDMAP		(0x820020F2U)
+/* sets TZ context count */
+#define SMC_S2MPU_TZ_ALLOCATE_CTX		(0x820020F3U)
+/* performs suspend/resume ops */
+#define SMC_S2MPU_TZ_SET_STATE			(0x820020F4U)
+#define SMC_S2MPU_TZ_INVALIDATE_COMPLETE	(0x820020F5U)
+#define SMC_S2MPU_TZ_MAX			(0x820020FFU)
+
+#define SET_STATE_ACTIVE		(1)
+#define SET_STATE_SUSPENDED		(0)
+
 #define CTX_CFG_ENTRY(ctxid, nr_ctx, vid) \
 	(CONTEXT_CFG_VALID_VID_CTX_VID(ctxid, vid) \
 	 | (((ctxid) < (nr_ctx)) ? CONTEXT_CFG_VALID_VID_CTX_VALID(ctxid) : 0))
@@ -65,6 +81,10 @@ size_t __ro_after_init kvm_hyp_s2mpu_count;
 static const struct s2mpu_mpt_ops *mpt_ops;
 static const struct pkvm_module_ops *mod_ops;
 struct mpt *kvm_hyp_mpt;
+/* LDFW has support for S2MPU */
+static bool ldfw_s2mpu_support;
+/* LDFW supports S2MPU and at least one S2MPU device has a TZ sibling. */
+static bool use_s2mpu_sec;
 
 /* Abstraction for function used from module ops. */
 #define CALL_FROM_OPS(fn, ...)		mod_ops->fn(__VA_ARGS__)
@@ -127,6 +147,29 @@ static bool is_version(struct pkvm_iommu *dev, u32 version)
 	struct s2mpu_drv_data *data = &dev->data;
 
 	return (data->version & VERSION_CHECK_MASK) == version;
+}
+
+static int call_ldfw(struct pkvm_iommu *dev, u32 cmd, unsigned long arg1,
+		     unsigned long arg2)
+{
+#ifdef S2MPU_V9
+	int ret;
+	struct arm_smccc_res res;
+	u64 pa;
+
+	/* Use the device index or physical address as a handle for the Secure side */
+	if (!dev)
+		pa = 0;
+	else
+		pa = dev->pa;
+
+	arm_smccc_1_1_smc(cmd, pa, arg1, arg2, 0, 0, 0, 0, &res);
+	ret = (int)res.a0;
+
+	return ret;
+#else
+	return -1; /* Not supported by default */
+#endif
 }
 
 static u32 __context_cfg_valid_vid(struct pkvm_iommu *dev, u32 vid_bmap)
@@ -473,6 +516,7 @@ static void s2mpu_host_stage2_idmap_complete(struct pkvm_iommu *dev)
 
 static int s2mpu_resume(struct kvm_hyp_iommu *iommu)
 {
+	int ret;
 	struct pkvm_iommu *dev = to_s2mpu(iommu);
 	/*
 	 * Initialize the S2MPU with the host stage-2 MPT. It is paramount
@@ -483,11 +527,18 @@ static int s2mpu_resume(struct kvm_hyp_iommu *iommu)
 	if (dev->flags & S2MPU_DENY_ALL)
 		return 0;
 
-	return initialize_with_mpt(dev, &host_mpt);
+	if (dev->flags & S2MPU_HAS_TZ_SIBLING)
+		call_ldfw(dev, SMC_S2MPU_TZ_ALLOCATE_CTX, 0, 0);
+	ret = initialize_with_mpt(dev, &host_mpt);
+	if (dev->flags & S2MPU_HAS_TZ_SIBLING && ret == 0)
+		call_ldfw(dev, SMC_S2MPU_TZ_SET_STATE, SET_STATE_ACTIVE, 0);
+
+	return ret;
 }
 
 static int s2mpu_suspend(struct kvm_hyp_iommu *iommu)
 {
+	int ret;
 	struct pkvm_iommu *dev = to_s2mpu(iommu);
 	/*
 	 * Stop updating the S2MPU when the host informs us about the intention
@@ -496,7 +547,11 @@ static int s2mpu_suspend(struct kvm_hyp_iommu *iommu)
 	 * blocking state first, in case the host does not actually power it
 	 * down and continues issuing DMA traffic.
 	 */
-	return initialize_with_prot(dev, MPT_PROT_NONE);
+	ret = initialize_with_prot(dev, MPT_PROT_NONE);
+	if (dev->flags & S2MPU_HAS_TZ_SIBLING && ret == 0)
+		call_ldfw(dev, SMC_S2MPU_TZ_SET_STATE, SET_STATE_SUSPENDED, 0);
+
+	return ret;
 }
 
 static u32 __maybe_unused host_mmio_reg_access_mask_v9(size_t off, bool is_write)
@@ -612,7 +667,20 @@ static int s2mpu_register_dev(struct pkvm_iommu *dev)
 
 	dev->va = hyp_phys_to_virt(dev->pa);
 
-	return kvm_iommu_init_device(&dev->iommu);
+	ret = kvm_iommu_init_device(&dev->iommu);
+	if (ret)
+		return ret;
+
+	if (dev->flags & S2MPU_HAS_TZ_SIBLING && ldfw_s2mpu_support) {
+		if (call_ldfw(dev, SMC_S2MPU_TZ_REGISTER, dev->flags, 0) != 0)
+			dev->flags &= ~S2MPU_HAS_TZ_SIBLING;
+		else
+			use_s2mpu_sec = true;
+	} else if (dev->flags & S2MPU_HAS_TZ_SIBLING) {
+		dev->flags &= ~S2MPU_HAS_TZ_SIBLING;
+	}
+
+	return ret;
 }
 
 static int s2mpu_init(void)
@@ -676,6 +744,21 @@ static int s2mpu_init(void)
 	if (ret)
 		return ret;
 
+	/* Pass MPT addresses to LDFW. Assume ldfw_s2mpu_support true,
+	 * if SMC calls fails disable it
+	 */
+	ldfw_s2mpu_support = true;
+	for_each_gb(gb) {
+		phys_addr_t pa = __hyp_pa(host_mpt.fmpt[gb].smpt);
+
+		if (pa) {
+			if (call_ldfw(NULL, SMC_S2MPU_TZ_UPDATE_MPT_ADDR, gb, pa) != 0) {
+				ldfw_s2mpu_support = false;
+				break;
+			}
+		}
+	}
+
 	for_each_s2mpu(dev) {
 		ret = s2mpu_register_dev(dev);
 		if (ret)
@@ -728,10 +811,17 @@ static void s2mpu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
 		if (!dev->iommu.power_is_off)
 			s2mpu_host_stage2_idmap_apply(dev, start, end);
 	}
+
+	if (use_s2mpu_sec)
+		call_ldfw(NULL, SMC_S2MPU_TZ_UPDATE_IDMAP, start, end);
+
 	for_each_s2mpu(dev) {
 		if (!dev->iommu.power_is_off)
 			s2mpu_host_stage2_idmap_complete(dev);
 	}
+
+	if (use_s2mpu_sec)
+		call_ldfw(NULL, SMC_S2MPU_TZ_INVALIDATE_COMPLETE, 0, 0);
 }
 
 struct kvm_iommu_ops s2mpu_hyp_ops = {
@@ -761,6 +851,20 @@ static bool validate_mod_ops(const struct pkvm_module_ops *ops)
 	return true;
 }
 
+#ifdef S2MPU_V9
+static bool smc_filter(struct user_pt_regs *pt)
+{
+	u32 func_id = (u32)pt->regs[0];
+
+	if (func_id >= SMC_S2MPU_TZ_REGISTER && func_id <= SMC_S2MPU_TZ_MAX) {
+		pt->regs[0] = SMCCC_RET_NOT_SUPPORTED;
+		return true;
+	}
+
+	return false;
+}
+#endif
+
 /* Called when EL1 loads the module. */
 int s2mpu_hyp_init(const struct pkvm_module_ops *ops)
 {
@@ -768,5 +872,9 @@ int s2mpu_hyp_init(const struct pkvm_module_ops *ops)
 	if (!validate_mod_ops(mod_ops))
 		return -EINVAL;
 
+#ifdef S2MPU_V9
+	/* Register SMC handler to block EL1 from calling S2MPU SMCs */
+	CALL_FROM_OPS(register_host_smc_handler, smc_filter);
+#endif
 	return 0;
 }

@@ -139,29 +139,9 @@ static const struct kernel_param_ops gcma_skip_heaps_ops = {
 module_param_cb(gcma_skip_heaps, &gcma_skip_heaps_ops, NULL, 0444);
 MODULE_PARM_DESC(gcma_skip_heaps, "Comma-separated list of heap names to skip probing (max 5)");
 
-struct heap_pages {
-  struct list_head pages_list;
-  unsigned int count;
-};
-
 unsigned long dma_heap_gcma_inuse_pages(void)
 {
 	return atomic64_read(&inuse_pages);
-}
-
-static inline unsigned long gcma_get_size(struct page *page)
-{
-	return page_private(page);
-}
-
-static inline void gcma_set_size(struct page *page, unsigned long size)
-{
-	return set_page_private(page, size);
-}
-
-static inline bool page_is_gcma(struct page *page)
-{
-	return page_private(page) ? true : false;
 }
 
 struct page *gcma_alloc(struct gcma_heap *gcma_heap, unsigned long size)
@@ -198,139 +178,12 @@ void gcma_free(struct gcma_heap *gcma_heap, struct page *page)
 	gcma_arbitrator_free(gcma_heap->arb, page_to_phys(page), size);
 }
 
-static void free_gcma_heap_page(struct gcma_heap *gcma_heap, struct page *page)
-{
-	if (unlikely(!page))
-		return;
-
-	if (page_is_gcma(page)) {
-		gcma_free(gcma_heap, page);
-		dec_gcma_heap_stat(gcma_heap, USAGE, gcma_get_size(page));
-	} else {
-		unsigned int order = compound_order(page);
-		__free_pages(page, order);
-		dma_heap_dec_inuse(1 << order);
-		dec_gcma_heap_stat(gcma_heap, BUDDY, PAGE_SIZE << order);
-	}
-}
-
-/*
- * 1. Try GCMA allocation
- * 2. Try Buddy allocator (light effort for high orders, hard for order-0)
- */
-static struct page *alloc_largest_available(struct gcma_heap *gcma_heap,
-					    unsigned long size,
-					    unsigned int max_order)
-{
-	struct page *page = NULL;
-	int i;
-
-	if (size >= min_gcma_dmabuf_bytes) {
-		for (i = 0; i < ARRAY_SIZE(gcma_pages_orders); i++) {
-			unsigned long gcma_size = PAGE_SIZE << gcma_pages_orders[i];
-
-			if (size < gcma_size)
-				continue;
-
-			page = gcma_alloc(gcma_heap, gcma_size);
-			if (page)
-				goto out;
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(buddy_pages_orders); i++) {
-		unsigned long buddy_size = PAGE_SIZE << buddy_pages_orders[i];
-		gfp_t flags = buddy_pages_flags[i];
-
-		if (size < buddy_size && i != ARRAY_SIZE(buddy_pages_orders) - 1)
-			continue;
-		if (max_order < buddy_pages_orders[i])
-			continue;
-
-		if (flags == HARD_EFFORT_GFP)
-			inc_gcma_heap_stat(gcma_heap, ALLOCSTALL,
-					   PAGE_SIZE << buddy_pages_orders[i]);
-
-		page = alloc_pages(flags, buddy_pages_orders[i]);
-		if (page) {
-			inc_gcma_heap_stat(gcma_heap, BUDDY, PAGE_SIZE << buddy_pages_orders[i]);
-			goto out;
-		}
-	}
-out:
-	if (page && !page_is_gcma(page))
-		dma_heap_inc_inuse(1 << compound_order(page));
-	return page;
-}
-
-static int allocate_flexible_pages(struct gcma_heap *gcma_heap, unsigned long len,
-					    struct heap_pages *heap_pages)
-{
-	struct page *page, *tmp_page;
-	unsigned long size_remaining = len;
-	unsigned int max_order = buddy_pages_orders[0];
-	unsigned int count = 0;
-	int ret = 0;
-
-	while (size_remaining > 0) {
-		unsigned long allocated_size;
-		/*
-		 * Avoid trying to allocate memory if the process
-		 * has been killed by SIGKILL
-		 */
-		if (fatal_signal_pending(current)) {
-			pr_err("Fatal signal pending pid #%d", current->pid);
-			ret = -EINTR;
-			goto free_flexible_pages;
-		}
-
-		page = alloc_largest_available(gcma_heap, size_remaining, max_order);
-		if (!page) {
-			ret = -ENOMEM;
-			goto free_flexible_pages;
-		}
-
-		list_add_tail(&page->lru, &heap_pages->pages_list);
-		allocated_size = page_is_gcma(page) ? gcma_get_size(page) : page_size(page);
-		if (allocated_size > size_remaining)
-			size_remaining = 0;
-		else
-			size_remaining -= allocated_size;
-		if (!page_is_gcma(page))
-			max_order = compound_order(page);
-		count++;
-	}
-	heap_pages->count = count;
-	goto out_flexible_alloc;
-
-free_flexible_pages:
-	list_for_each_entry_safe(page, tmp_page, &heap_pages->pages_list, lru) {
-		list_del(&page->lru);
-		free_gcma_heap_page(gcma_heap, page);
-	}
-out_flexible_alloc:
-	return ret;
-}
-
-static int allocate_fixed_pages(struct gcma_heap *gcma_heap, unsigned long len,
-					    struct heap_pages *heap_pages)
-{
-	struct page *page = gcma_alloc(gcma_heap, len);
-	if (page) {
-		list_add_tail(&page->lru, &heap_pages->pages_list);
-		heap_pages->count = 1;
-		return 0;
-	}
-	return -ENOMEM;
-}
-
 static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long len,
-					    u32 fd_flags, u64 heap_flaga)
+					    u32 fd_flags, u64 heap_flags)
 {
 	struct samsung_dma_heap *samsung_dma_heap = dma_heap_get_drvdata(heap);
 	struct gcma_heap *gcma_heap = samsung_dma_heap->priv;
-	bool is_secure_heap = dma_heap_flags_protected(samsung_dma_heap->flags);
-	bool flexible_alloc = gcma_heap->flexible_alloc;
+	const struct gcma_heap_ops *ops = gcma_heap->ops;
 	struct samsung_dma_buffer *buffer;
 	struct scatterlist *sg;
 	struct dma_buf *dmabuf;
@@ -339,7 +192,6 @@ static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long l
 	struct heap_pages heap_pages;
 	int ret = -ENOMEM;
 
-	/* We don't support a secure heap with the flexible_alloc strategy */
 	if (dma_heap_flags_video_aligned(samsung_dma_heap->flags))
 		len = dma_heap_add_video_padding(len);
 
@@ -352,12 +204,7 @@ static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long l
 	INIT_LIST_HEAD(&heap_pages.pages_list);
 	len = ALIGN(len, alignment);
 
-	if (flexible_alloc) {
-		ret = allocate_flexible_pages(gcma_heap, len, &heap_pages);
-	} else {
-		ret = allocate_fixed_pages(gcma_heap, len, &heap_pages);
-	}
-
+	ret = ops->alloc(samsung_dma_heap, len, &heap_pages);
 	if (ret)
 		goto out;
 
@@ -377,11 +224,10 @@ static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long l
 
 	heap_cache_flush(buffer);
 
-	if (is_secure_heap) {
+	if (ops->buffer_protect) {
 		unsigned long paddr = page_to_phys(sg_page(buffer->sg_table.sgl));
 
-		buffer->priv = samsung_dma_buffer_protect(
-				buffer, len, heap_pages.count, paddr);
+		buffer->priv = ops->buffer_protect(buffer, len, heap_pages.count, paddr);
 		if (IS_ERR(buffer->priv)) {
 			ret = PTR_ERR(buffer->priv);
 			buffer->priv = NULL;
@@ -398,13 +244,13 @@ static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long l
 	return dmabuf;
 
 free_export:
-	if (is_secure_heap ? !samsung_dma_buffer_unprotect(buffer) : 1)
+	if (ops->buffer_unprotect ? !ops->buffer_unprotect(buffer) : 1)
 		for_each_sgtable_sg(&buffer->sg_table, sg, heap_pages.count)
-			free_gcma_heap_page(gcma_heap, sg_page(sg));
+			ops->free(samsung_dma_heap, sg_page(sg));
 free_buffer:
 	list_for_each_entry_safe(page, tmp_page, &heap_pages.pages_list, lru) {
 		list_del(&page->lru);
-		free_gcma_heap_page(gcma_heap, page);
+		ops->free(samsung_dma_heap, page);
 	}
 
 	samsung_dma_buffer_free(buffer);
@@ -419,26 +265,20 @@ static void gcma_heap_release(struct samsung_dma_buffer *buffer)
 {
 	struct samsung_dma_heap *samsung_dma_heap = buffer->heap;
 	struct gcma_heap *gcma_heap = samsung_dma_heap->priv;
-	bool is_secure_heap = dma_heap_flags_protected(samsung_dma_heap->flags);
+	const struct gcma_heap_ops *ops = gcma_heap->ops;
 	int ret = 0;
 
-	/* We don't support a secure heap with the flexible_alloc strategy */
-	if (is_secure_heap)
-		ret = samsung_dma_buffer_unprotect(buffer);
+	if (ops->buffer_unprotect)
+		ret = ops->buffer_unprotect(buffer);
 
 	if (!ret) {
 		struct sg_table *table;
 		struct scatterlist *sg;
 		int i;
 
-		gcma_heap = buffer->heap->priv;
 		table = &buffer->sg_table;
-		/*
-		 * free @page directly without caching it to page pool now as after a
-		 * long time use, we won't have high order pages anyway.
-		 */
 		for_each_sgtable_sg(table, sg, i)
-			free_gcma_heap_page(gcma_heap, sg_page(sg));
+			ops->free(samsung_dma_heap, sg_page(sg));
 	}
 	samsung_dma_buffer_free(buffer);
 }
@@ -450,6 +290,20 @@ static const struct dma_heap_ops gcma_heap_ops = {
 static void gcma_arbitrator_destroy_action(void *data)
 {
 	gcma_arbitrator_destroy(data);
+}
+
+static void gcma_heap_exit_action(void *data)
+{
+	struct gcma_heap *heap = data;
+
+	if (heap->ops->heap_exit)
+		heap->ops->heap_exit(heap);
+}
+
+static bool gcma_heap_is_gsa_backend(struct platform_device *pdev)
+{
+	return IS_ENABLED(CONFIG_GSA_IPC) &&
+	       of_property_read_bool(pdev->dev.of_node, "gsa-ipc-device");
 }
 
 static int gcma_heap_probe(struct platform_device *pdev)
@@ -486,15 +340,38 @@ static int gcma_heap_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	is_secure_heap = of_property_read_bool(pdev->dev.of_node, "dma-heap,secure") ||
+			 of_property_read_bool(pdev->dev.of_node, "dma-heap,dynamic-secure");
+
+	if (is_secure_heap) {
+		if (gcma_heap_is_gsa_backend(pdev))
+			gcma_heap->ops = &gcma_heap_gsa_ops;
+		else
+			gcma_heap->ops = &gcma_heap_trusty_ops;
+	} else {
+		gcma_heap->ops = &gcma_heap_nonsecure_ops;
+	}
+
 	gcma_heap->flexible_alloc =
-		of_property_read_bool(pdev->dev.of_node,"dma-heap-gcam,fleixble-alloc");
+		of_property_read_bool(pdev->dev.of_node, "dma-heap-gcam,fleixble-alloc");
 
-	is_secure_heap = of_property_read_bool(pdev->dev.of_node,"dma-heap,secure");
-
+	/* Secure + flexible is not allowed */
 	if (is_secure_heap && gcma_heap->flexible_alloc) {
 		perrfn("Don't support a secure heap with a flexible_alloc strategy");
 		return -EPERM;
 	}
+
+	/* Backend-specific init */
+	if (gcma_heap->ops->heap_init) {
+		ret = gcma_heap->ops->heap_init(gcma_heap, pdev);
+		if (ret)
+			return ret;
+	}
+
+	ret = devm_add_action_or_reset(&pdev->dev, gcma_heap_exit_action,
+				       gcma_heap);
+	if (ret)
+		return ret;
 
 	ret = samsung_heap_add(&pdev->dev, gcma_heap, gcma_heap_release,
 			       &gcma_heap_ops);

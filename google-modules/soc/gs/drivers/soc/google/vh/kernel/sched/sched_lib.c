@@ -56,6 +56,11 @@ void rvh_sched_setaffinity_mod(void *data, struct task_struct *task,
 		return;
 	}
 
+	if (should_auto_latency_sensitive(task, in_mask, NULL))
+		set_auto_adpf(task, true);
+	else
+		set_auto_adpf(task, false);
+
 	if (capable(CAP_SYS_NICE))
 		return;
 
@@ -114,6 +119,7 @@ void rvh_set_task_comm_pixel_mod(void *data, struct task_struct *p, bool exec)
 			}
 		}
 	}
+	queue_delayed_notification(p, VENDOR_SCHED_CMD_TASK_RENAME, 0, 0);
 }
 
 int set_prefer_idle_task_name(void)

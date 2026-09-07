@@ -2,13 +2,10 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
-package(
-    default_visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/perf/thermal:__subpackages__",
-        "//private/google-modules/soc/gs:__subpackages__",
-    ],
-)
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 filegroup(
     name = "kconfig",
@@ -39,12 +36,15 @@ ddk_module(
                 "core.c",
                 "cpufreq_gov.c",
                 "fair.c",
+                "fork.c",
                 "futex.c",
                 "init.c",
                 "pelt.c",
                 "procfs_node.c",
                 "rt.c",
+                "sched_netlink.c",
                 "topology.c",
+                "wq.c",
             ],
         },
     },
@@ -53,8 +53,6 @@ ddk_module(
         ":sched_tp",
         "//common:all_headers_aarch64",
         "//private/google-modules/perf/core/gs_domain_idle:headers",
-        "//private/google-modules/perf/core/gs_perf_mon",
-        "//private/google-modules/perf/core/gs_perf_mon:headers",
         "//private/google-modules/perf/core/lat_govs:gs_governor_dsulat",
         "//private/google-modules/perf/core/lat_govs:gs_governor_memlat",
         "//private/google-modules/soc/gs:headers",
@@ -64,8 +62,11 @@ ddk_module(
     ] + select({
         "//private/devices/google/common:soc_is_laguna_or_later": [
             "//private/google-modules/perf/core/gs_domain_idle",
+            "//private/google-modules/perf/core/gs_perf_mon",
+            "//private/google-modules/perf/core/gs_perf_mon:headers",
         ],
         "//conditions:default": [
+            "//private/google-modules/soc/gs/drivers/performance/gs_perf_mon",
         ],
     }),
 )

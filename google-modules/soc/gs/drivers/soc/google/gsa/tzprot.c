@@ -34,9 +34,8 @@ int trusty_protect_ip_bulk(struct device *dev, uint32_t dev_enable_mask,
 
 	rc = gsa_tz_chan_msg_xchg(&s->prot_srv, &req, sizeof(req),
 				  &rsp, sizeof(rsp));
-	if (rc != sizeof(rsp)) {
+	if (rc < 0 || rc < MIN_MEDIA_PROT_RSP)
 		return -EIO;
-	}
 
 	if (rsp.cmd != (req.cmd | MEDIA_PROT_CMD_RESP)) {
 		return -EIO;
@@ -52,6 +51,44 @@ int trusty_protect_ip(struct device *dev, uint32_t prot_id, bool enable)
 					   enable ? 0 : 1 << prot_id);
 }
 EXPORT_SYMBOL_GPL(trusty_protect_ip);
+
+int trusty_get_histogram(struct device *dev, uint8_t hist_id, uint8_t channel_mask,
+			 uint16_t *luma_arr, uint8_t arr_size)
+{
+	int rc;
+	uint8_t i;
+	uint8_t res_idx;
+
+	struct platform_device *pdev = to_platform_device(dev);
+	struct tzprot_dev_state *s = platform_get_drvdata(pdev);
+	struct media_prot_req req = { 0 };
+	struct media_prot_rsp rsp;
+
+	req.cmd = MEDIA_PROT_CMD_GET_HISTOGRAM;
+	req.get_hist_luma_req.hist_id = hist_id;
+	req.get_hist_luma_req.channel_mask = channel_mask;
+
+	rc = gsa_tz_chan_msg_xchg(&s->prot_srv, &req, sizeof(req), &rsp, sizeof(rsp));
+
+	if (rc != sizeof(rsp))
+		return -EIO;
+
+	if (rsp.cmd != (req.cmd | MEDIA_PROT_CMD_RESP))
+		return -EIO;
+
+	if (rsp.err != 0)
+		return rsp.err;
+
+	for (i = 0, res_idx = 0; i < MAX_HIST_CHANNELS; i++) {
+		if ((channel_mask & BIT(i)) && (res_idx < arr_size)) {
+			luma_arr[res_idx] = rsp.get_hist_luma_rsp.chan_luma[i];
+			res_idx += 1;
+		}
+	}
+
+	return rsp.err;
+}
+EXPORT_SYMBOL_GPL(trusty_get_histogram);
 
 static int tzprot_probe(struct platform_device *pdev)
 {

@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 ddk_headers(
     name = "zram_headers",
     hdrs = [
@@ -74,7 +79,6 @@ ddk_module(
     config = ":common_config",
     includes = ["include"],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zram_headers",
         "//common:all_headers_aarch64",
@@ -124,7 +128,6 @@ ddk_module(
     },
     config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zcomp_cpu_headers",
         ":zram_gs",
@@ -141,7 +144,6 @@ ddk_module(
     out = "zcomp_gs_eh.ko",
     config = ":eh_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zram_gs",
         ":zram_headers",

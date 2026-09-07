@@ -63,6 +63,8 @@ unsigned int sched_auto_uclamp_max[SCHED_AUTO_UCLAMP_MAX_NUM_TYPES][CONFIG_VH_SC
 unsigned int sched_memory_capacity[CONFIG_VH_SCHED_MAX_CPU_NR] = {
 	[0 ... CONFIG_VH_SCHED_MAX_CPU_NR - 1] = SCHED_CAPACITY_SCALE };
 
+unsigned int sched_should_spread_nr_running_threshold[CONFIG_VH_SCHED_MAX_CPU_NR] = {};
+
 unsigned int __read_mostly sched_per_task_iowait_boost_max_value = 0;
 
 struct vendor_group_property vg[VG_MAX];
@@ -94,7 +96,7 @@ static inline bool is_latency_overloaded(struct task_struct *p, struct rq *rq);
 #define for_each_clamp_id(clamp_id) \
 	for ((clamp_id) = 0; (clamp_id) < UCLAMP_CNT; (clamp_id)++)
 
-static void attach_task(struct rq *rq, struct task_struct *p)
+static void vh_attach_task(struct rq *rq, struct task_struct *p)
 {
 	lockdep_assert_held(&rq->__lock);
 
@@ -104,16 +106,16 @@ static void attach_task(struct rq *rq, struct task_struct *p)
 }
 
 /*
- * attach_one_task() -- attaches the task returned from detach_one_task() to
+ * vh_attach_one_task() -- attaches the task returned from detach_one_task() to
  * its new rq.
  */
-static void attach_one_task(struct rq *rq, struct task_struct *p)
+static void vh_attach_one_task(struct rq *rq, struct task_struct *p)
 {
 	struct rq_flags rf;
 
 	rq_lock(rq, &rf);
 	update_rq_clock(rq);
-	attach_task(rq, p);
+	vh_attach_task(rq, p);
 	rq_unlock(rq, &rf);
 }
 
@@ -1663,6 +1665,15 @@ static void get_uclamp_on_nice(struct task_struct *p, enum uclamp_id clamp_id,
 	}
 }
 
+static inline bool should_spread_nr_running(struct task_struct *p, struct rq *rq,
+					    unsigned long rq_nr_running)
+{
+	if (task_current_donor(rq, p))
+		return false;
+
+	return rq_nr_running > sched_should_spread_nr_running_threshold[rq->cpu];
+}
+
 /*****************************************************************************/
 /*                       Modified Code Section                               */
 /*****************************************************************************/
@@ -1694,7 +1705,7 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	bool group_overutilize;
 	unsigned long group_capacity, wake_group_util;
 #endif
-	unsigned long pd_max_spare_cap, pd_max_unimportant_spare_cap, pd_max_packing_spare_cap, pd_max_spare_cap_running_rt;
+	unsigned long pd_max_spare_cap, pd_max_unimportant_spare_cap, pd_max_packing_spare_cap, pd_max_spare_cap_running_rt, pd_max_spare_cap_nr_running;
 	int pd_max_spare_cap_cpu, pd_best_idle_cpu, pd_most_unimportant_cpu, pd_best_packing_cpu, pd_max_spare_cap_running_rt_cpu;
 	int most_spare_cap_cpu = -1, unimportant_max_spare_cap_cpu = -1, idle_max_cap_cpu = -1;
 	int least_loaded_cpu = -1;
@@ -1723,6 +1734,7 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 		unsigned long rq_util_min, rq_util_max;
 		pd_max_spare_cap_running_rt = 0;
 		pd_max_spare_cap = 0;
+		pd_max_spare_cap_nr_running = UINT_MAX;
 		pd_max_packing_spare_cap = 0;
 		pd_max_unimportant_spare_cap = 0;
 		pd_best_exit_lat = UINT_MAX;
@@ -1772,7 +1784,7 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 			spare_cap = capacity - wake_util;
 #endif
 			task_fits = task_fits_capacity(p, i);
-			exit_lat = 0;
+			exit_lat = 1;
 
 			rq_nr_running = cpu_rq(i)->nr_running;
 			if (task_current(cpu_rq(i), p) || (task_on_rq_queued(p) && i == prev_cpu))
@@ -1829,7 +1841,8 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 			}
 
 			util_fits = util_fits_cpu(next_util, util_min, util_max, i);
-
+			if (static_key_enabled(&enable_spread_nr_running))
+				util_fits &= !should_spread_nr_running(p, cpu_rq(i), rq_nr_running);
 
 			cfs_load = cpu_load(cpu_rq(i));
 			if (cfs_load < min_load) {
@@ -1998,15 +2011,19 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 				if (!task_fits)
 					continue;
 
+				if (!static_branch_likely(&enable_ptick)) {
 #if IS_ENABLED(CONFIG_USE_GROUP_THROTTLE)
-				if (spare_cap < min_t(unsigned long, task_util_capped,
-				    cap_scale(get_task_group_throttle(p),
-					      arch_scale_cpu_capacity(i))))
-					continue;
+					if (spare_cap < min_t(unsigned long, task_util_capped,
+					    cap_scale(get_task_group_throttle(p),
+						      arch_scale_cpu_capacity(i))))
+						continue;
 #else
-				if (spare_cap < task_util_capped)
-					continue;
+					if (spare_cap < task_util_capped)
+						continue;
 #endif
+				} else if (!spare_cap) {
+					continue;
+				}
 
 				/*
 				 * Find the best packing CPU with the maximum spare capacity in
@@ -2031,21 +2048,28 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 				if (spare_cap > pd_max_spare_cap) {
 					pd_max_spare_cap = spare_cap;
 					pd_max_spare_cap_cpu = i;
+					pd_max_spare_cap_nr_running = rq_nr_running;
 					pd_best_exit_lat = exit_lat;
 				/* Candidates could be idle cpu, so compare their exit lat. */
 				} else if (spare_cap == pd_max_spare_cap) {
 					if (exit_lat < pd_best_exit_lat) {
 						pd_max_spare_cap_cpu = i;
+						pd_max_spare_cap_nr_running = rq_nr_running;
 						pd_best_exit_lat = exit_lat;
 					} else if (exit_lat == pd_best_exit_lat) {
-						/*
-						 * A simple randomization by choosing the first or
-						 * the last cpu if pd_max_spare_cap_cpu != prev_cpu.
-						 */
-						if (i == prev_cpu ||
-						    (pd_max_spare_cap_cpu != prev_cpu &&
-						      this_cpu % 2))
+						if (rq_nr_running < pd_max_spare_cap_nr_running) {
 							pd_max_spare_cap_cpu = i;
+							pd_max_spare_cap_nr_running = rq_nr_running;
+						} else if (rq_nr_running == pd_max_spare_cap_nr_running) {
+							unsigned long cap_i, cap_spare;
+
+							cap_i = capacity_of(i);
+							cap_spare = capacity_of(pd_max_spare_cap_cpu);
+
+							if (cap_i > cap_spare ||
+							    (cap_i == cap_spare && i == prev_cpu))
+								pd_max_spare_cap_cpu = i;
+						}
 					}
 				}
 			}
@@ -2156,7 +2180,7 @@ int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 		if (task_current(cpu_rq(i), p) || (task_on_rq_queued(p) && i == prev_cpu))
 			rq_nr_running--;
 
-		exit_lat = 0;
+		exit_lat = 1;
 		if (cpu_is_idle(i)) {
 			idle_state = idle_get_state(cpu_rq(i));
 			if (idle_state)
@@ -2541,7 +2565,8 @@ void rvh_check_preempt_wakeup_fair_pixel_mod(void *data, struct rq *rq, struct t
 	 */
 	clear_buddies(cfs_rq_of(pse), pse);
 
-	if(!get_preempt_wakeup(task_of(se)) && get_preempt_wakeup(task_of(pse)) &&
+	if (((!get_preempt_wakeup(task_of(se)) && get_preempt_wakeup(task_of(pse))) ||
+	   (!get_adpf(task_of(se), true) && get_adpf(task_of(pse), true))) &&
 	   !pse->sched_delayed) {
 		set_next_buddy(pse);
 		cancel_protect_slice(se);
@@ -2697,6 +2722,11 @@ void rvh_cpu_cgroup_online_pixel_mod(void *data, struct cgroup_subsys_state *css
 
 void rvh_post_init_entity_util_avg_pixel_mod(void *data, struct sched_entity *se)
 {
+	struct task_struct *p = task_of(se);
+	struct vendor_task_struct *vp;
+
+	vp = get_vendor_task_struct(p);
+
 	if (!static_branch_likely(&auto_dvfs_headroom_enable)) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 		struct sched_avg *sa = &se->avg;
@@ -2709,11 +2739,9 @@ void rvh_post_init_entity_util_avg_pixel_mod(void *data, struct sched_entity *se
 	} else {
 		struct sched_avg *sa = &se->avg;
 		unsigned long init_value = 0;
-		struct vendor_task_struct *vp;
 
 		if (should_boost_at_fork(task_of(se))) {
 			init_value =  vendor_sched_boost_at_fork_value;
-			vp = get_vendor_task_struct(task_of(se));
 			vp->boost_at_fork_start_ns = sched_clock();
 		}
 
@@ -2721,6 +2749,9 @@ void rvh_post_init_entity_util_avg_pixel_mod(void *data, struct sched_entity *se
 		sa->runnable_avg = init_value >> 1;
 		sa->util_est = init_value | UTIL_AVG_UNCHANGED;
 	}
+
+	if (should_auto_latency_sensitive(p, NULL, NULL))
+		__set_auto_adpf_locked(p, true);
 }
 
 void vh_sched_uclamp_validate_pixel_mod(void *data, struct task_struct *tsk,
@@ -2802,6 +2833,11 @@ void vh_dup_task_struct_pixel_mod(void *data, struct task_struct *tsk, struct ta
 
 void vh_exit_check_pixel_mod(void *data, struct task_struct *tsk)
 {
+	send_netlink_notification(tsk, NULL, VENDOR_SCHED_CMD_TASK_EXIT);
+}
+
+void vh_free_task_pixel_mod(void *data, struct task_struct *tsk)
+{
 	struct vendor_task_struct *vp = get_vendor_task_struct(tsk);
 	struct vendor_task_struct_h *vph = get_vendor_task_struct_h(tsk);
 	unsigned long flags;
@@ -2847,7 +2883,7 @@ void rvh_select_task_rq_fair_pixel_mod(void *data, struct task_struct *p, int pr
 		idle_state = idle_get_state(cpu_rq(prev_cpu));
 
 		if (sched_cpu_idle(prev_cpu))
-			exit_lat = 0;
+			exit_lat = 1;
 		else if (idle_state)
 			exit_lat = idle_state->exit_latency;
 
@@ -2898,7 +2934,7 @@ out:
 						uclamp_eff_value_pixel_mod(p, UCLAMP_MAX),
 						prev_cpu, *target_cpu);
 
-	_update_prefer_high_cap(p, false);
+	_reset_prefer_high_cap(p);
 }
 
 void rvh_set_user_nice_locked_pixel_mod(void *data, struct task_struct *p, long *nice,
@@ -2919,6 +2955,11 @@ void rvh_set_user_nice_locked_pixel_mod(void *data, struct task_struct *p, long 
 
 		*allowed = false;
 	}
+
+	if (should_auto_latency_sensitive(p, NULL, nice))
+		__set_auto_adpf_locked(p, true);
+	else
+		__set_auto_adpf_locked(p, false);
 
 	/* We expect only one of boost_prio or tag_nice to be set. */
 	if (get_boost_prio(p)) {
@@ -3046,6 +3087,9 @@ void sched_newidle_balance_pixel_mod(void *data, struct rq *this_rq, struct rq_f
 	struct vendor_rq_struct *this_vrq = get_vendor_rq_struct(this_rq);
 	struct vendor_rq_struct *src_vrq;
 
+	if (SCHED_WARN_ON(atomic_read(&this_vrq->num_adpf_tasks)))
+		atomic_set(&this_vrq->num_adpf_tasks, 0);
+
 	if (static_branch_likely(&enable_ptick))
 		return;
 
@@ -3055,9 +3099,6 @@ void sched_newidle_balance_pixel_mod(void *data, struct rq *this_rq, struct rq_f
 	 */
 	if (this_rq->ttwu_pending)
 		return;
-
-	if (SCHED_WARN_ON(atomic_read(&this_vrq->num_adpf_tasks)))
-		atomic_set(&this_vrq->num_adpf_tasks, 0);
 
 	/*
 	 * We must set idle_stamp _before_ calling idle_balance(), such that we
@@ -3138,7 +3179,7 @@ void sched_newidle_balance_pixel_mod(void *data, struct rq *this_rq, struct rq_f
 		rq_unlock(src_rq, &src_rf);
 
 		if (p) {
-			attach_one_task(this_rq, p);
+			vh_attach_one_task(this_rq, p);
 			local_irq_restore(src_rf.flags);
 			rcu_read_unlock();
 			break;
@@ -3535,17 +3576,33 @@ static inline bool is_rd_overutilized(struct root_domain *rd)
 	return !sched_energy_enabled() || READ_ONCE(rd->overutilized);
 }
 
-static inline bool is_rq_overloaded(struct rq *rq)
+static inline bool is_rq_overloaded(struct task_struct *p, struct rq *rq)
 {
-	return rq->nr_running > 1 && __cpu_util_cfs(cpu_of(rq)) > SCHED_CAPACITY_SCALE;
+	bool should_spread;
+
+	if (task_current_donor(rq, p))
+		return false;
+
+	should_spread = __cpu_util_cfs(cpu_of(rq)) > SCHED_CAPACITY_SCALE;
+	should_spread |= should_ptick_auto_spread(p, get_vendor_task_struct(p)->group);
+	should_spread |= get_adpf(p, true);
+
+	return rq->nr_running > vendor_sched_overloaded_nr_running_threshold ||
+		(rq->nr_running > 1 && should_spread);
 }
 
 static inline bool is_latency_overloaded(struct task_struct *p, struct rq *rq)
 {
 	struct vendor_rq_struct *vrq = get_vendor_rq_struct(rq);
+	int num_adpf = atomic_read(&vrq->num_adpf_tasks);
 
-	if (get_adpf(p, true) && (atomic_read(&vrq->num_adpf_tasks) > 1 ||
-	    rq->curr->prio < MAX_RT_PRIO))
+	if (task_current_donor(rq, p))
+		return false;
+
+	if (!task_on_rq_queued(p))
+		num_adpf++;
+
+	if (get_adpf(p, true) && (num_adpf > 1 || rq->curr->prio < MAX_RT_PRIO))
 		return true;
 
 	return false;
@@ -3556,7 +3613,7 @@ static inline bool sched_energy_push_task(struct task_struct *p, struct rq *rq)
 	if (p->nr_cpus_allowed == 1)
 		return false;
 
-	if (in_suspend_resume)
+	if (!cpu_active(cpu_of(rq)))
 		return false;
 
 	if (is_latency_overloaded(p, rq))
@@ -3571,7 +3628,7 @@ static inline bool sched_energy_push_task(struct task_struct *p, struct rq *rq)
 	if (task_stuck_on_cpu(p, cpu_of(rq)))
 		return true;
 
-	if (is_rq_overloaded(rq))
+	if (is_rq_overloaded(p, rq))
 		return true;
 
 	return false;
@@ -3606,7 +3663,7 @@ inline void check_pushable_task(struct task_struct *p, struct rq *rq)
 	new_cpu = find_energy_efficient_cpu(p, cpu, NULL);
 	get_vendor_task_struct(p)->in_feec = false;
 
-	if (new_cpu == cpu || !cpu_active(new_cpu))
+	if (new_cpu < 0 || new_cpu == cpu || !cpu_active(new_cpu))
 		return;
 
 	/*
@@ -3692,7 +3749,7 @@ static bool push_fair_task(struct rq *rq)
 	new_cpu = find_energy_efficient_cpu(next_task, prev_cpu, NULL);
 	get_vendor_task_struct(next_task)->in_feec = false;
 
-	if (new_cpu == prev_cpu)
+	if (new_cpu < 0 || new_cpu == prev_cpu || !cpu_active(new_cpu))
 		goto out;
 
 	new_rq = cpu_rq(new_cpu);

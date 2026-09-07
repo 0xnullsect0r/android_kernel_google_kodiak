@@ -8,7 +8,7 @@
 #ifndef __MAX77779_CONTAMINANT_H
 #define __MAX77779_CONTAMINANT_H
 
-#include <logbuffer.h>
+#include <misc/logbuffer.h>
 
 #include "max777x9_contaminant.h"
 #include "tcpci_max77759.h"
