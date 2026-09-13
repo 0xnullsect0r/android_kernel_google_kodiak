@@ -43,10 +43,25 @@
   <project path="build/kernel" name="kernel/build" />
 
   <!--
-       Android Common Kernel. Google built CD1A.260714.001.A9 against
-       6.12.77, which is an untagged point on android16-6.12-2026-06.
+       Android Common Kernel. Google built CD1A.260714.001.A9 against 6.12.77,
+       an untagged point on android16-6.12-2026-06, and the tip of that branch
+       is 6.12.81.
+
+       Pinned instead to 6.12.92 on android16-6.12, by sha rather than by
+       branch so the build is reproducible - eleven stable releases of fixes
+       over the dated branch.
+
+       upstream= names the branch the sha is on. repo sync runs with -c here,
+       which fetches only the branch a project's revision names - and a bare
+       sha names none, so without this the sync would not bring it down.
+
+       The KMI generation is unchanged - still android16-6 - so the fips140
+       prebuilt from common/gki still loads, and every other module in the
+       image is built from source in this same pass.
   -->
-  <project path="common/ack" name="kernel/common" revision="refs/heads/android16-6.12-2026-06">
+  <project path="common/ack" name="kernel/common"
+           revision="8eff909dd82da10a599468a514cc1ad07e90c3cc"
+           upstream="refs/heads/android16-6.12">
     <linkfile src="." dest="aosp" />
     <linkfile src=".clang-format" dest=".clang-format" />
     <linkfile src="build.config.constants" dest="common/build.config.constants" />
