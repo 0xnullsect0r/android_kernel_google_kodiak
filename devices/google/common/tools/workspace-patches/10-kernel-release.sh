@@ -20,11 +20,11 @@ W="$1"
 F="$W/build/kernel/kleaf/impl/stamp.bzl"
 [ -f "$F" ] || { echo "no stamp.bzl at $F" >&2; exit 1; }
 
-if grep -q "echo '-Reeky'" "$F"; then
+if grep -q "echo '-lineage'" "$F"; then
     echo "kernel release: already named"
     exit 0
 fi
 grep -q "echo '-maybe-dirty'" "$F" || {
     echo "stamp.bzl does not look the way this expects" >&2; exit 1; }
-sed -i "s/echo '-maybe-dirty'/echo '-Reeky'/" "$F"
-echo "kernel release: -maybe-dirty -> -Reeky"
+sed -i "s/echo '-maybe-dirty'/echo '-lineage'/" "$F"
+echo "kernel release: -maybe-dirty -> -lineage"
