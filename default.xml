@@ -2,7 +2,7 @@
 <!--
      Kleaf workspace for the kodiak (Pixel 11 Pro XL) kernel.
 
-         repo init -u ssh://git@github.com/topsuplove1122/android_kernel_google_kodiak -b lineage-24.0
+         repo init -u https://github.com/0xnullsect0r/android_kernel_google_kodiak -b lineage-24.0
          repo sync
          ./build_spacecraft.sh
 
@@ -13,7 +13,7 @@
 <manifest>
 
   <remote  name="kodiak"
-           fetch="ssh://git@github.com/topsuplove1122"
+           fetch="https://github.com/0xnullsect0r"
            revision="refs/heads/lineage-24.0" />
 
   <remote  name="aosp"

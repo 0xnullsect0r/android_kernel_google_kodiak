@@ -27,7 +27,7 @@ Pixel-specific sources.
 
 ```
 mkdir kodiak-kernel && cd kodiak-kernel
-repo init -u ssh://git@github.com/topsuplove1122/android_kernel_google_kodiak -b lineage-24.0
+repo init -u https://github.com/0xnullsect0r/android_kernel_google_kodiak -b lineage-24.0
 repo sync -c -j$(nproc)
 ./build_spacecraft.sh
 ```
