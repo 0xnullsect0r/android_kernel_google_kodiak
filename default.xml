@@ -4,7 +4,7 @@
 
          repo init -u https://github.com/0xnullsect0r/android_kernel_google_kodiak -b lineage-24.0
          repo sync
-         ./build_spacecraft.sh
+         ./build_kodiak.sh
 
      Everything Google wrote for Pixel hardware lives in this repository and
      is checked out at private/. The kernel itself, the toolchains and the
@@ -36,6 +36,7 @@
     <linkfile src="devices/google/common/tools/run_kunit_tests_on_device.sh" dest="run_kunit_tests_on_device.sh" />
     <linkfile src="devices/google/common/update_symbol_list.sh" dest="update_symbol_list.sh" />
     <linkfile src="devices/google/spacecraft/build_spacecraft.sh" dest="build_spacecraft.sh" />
+    <linkfile src="build_kodiak.sh" dest="build_kodiak.sh" />
     <linkfile src="devices/google/common/external/nanopb-c" dest="external/nanopb-c" />
   </project>
 

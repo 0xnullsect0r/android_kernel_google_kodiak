@@ -29,7 +29,7 @@ Pixel-specific sources.
 mkdir kodiak-kernel && cd kodiak-kernel
 repo init -u https://github.com/0xnullsect0r/android_kernel_google_kodiak -b lineage-24.0
 repo sync -c -j$(nproc)
-./build_spacecraft.sh
+./build_kodiak.sh
 ```
 
 The build output lands in `out/spacecraft/dist/`. To use it in a ROM build,
